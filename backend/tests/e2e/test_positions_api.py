@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from httpx import AsyncClient
 
 from quantpilot.api.deps import get_account_service

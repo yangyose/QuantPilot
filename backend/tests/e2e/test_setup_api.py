@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from unittest.mock import AsyncMock
 
-import pytest
 from httpx import AsyncClient
 
 from quantpilot.api.deps import get_setup_service

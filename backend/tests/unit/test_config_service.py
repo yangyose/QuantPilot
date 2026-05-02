@@ -8,8 +8,6 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-import pytest
-
 from quantpilot.core.config_defaults import (
     DEFAULT_RISK_LIMITS,
     DEFAULT_SIGNAL_CONFIG,

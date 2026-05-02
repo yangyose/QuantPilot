@@ -2,7 +2,6 @@
 AUTH / HEALTH / FMT: E2E 端点测试（RED 阶段）
 api/v1/auth.py 与 main.py 尚未实现，路由返回 404。
 """
-import pytest
 from httpx import AsyncClient
 
 from quantpilot.core.config import settings

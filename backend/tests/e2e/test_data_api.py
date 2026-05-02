@@ -2,7 +2,6 @@
 from datetime import date
 from unittest.mock import AsyncMock
 
-import pytest
 from httpx import AsyncClient
 
 from quantpilot.core.security import create_token

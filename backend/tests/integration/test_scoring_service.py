@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pandas as pd
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.data.calendar import TradingCalendar

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.core.config_defaults import (

@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from httpx import AsyncClient
 
 from quantpilot.api.deps import get_settings_service

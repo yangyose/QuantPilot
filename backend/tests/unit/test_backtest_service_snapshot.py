@@ -4,8 +4,6 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from quantpilot.engine.backtest.engine import BacktestConfig
 from quantpilot.services.backtest_service import BacktestService
 
