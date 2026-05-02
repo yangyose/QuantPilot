@@ -24,6 +24,15 @@ jobs:
         ports:
           - 5432:5432
 
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +59,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/quantpilot_test
+          REDIS_URL: redis://localhost:6379/0
           ADMIN_USERNAME: admin
           ADMIN_PASSWORD_HASH: ${{ steps.gen_hash.outputs.value }}
           JWT_SECRET_KEY: "ci-test-secret-key-64-chars-minimum-not-for-production-use-only"
@@ -58,4 +68,5 @@ jobs:
           JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
           CORS_ORIGINS: '["http://localhost:5173"]'
           DEBUG: "true"
-        run: uv run pytest tests/ --cov=quantpilot --cov-report=term-missing -v
+        # 不跑 tests/smoke：smoke 需要运行中的服务 + 真实 API_PASSWORD（CLAUDE.md 规定不入 CI）
+        run: uv run pytest tests/unit tests/e2e tests/integration --cov=quantpilot --cov-report=term-missing -v
