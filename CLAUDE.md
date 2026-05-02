@@ -173,7 +173,7 @@ created_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 - **后台任务 session 生命周期**：`get_db()` 会话由框架自动 commit；`async with AsyncSessionLocal()` 直接创建的会话（后台任务 `asyncio.create_task` 等）**必须显式 commit**，否则写入不持久
 - 市场数据读写通过 `MarketDataRepository`；业务服务层（PerformanceService、BacktestService 等）可直接执行 ORM 查询，但禁止在 Route 层绕过 Service 直接操作 ORM
 - upsert 使用 `insert(...).on_conflict_do_update()`；`updated_at` 须显式写入 `func.now()`
-- 集成测试 `db_engine` fixture 必须 `poolclass=NullPool`（防止跨 event loop 连接复用）
+- 集成测试 `db_engine` fixture 必须 `poolclass=NullPool`（防止跨 event loop 连接复用），并且**禁止 `scope="session"`**：anyio 每个测试一个新 event loop，session 级 async engine 会触发 `Future attached to a different loop`。schema 建表用单独的同步 fixture（`_ensure_schema`，scope=session）跑 alembic；engine 改成函数级，每个测试独立创建/销毁。本地 Windows 偶发不报，CI ubuntu 必现。
 
 ### API 层
 

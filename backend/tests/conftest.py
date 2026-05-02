@@ -55,22 +55,30 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture(scope="session")
-async def db_engine() -> AsyncGenerator[AsyncEngine, None]:
-    """集成测试用异步引擎，通过 Alembic 建表保持与迁移测试一致"""
+def _ensure_schema() -> Generator[None, None, None]:
+    """整个测试 session 跑一次 alembic upgrade head（同步，与 event loop 解耦）"""
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=BACKEND_DIR, capture_output=True, text=True,
     )
     assert result.returncode == 0, f"alembic upgrade failed:\n{result.stderr}"
-
-    engine = create_async_engine(settings.database_url, echo=False, poolclass=NullPool)
-    yield engine
-    await engine.dispose()
-
+    yield
     subprocess.run(
         [sys.executable, "-m", "alembic", "downgrade", "base"],
         cwd=BACKEND_DIR, capture_output=True, text=True,
     )
+
+
+@pytest.fixture
+async def db_engine(_ensure_schema: None) -> AsyncGenerator[AsyncEngine, None]:
+    """每个测试独立 async engine，绑定到当前测试的 event loop。
+
+    禁止用 scope=session：anyio 默认每个测试一个 loop，session 级 async engine
+    会出现 "Future attached to a different loop" 错误（CI 上比 Windows 严格）。
+    """
+    engine = create_async_engine(settings.database_url, echo=False, poolclass=NullPool)
+    yield engine
+    await engine.dispose()
 
 
 @pytest.fixture
