@@ -172,7 +172,6 @@ def _make_scoring_service(session: AsyncSession, pool_capacity: int = 3) -> Scor
 # ---------------------------------------------------------------------------
 # INT-04: 全流程评分（run_daily_scoring() 写入 candidate_pool）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_04_run_daily_scoring_writes_pool(db_session: AsyncSession) -> None:
     """INT-04: ScoringService.run_daily_scoring() 完成后 candidate_pool 有数据，code=0"""
     repo = MarketDataRepository(db_session)
@@ -192,7 +191,6 @@ async def test_int_04_run_daily_scoring_writes_pool(db_session: AsyncSession) ->
 # ---------------------------------------------------------------------------
 # INT-05: 持仓保护（holding_codes 强制入池，is_holding=True）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_05_holding_protection(db_session: AsyncSession) -> None:
     """INT-05: 传入 holding_codes 后 candidate_pool 中 is_holding=True 且在池中"""
     repo = MarketDataRepository(db_session)
@@ -213,7 +211,6 @@ async def test_int_05_holding_protection(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-06: 黑名单过滤（黑名单股票不出现在候选池）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_06_blacklist_filter(db_session: AsyncSession) -> None:
     """INT-06: 黑名单股票被 UniverseFilter 前移除，不出现在候选池中"""
     repo = MarketDataRepository(db_session)
@@ -233,7 +230,6 @@ async def test_int_06_blacklist_filter(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-07: WatchlistService CRUD（add → get → remove 完整流程）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_07_watchlist_service_crud(db_session: AsyncSession) -> None:
     """INT-07: WatchlistService add → get → remove 完整流程"""
     repo = MarketDataRepository(db_session)
@@ -276,7 +272,6 @@ async def test_int_07_watchlist_service_crud(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-08: 白名单入池（白名单股票出现在候选池）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_08_whitelist_in_pool(db_session: AsyncSession) -> None:
     """INT-08: 白名单股票额外入池（即使评分未进前 N）"""
     repo = MarketDataRepository(db_session)

@@ -132,7 +132,6 @@ async def _seed_market_state(
 # ---------------------------------------------------------------------------
 # INT-SIG-GEN-01a: pool 含高分股 → 生成 BUY 信号入库
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_sig_gen_01_basic_buy_signal(db_session: AsyncSession) -> None:
     """高分股 + 充足资金 + 振荡市 → save 一条 BUY 信号。"""
     repo = MarketDataRepository(db_session)
@@ -156,7 +155,6 @@ async def test_int_sig_gen_01_basic_buy_signal(db_session: AsyncSession) -> None
 # ---------------------------------------------------------------------------
 # INT-SIG-GEN-01b: ConfigService 提高 buy_threshold → 同一 pool 无信号（INT-CFG-02 闭环）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_sig_gen_01_config_change_filters_signals(
     db_session: AsyncSession,
 ) -> None:
@@ -182,7 +180,6 @@ async def test_int_sig_gen_01_config_change_filters_signals(
 # ---------------------------------------------------------------------------
 # INT-SIG-GEN-01c: 行业集中度 BLOCK → 信号不入库 + RISK_WARN 通知入库
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_sig_gen_01_block_concentration_with_notify(
     db_session: AsyncSession,
 ) -> None:
@@ -256,7 +253,6 @@ async def test_int_sig_gen_01_block_concentration_with_notify(
 # INT-SIG-GEN-01d (V1.0 整改 Batch 2 — B2-6 / B2-1 闭环):
 # 账户回撤超 risk_limits.max_drawdown_pct → DRAWDOWN WARN 触发
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_sig_gen_01d_drawdown_warn_triggers(db_session: AsyncSession) -> None:
     """seed daily_portfolio_value 形成 25% 回撤（> 默认 20% 阈值）→ DRAWDOWN WARN 入库。"""
     from datetime import timedelta

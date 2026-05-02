@@ -38,14 +38,12 @@ def _mock_report(
 # GET /reports
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_rp_01_no_auth(client: AsyncClient) -> None:
     """GET /reports 无鉴权 → 401。"""
     resp = await client.get("/api/v1/reports")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_rp_02_ok_empty(client: AsyncClient) -> None:
     """GET /reports 有鉴权，无数据 → 200，items=[]，total=0。"""
     mock = AsyncMock()
@@ -61,7 +59,6 @@ async def test_rp_02_ok_empty(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_report_service, None)
 
 
-@pytest.mark.anyio
 async def test_rp_03_ok_with_data(client: AsyncClient) -> None:
     """GET /reports 有数据 → 200，items 含 id/report_type/period 字段。"""
     mock = AsyncMock()
@@ -82,7 +79,6 @@ async def test_rp_03_ok_with_data(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_report_service, None)
 
 
-@pytest.mark.anyio
 async def test_rp_04_filter_params(client: AsyncClient) -> None:
     """GET /reports?report_type=WEEKLY&limit=5&offset=0 → 参数传递正确。"""
     mock = AsyncMock()
@@ -110,14 +106,12 @@ async def test_rp_04_filter_params(client: AsyncClient) -> None:
 # GET /reports/{report_id}
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_rp_05_detail_no_auth(client: AsyncClient) -> None:
     """GET /reports/1 无鉴权 → 401。"""
     resp = await client.get("/api/v1/reports/1")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_rp_06_detail_not_found(client: AsyncClient) -> None:
     """GET /reports/999 有鉴权，不存在 → 404。"""
     mock = AsyncMock()
@@ -130,7 +124,6 @@ async def test_rp_06_detail_not_found(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_report_service, None)
 
 
-@pytest.mark.anyio
 async def test_rp_07_detail_ok(client: AsyncClient) -> None:
     """GET /reports/1 有鉴权，存在 → 200，含完整 content。"""
     mock = AsyncMock()
@@ -150,7 +143,6 @@ async def test_rp_07_detail_ok(client: AsyncClient) -> None:
 # POST /reports/generate
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_rp_08_generate_no_auth(client: AsyncClient) -> None:
     """POST /reports/generate 无鉴权 → 401。"""
     resp = await client.post(
@@ -160,7 +152,6 @@ async def test_rp_08_generate_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_rp_09_generate_missing_field(client: AsyncClient) -> None:
     """POST /reports/generate 缺少 end_date → 422。"""
     resp = await client.post(
@@ -171,7 +162,6 @@ async def test_rp_09_generate_missing_field(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
 
-@pytest.mark.anyio
 async def test_rp_10_generate_ok(client: AsyncClient) -> None:
     """POST /reports/generate 有鉴权，参数合法 → 200，返回 ReportItem（不含 content）。"""
     mock = AsyncMock()

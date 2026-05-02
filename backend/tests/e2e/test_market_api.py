@@ -27,7 +27,6 @@ def _mock_record() -> MarketStateRecord:
     )
 
 
-@pytest.mark.anyio
 async def test_mapi_01_get_state_with_token(client: AsyncClient) -> None:
     """MAPI-01: GET /api/v1/market/state（有 token）→ 200，code=0，data.current 含 market_state"""
     from quantpilot.api.deps import get_market_state_service
@@ -48,7 +47,6 @@ async def test_mapi_01_get_state_with_token(client: AsyncClient) -> None:
     assert body["data"]["current"]["market_state"] == "UPTREND"
 
 
-@pytest.mark.anyio
 async def test_mapi_02_get_state_no_token(client: AsyncClient) -> None:
     """MAPI-02: GET /api/v1/market/state（无 token）→ 401"""
     resp = await client.get("/api/v1/market/state")
@@ -56,7 +54,6 @@ async def test_mapi_02_get_state_no_token(client: AsyncClient) -> None:
     assert resp.json()["code"] == 401
 
 
-@pytest.mark.anyio
 async def test_mapi_03_get_state_no_history(client: AsyncClient) -> None:
     """MAPI-03: 无历史记录时 data.current == null"""
     from quantpilot.api.deps import get_market_state_service
@@ -75,7 +72,6 @@ async def test_mapi_03_get_state_no_history(client: AsyncClient) -> None:
     assert body["data"]["current"] is None
 
 
-@pytest.mark.anyio
 async def test_mapi_04_get_state_history(client: AsyncClient) -> None:
     """MAPI-04: GET /api/v1/market/state/history?start=...&end=... → 200，data.items 为列表"""
     from quantpilot.api.deps import get_market_state_service

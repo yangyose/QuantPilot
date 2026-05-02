@@ -48,14 +48,12 @@ def _mock_notif(
 
 # ───────────────────── GET /notifications ─────────────────────
 
-@pytest.mark.anyio
 async def test_napi_01_list_no_auth(client: AsyncClient) -> None:
     """GET /notifications 无鉴权 → 401。"""
     resp = await client.get("/api/v1/notifications")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_napi_02_list_ok(client: AsyncClient) -> None:
     """GET /notifications 有鉴权 → 200，返回 items + total + unread。"""
     mock = AsyncMock()
@@ -79,7 +77,6 @@ async def test_napi_02_list_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_notification_service, None)
 
 
-@pytest.mark.anyio
 async def test_napi_03_list_with_filters(client: AsyncClient) -> None:
     """GET /notifications?notify_type=SIGNAL_BUY&unread_only=true → 过滤参数传递到 service。"""
     mock = AsyncMock()
@@ -102,7 +99,6 @@ async def test_napi_03_list_with_filters(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_notification_service, None)
 
 
-@pytest.mark.anyio
 async def test_napi_04_list_limit_exceeds_max_rejected(client: AsyncClient) -> None:
     """GET /notifications?limit=999 → 422（超过 200 上限）。"""
     resp = await client.get("/api/v1/notifications?limit=999", headers=_auth())
@@ -111,7 +107,6 @@ async def test_napi_04_list_limit_exceeds_max_rejected(client: AsyncClient) -> N
 
 # ───────────────────── GET /notifications/unread-count ─────────────────────
 
-@pytest.mark.anyio
 async def test_napi_05_unread_count_ok(client: AsyncClient) -> None:
     """GET /notifications/unread-count → 200 + {unread: N}。"""
     mock = AsyncMock()
@@ -127,7 +122,6 @@ async def test_napi_05_unread_count_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_notification_service, None)
 
 
-@pytest.mark.anyio
 async def test_napi_06_unread_count_no_auth(client: AsyncClient) -> None:
     """GET /notifications/unread-count 无鉴权 → 401。"""
     resp = await client.get("/api/v1/notifications/unread-count")
@@ -136,7 +130,6 @@ async def test_napi_06_unread_count_no_auth(client: AsyncClient) -> None:
 
 # ───────────────────── POST /notifications/{id}/read ─────────────────────
 
-@pytest.mark.anyio
 async def test_napi_07_mark_read_ok(client: AsyncClient) -> None:
     """POST /notifications/{id}/read 合法 ID → 200 + {id, read_at}。"""
     now = datetime(2026, 4, 21, 16, 0, 0, tzinfo=timezone.utc)
@@ -156,7 +149,6 @@ async def test_napi_07_mark_read_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_notification_service, None)
 
 
-@pytest.mark.anyio
 async def test_napi_08_mark_read_not_found(client: AsyncClient) -> None:
     """POST /notifications/999999/read → 404。"""
     mock = AsyncMock()
@@ -172,7 +164,6 @@ async def test_napi_08_mark_read_not_found(client: AsyncClient) -> None:
 
 # ───────────────────── POST /notifications/read-all ─────────────────────
 
-@pytest.mark.anyio
 async def test_napi_09_mark_all_read_ok(client: AsyncClient) -> None:
     """POST /notifications/read-all → 200 + {updated: N}。"""
     mock = AsyncMock()
@@ -190,7 +181,6 @@ async def test_napi_09_mark_all_read_ok(client: AsyncClient) -> None:
 
 # ───────────────────── GET /notifications/wx-status ─────────────────────
 
-@pytest.mark.anyio
 async def test_napi_10_wx_status_configured(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -204,7 +194,6 @@ async def test_napi_10_wx_status_configured(
     assert data["uid_masked"] == "UID_***cdef"
 
 
-@pytest.mark.anyio
 async def test_napi_11_wx_status_unconfigured(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -218,7 +207,6 @@ async def test_napi_11_wx_status_unconfigured(
     assert data["uid_masked"] is None
 
 
-@pytest.mark.anyio
 async def test_napi_12_wx_status_no_auth(client: AsyncClient) -> None:
     """GET /notifications/wx-status 无鉴权 → 401。"""
     resp = await client.get("/api/v1/notifications/wx-status")

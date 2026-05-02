@@ -89,7 +89,6 @@ def _next_workday(d: date, days: int) -> date:
 # ---------------------------------------------------------------------------
 # INT-FM-01: 无候选池数据 → run_monthly 返回 0
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_fm_01_no_pool_data(db_session: AsyncSession) -> None:
     """INT-FM-01: calc_month 无候选池数据 → run_monthly 返回 0，不写入 FactorIcHistory。"""
     svc = FactorMonitorService(db_session, FactorMonitorEngine())
@@ -100,7 +99,6 @@ async def test_int_fm_01_no_pool_data(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-FM-02: 有候选池和行情数据 → run_monthly 写入 FactorIcHistory
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_fm_02_run_monthly_writes_history(db_session: AsyncSession) -> None:
     """INT-FM-02: 插入 5 只股票评分 + 行情 → run_monthly 写入 5 条 FactorIcHistory。"""
     # 基准日：_CALC_MONTH（月末），跳过周末
@@ -146,7 +144,6 @@ async def test_int_fm_02_run_monthly_writes_history(db_session: AsyncSession) ->
 # ---------------------------------------------------------------------------
 # INT-FM-03: get_latest 返回各 (strategy, factor) 最新记录
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_fm_03_get_latest(db_session: AsyncSession) -> None:
     """INT-FM-03: 写入两个月数据 → get_latest 只返回最新月的记录。"""
     month1 = date(2026, 1, 31)
@@ -176,7 +173,6 @@ async def test_int_fm_03_get_latest(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-FM-04: alert_status 触发（连续 3 月 IC < 0）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_fm_04_alert_decay_triggered(db_session: AsyncSession) -> None:
     """INT-FM-04: 历史 IC 全为负 → run_monthly 写入 alert_status='DECAY'。"""
     # 写入 3 个月的负 IC 历史
@@ -248,7 +244,6 @@ async def test_int_fm_04_alert_decay_triggered(db_session: AsyncSession) -> None
 # ---------------------------------------------------------------------------
 # INT-FM-05: get_history 分页正确
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_fm_05_get_history_pagination(db_session: AsyncSession) -> None:
     """INT-FM-05: 插入 5 条历史记录 → get_history(limit=3) 返回 3 条、total=5。"""
     strategy = "ValueStrategy"

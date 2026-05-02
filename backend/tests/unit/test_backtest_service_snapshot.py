@@ -23,7 +23,6 @@ def _make_config() -> BacktestConfig:
     )
 
 
-@pytest.mark.anyio
 async def test_create_task_writes_config_snapshot_when_provided() -> None:
     session = MagicMock()
     session.add = MagicMock()
@@ -47,7 +46,6 @@ async def test_create_task_writes_config_snapshot_when_provided() -> None:
     assert added_task.config_snapshot == snapshot
 
 
-@pytest.mark.anyio
 async def test_create_task_allows_snapshot_none_backward_compat() -> None:
     """未提供 engine_snapshot 时向后兼容：config_snapshot 保持 None。"""
     session = MagicMock()

@@ -30,7 +30,6 @@ def _mock_item(
 # ---------------------------------------------------------------------------
 # WAPI-01: GET /api/v1/watchlist — 空列表
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_wapi_01_get_empty_list(client: AsyncClient) -> None:
     """WAPI-01: GET /api/v1/watchlist（空 DB）→ code=0，data=[]"""
     from quantpilot.api.deps import get_watchlist_service
@@ -52,7 +51,6 @@ async def test_wapi_01_get_empty_list(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # WAPI-02: POST /api/v1/watchlist — 添加黑名单
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_wapi_02_add_blacklist(client: AsyncClient) -> None:
     """WAPI-02: POST /api/v1/watchlist → code=0，返回新记录"""
     from quantpilot.api.deps import get_watchlist_service
@@ -81,7 +79,6 @@ async def test_wapi_02_add_blacklist(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # WAPI-03: POST /api/v1/watchlist — 重复添加（幂等）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_wapi_03_add_idempotent(client: AsyncClient) -> None:
     """WAPI-03: 重复 POST 同一条目 → code=0，不报错（幂等返回已有记录）"""
     from quantpilot.api.deps import get_watchlist_service
@@ -115,7 +112,6 @@ async def test_wapi_03_add_idempotent(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # WAPI-04: DELETE /api/v1/watchlist/{ts_code} — 正常删除
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_wapi_04_delete_existing(client: AsyncClient) -> None:
     """WAPI-04: DELETE /api/v1/watchlist/000001.SZ?list_type=BLACKLIST → code=0"""
     from quantpilot.api.deps import get_watchlist_service
@@ -141,7 +137,6 @@ async def test_wapi_04_delete_existing(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # WAPI-05: DELETE /api/v1/watchlist/{ts_code} — 不存在时幂等
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_wapi_05_delete_nonexistent_idempotent(client: AsyncClient) -> None:
     """WAPI-05: 删除不存在的条目 → code=0（幂等）"""
     from quantpilot.api.deps import get_watchlist_service
@@ -169,7 +164,6 @@ async def test_wapi_05_delete_nonexistent_idempotent(client: AsyncClient) -> Non
 # ---------------------------------------------------------------------------
 # 额外：GET /watchlist 无 token → 401
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_wapi_no_token(client: AsyncClient) -> None:
     """GET /api/v1/watchlist（无 token）→ 401"""
     resp = await client.get("/api/v1/watchlist")

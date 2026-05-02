@@ -51,14 +51,12 @@ def _mock_history(
 # GET /settings
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_sapi_01_get_settings_no_auth(client: AsyncClient) -> None:
     """GET /settings 无鉴权 → 401。"""
     resp = await client.get("/api/v1/settings")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_sapi_02_get_settings_ok(client: AsyncClient) -> None:
     """GET /settings 有鉴权 → 200，返回配置列表。"""
     mock = AsyncMock()
@@ -82,7 +80,6 @@ async def test_sapi_02_get_settings_ok(client: AsyncClient) -> None:
 # PUT /settings
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_sapi_03_put_settings_no_auth(client: AsyncClient) -> None:
     """PUT /settings 无鉴权 → 401。"""
     resp = await client.put("/api/v1/settings", json={
@@ -91,7 +88,6 @@ async def test_sapi_03_put_settings_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_sapi_04_put_settings_ok(client: AsyncClient) -> None:
     """PUT /settings 有鉴权 + 合法 12-key → 200，返回更新后的 UserConfigItem。"""
     mock = AsyncMock()
@@ -117,7 +113,6 @@ async def test_sapi_04_put_settings_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_settings_service, None)
 
 
-@pytest.mark.anyio
 async def test_sapi_04b_put_settings_unknown_key(client: AsyncClient) -> None:
     """PUT /settings 未知 config_key → 400（Phase 10 §6.9 12-key 白名单）。"""
     mock = AsyncMock()
@@ -146,14 +141,12 @@ async def test_sapi_04b_put_settings_unknown_key(client: AsyncClient) -> None:
 # GET /settings/config-history
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_sapi_05_config_history_no_auth(client: AsyncClient) -> None:
     """GET /settings/config-history 无鉴权 → 401。"""
     resp = await client.get("/api/v1/settings/config-history")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_sapi_06_config_history_ok(client: AsyncClient) -> None:
     """GET /settings/config-history 有鉴权 → 200，含 items/total 分页结构。"""
     mock = AsyncMock()
@@ -174,7 +167,6 @@ async def test_sapi_06_config_history_ok(client: AsyncClient) -> None:
 # POST /settings/config-history/{id}/revert
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_sapi_07_revert_not_found(client: AsyncClient) -> None:
     """POST /settings/config-history/999/revert 不存在 → 404。"""
     mock = AsyncMock()
@@ -189,7 +181,6 @@ async def test_sapi_07_revert_not_found(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_settings_service, None)
 
 
-@pytest.mark.anyio
 async def test_sapi_08_revert_no_old_value(client: AsyncClient) -> None:
     """POST /settings/config-history/{id}/revert old_value=None → 400。"""
     mock = AsyncMock()
@@ -206,7 +197,6 @@ async def test_sapi_08_revert_no_old_value(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_settings_service, None)
 
 
-@pytest.mark.anyio
 async def test_sapi_09_revert_ok(client: AsyncClient) -> None:
     """POST /settings/config-history/{id}/revert 有鉴权 → 200，返回恢复后的配置。"""
     mock = AsyncMock()

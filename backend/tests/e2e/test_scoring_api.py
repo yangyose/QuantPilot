@@ -41,7 +41,6 @@ def _mock_pool_record(
 # ---------------------------------------------------------------------------
 # SAPI-01: GET /api/v1/market/pool — 正常返回候选股池
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_01_get_pool_normal(client: AsyncClient) -> None:
     """SAPI-01: GET /api/v1/market/pool → code=0，data.pool 包含 rank/is_holding/is_watchlist"""
     from quantpilot.api.deps import get_repo
@@ -83,7 +82,6 @@ async def test_sapi_01_get_pool_normal(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-02: GET /api/v1/market/pool — 无 token → 401
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_02_get_pool_no_token(client: AsyncClient) -> None:
     """SAPI-02: GET /api/v1/market/pool（无 token）→ 401"""
     resp = await client.get("/api/v1/market/pool")
@@ -94,7 +92,6 @@ async def test_sapi_02_get_pool_no_token(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-03: GET /api/v1/market/stock/{ts_code}/score — 正常返回
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_03_get_stock_score(client: AsyncClient) -> None:
     """SAPI-03: GET /api/v1/market/stock/000001.SZ/score → code=0，data.history 为列表"""
     from quantpilot.api.deps import get_repo
@@ -130,7 +127,6 @@ async def test_sapi_03_get_stock_score(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-04: GET /api/v1/market/stock/{ts_code}/score — 无 token → 401
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_04_get_stock_score_no_token(client: AsyncClient) -> None:
     """SAPI-04: GET /api/v1/market/stock/{ts_code}/score（无 token）→ 401"""
     resp = await client.get("/api/v1/market/stock/000001.SZ/score")

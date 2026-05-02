@@ -29,7 +29,6 @@ def _mock_summary() -> dict:
 
 # ─── E2E-PF-01 ───
 
-@pytest.mark.anyio
 async def test_pf_01_summary_no_auth(client: AsyncClient) -> None:
     """E2E-PF-01：GET /performance/summary 无鉴权 → 401。"""
     resp = await client.get("/api/v1/performance/summary")
@@ -38,7 +37,6 @@ async def test_pf_01_summary_no_auth(client: AsyncClient) -> None:
 
 # ─── E2E-PF-02 ───
 
-@pytest.mark.anyio
 async def test_pf_02_summary_no_data(client: AsyncClient) -> None:
     """E2E-PF-02：GET /performance/summary 有鉴权，无账户数据 → 200，data=null。"""
     mock = AsyncMock()
@@ -54,7 +52,6 @@ async def test_pf_02_summary_no_data(client: AsyncClient) -> None:
 
 # ─── E2E-PF-03 ───
 
-@pytest.mark.anyio
 async def test_pf_03_history_ok(client: AsyncClient) -> None:
     """E2E-PF-03：GET /performance/history 有鉴权 → 200，data.nav_series 为 list。"""
     mock = AsyncMock()
@@ -74,7 +71,6 @@ async def test_pf_03_history_ok(client: AsyncClient) -> None:
 
 # ─── E2E-PF-04 ───
 
-@pytest.mark.anyio
 async def test_pf_04_attribution_missing_params(client: AsyncClient) -> None:
     """E2E-PF-04：GET /performance/attribution 缺 period_start/period_end → 422。"""
     resp = await client.get("/api/v1/performance/attribution", headers=_auth())
@@ -83,7 +79,6 @@ async def test_pf_04_attribution_missing_params(client: AsyncClient) -> None:
 
 # ─── E2E-PF-05 ───
 
-@pytest.mark.anyio
 async def test_pf_05_attribution_ok(client: AsyncClient) -> None:
     """E2E-PF-05：GET /performance/attribution 有鉴权 + 参数 → 200，data 含各维度归因。"""
     mock = AsyncMock()
@@ -108,7 +103,6 @@ async def test_pf_05_attribution_ok(client: AsyncClient) -> None:
 
 # ─── E2E-PF-06 ───
 
-@pytest.mark.anyio
 async def test_pf_06_behavior_ok(client: AsyncClient) -> None:
     """E2E-PF-06：GET /performance/behavior 有鉴权 → 200，data 含 signal_compliance_rate。"""
     mock = AsyncMock()
@@ -132,7 +126,6 @@ async def test_pf_06_behavior_ok(client: AsyncClient) -> None:
 
 # ─── 额外：summary 有数据时 cumulative_return 字段存在 ───
 
-@pytest.mark.anyio
 async def test_pf_summary_with_data(client: AsyncClient) -> None:
     """GET /performance/summary 有数据 → 200，data 含 cumulative_return 字段。"""
     mock = AsyncMock()

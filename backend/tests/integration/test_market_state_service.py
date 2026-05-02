@@ -51,7 +51,6 @@ def _make_service(session: AsyncSession) -> MarketStateService:
     return MarketStateService(engine=engine, repo=repo, index_code=_INDEX_CODE, history_days=100)
 
 
-@pytest.mark.anyio
 async def test_msts_01_identify_and_save_writes_db(db_session: AsyncSession) -> None:
     """MSTS-01: identify_and_save() 调用后 market_state_history 中有对应 trade_date 行"""
     repo = MarketDataRepository(db_session)
@@ -73,7 +72,6 @@ async def test_msts_01_identify_and_save_writes_db(db_session: AsyncSession) -> 
     assert saved.market_state in ("UPTREND", "DOWNTREND", "OSCILLATION")
 
 
-@pytest.mark.anyio
 async def test_msts_02_get_current_state_returns_latest(db_session: AsyncSession) -> None:
     """MSTS-02: get_current_state() 返回的 trade_date 与最后插入一致"""
     repo = MarketDataRepository(db_session)
@@ -89,7 +87,6 @@ async def test_msts_02_get_current_state_returns_latest(db_session: AsyncSession
     assert current.trade_date == _TRADE_DATE
 
 
-@pytest.mark.anyio
 async def test_msts_03_state_changed_true_on_switch(db_session: AsyncSession) -> None:
     """MSTS-03: debounce 在 _TRADE_DATE 当天触发 → engine 自然产生 state_changed=True
 
@@ -117,7 +114,6 @@ async def test_msts_03_state_changed_true_on_switch(db_session: AsyncSession) ->
     assert saved.state_changed is True
 
 
-@pytest.mark.anyio
 async def test_msts_04_identify_and_save_idempotent(db_session: AsyncSession) -> None:
     """MSTS-04: 同一 trade_date 调用两次不报错，DB 中仍只有一行"""
     repo = MarketDataRepository(db_session)
@@ -138,7 +134,6 @@ async def test_msts_04_identify_and_save_idempotent(db_session: AsyncSession) ->
     assert len(history) == 1
 
 
-@pytest.mark.anyio
 async def test_msts_05_insufficient_data_returns_none(db_session: AsyncSession) -> None:
     """MSTS-05: index_history 只有 50 行时返回 None，DB 无新增行"""
     repo = MarketDataRepository(db_session)

@@ -31,14 +31,12 @@ def _mock_config(config_key: str, config_value: dict, config_id: int = 1) -> obj
 # ──────────────────────────── export ────────────────────────────
 
 
-@pytest.mark.anyio
 async def test_cfg_exp_01_export_no_auth(client: AsyncClient) -> None:
     """CFG-EXP-01：GET /settings/export 无鉴权 → 401。"""
     resp = await client.get("/api/v1/settings/export")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_cfg_exp_02_export_returns_yaml(client: AsyncClient) -> None:
     """CFG-EXP-02：GET /settings/export 有鉴权 → 200，text/yaml，YAML 含自定义 key。"""
     mock_svc = AsyncMock()
@@ -66,7 +64,6 @@ async def test_cfg_exp_02_export_returns_yaml(client: AsyncClient) -> None:
 # ──────────────────────────── import ────────────────────────────
 
 
-@pytest.mark.anyio
 async def test_cfg_imp_01_import_no_auth(client: AsyncClient) -> None:
     """CFG-IMP-01：POST /settings/import 无鉴权 → 401。"""
     resp = await client.post(
@@ -76,7 +73,6 @@ async def test_cfg_imp_01_import_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_cfg_imp_02_import_valid_applies(client: AsyncClient) -> None:
     """CFG-IMP-02：合法 YAML → 200；每个 key 触发 upsert_setting；返回 changes 列表。"""
     yaml_body = (
@@ -122,7 +118,6 @@ async def test_cfg_imp_02_import_valid_applies(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_settings_service, None)
 
 
-@pytest.mark.anyio
 async def test_cfg_imp_03_dry_run_does_not_apply(client: AsyncClient) -> None:
     """CFG-IMP-03：dry_run=true → 返回 changes，但 upsert_setting 不被调用。"""
     yaml_body = "signal_params:\n  buy_threshold: 90\n"
@@ -146,7 +141,6 @@ async def test_cfg_imp_03_dry_run_does_not_apply(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_settings_service, None)
 
 
-@pytest.mark.anyio
 async def test_cfg_imp_04_invalid_yaml_returns_422(client: AsyncClient) -> None:
     """CFG-IMP-04：非法 YAML → 422。"""
     resp = await client.post(
@@ -157,7 +151,6 @@ async def test_cfg_imp_04_invalid_yaml_returns_422(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
 
-@pytest.mark.anyio
 async def test_cfg_imp_05_unknown_keys_skipped(client: AsyncClient) -> None:
     """CFG-IMP-05：未知 config_key → 计入 skipped_keys；已知 key 仍被应用。"""
     yaml_body = (
@@ -192,7 +185,6 @@ async def test_cfg_imp_05_unknown_keys_skipped(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_settings_service, None)
 
 
-@pytest.mark.anyio
 async def test_cfg_imp_06_non_dict_value_returns_422(client: AsyncClient) -> None:
     """CFG-IMP-06：顶层 YAML 非 dict（如字符串/列表）→ 422。"""
     resp = await client.post(

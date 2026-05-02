@@ -79,7 +79,6 @@ def test_migration_lifecycle():
 # MIG-04 : 19 张表全部存在
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_all_tables_exist():
     """MIG-04: information_schema 中全部 19 张表可找到"""
     engine = create_async_engine(settings.database_url, echo=False)
@@ -100,7 +99,6 @@ async def test_all_tables_exist():
 # MIG-05 : 关键索引存在
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_key_indexes_exist():
     """MIG-05: 关键索引在 pg_indexes 中可查到"""
     engine = create_async_engine(settings.database_url, echo=False)
@@ -120,7 +118,6 @@ async def test_key_indexes_exist():
 # MIG-06 : signal_score_snapshot.signal_id CASCADE DELETE
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_cascade_delete_signal_score_snapshot():
     """MIG-06: 删除 signal 记录后，对应快照自动级联删除"""
     engine = create_async_engine(settings.database_url, echo=False)

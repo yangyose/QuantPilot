@@ -42,14 +42,12 @@ def _mock_run(
 # GET /pipeline/status
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_pl_01_status_no_auth(client: AsyncClient) -> None:
     """GET /pipeline/status 无鉴权 → 401。"""
     resp = await client.get("/api/v1/pipeline/status")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_pl_02_status_no_data(client: AsyncClient) -> None:
     """GET /pipeline/status 有鉴权，无记录 → 200，data=null。"""
     mock_session = AsyncMock()
@@ -64,7 +62,6 @@ async def test_pl_02_status_no_data(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_db, None)
 
 
-@pytest.mark.anyio
 async def test_pl_03_status_with_data(client: AsyncClient) -> None:
     """GET /pipeline/status 有鉴权，有记录 → 200，含结构化字段。"""
     run = _mock_run()
@@ -89,7 +86,6 @@ async def test_pl_03_status_with_data(client: AsyncClient) -> None:
 # POST /pipeline/trigger
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_pl_04_trigger_no_auth(client: AsyncClient) -> None:
     """POST /pipeline/trigger 无鉴权 → 401。"""
     resp = await client.post(
@@ -99,7 +95,6 @@ async def test_pl_04_trigger_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_pl_05_trigger_non_trade_day(client: AsyncClient) -> None:
     """POST /pipeline/trigger 非交易日 → 400。"""
     # Mock calendar（is_trade_date → False）
@@ -127,7 +122,6 @@ async def test_pl_05_trigger_non_trade_day(client: AsyncClient) -> None:
         app.state.calendar = None
 
 
-@pytest.mark.anyio
 async def test_pl_06_trigger_ok(client: AsyncClient) -> None:
     """POST /pipeline/trigger 交易日 → 200，返回 PipelineRunItem。"""
     mock_calendar = MagicMock()

@@ -46,7 +46,6 @@ def _mock_signal(
 # ---------------------------------------------------------------------------
 # SAPI-01: GET /signals（mock 返回空列表）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_01_get_signals_empty(client: AsyncClient) -> None:
     """SAPI-01: GET /signals → 200, data.signals=[]"""
     mock_service = AsyncMock()
@@ -68,7 +67,6 @@ async def test_sapi_01_get_signals_empty(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-02: GET /signals（mock 返回 2 条信号）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_02_get_signals_with_data(client: AsyncClient) -> None:
     """SAPI-02: GET /signals → 200, data.signals 长度=2，字段完整"""
     sigs = [_mock_signal(1, "000001.SZ"), _mock_signal(2, "000002.SZ")]
@@ -98,7 +96,6 @@ async def test_sapi_02_get_signals_with_data(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-03: PATCH /signals/1/status，status=VIEWED → 200
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_03_update_status_viewed(client: AsyncClient) -> None:
     """SAPI-03: PATCH /signals/1/status，status=VIEWED → 200，状态更新"""
     updated = _mock_signal(1, status="VIEWED")
@@ -124,7 +121,6 @@ async def test_sapi_03_update_status_viewed(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-04: PATCH /signals/1/status，status=INVALID → 422
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_04_update_status_invalid(client: AsyncClient) -> None:
     """SAPI-04: status=INVALID 不在允许集合 → 422，errors 字段存在"""
     mock_service = AsyncMock()
@@ -147,7 +143,6 @@ async def test_sapi_04_update_status_invalid(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-05: GET /signals/1/lineage（Phase 7 重构：由 LineageService 提供）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_05_get_lineage(client: AsyncClient) -> None:
     """SAPI-05: GET /signals/1/lineage → 200，返回 signal_id/score_snapshot/pipeline_run 结构。
 
@@ -188,7 +183,6 @@ async def test_sapi_05_get_lineage(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # SAPI-06: GET /signals/history，带 ts_code 过滤
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_sapi_06_signal_history_with_filter(client: AsyncClient) -> None:
     """SAPI-06: GET /signals/history?ts_code=000001.SZ → 200，结果按过滤条件正确"""
     sigs = [_mock_signal(1, "000001.SZ"), _mock_signal(3, "000001.SZ")]

@@ -47,7 +47,6 @@ def _make_sell_signal(ts_code: str) -> TradeSignal:
 # ---------------------------------------------------------------------------
 # INT-SVC-01: save() 写入 2 条信号 → get_today_signals() 返回 2 条
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_svc_01_save_and_query(db_session: AsyncSession) -> None:
     """INT-SVC-01: save() 写入 2 条信号 → get_today_signals() 正确返回"""
     repo = MarketDataRepository(db_session)
@@ -66,7 +65,6 @@ async def test_int_svc_01_save_and_query(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-SVC-02: save() 重复写同一信号（upsert）→ 不报错，仍只有 1 条
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_svc_02_save_idempotent(db_session: AsyncSession) -> None:
     """INT-SVC-02: 同一 (ts_code, trade_date, signal_type) 两次 save → 幂等，只有 1 条"""
     repo = MarketDataRepository(db_session)
@@ -89,7 +87,6 @@ async def test_int_svc_02_save_idempotent(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-SVC-03: expire_old_signals(as_of_date, ttl=3) → 3 日前的 NEW → EXPIRED
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_svc_03_expire_old_signals(db_session: AsyncSession) -> None:
     """INT-SVC-03: trade_date 为 3 日前的 NEW 信号 → expire_old_signals 后变为 EXPIRED"""
     repo = MarketDataRepository(db_session)
@@ -123,7 +120,6 @@ async def test_int_svc_03_expire_old_signals(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-SVC-04: get_lineage(signal_id) → 返回信号及其 SignalScoreSnapshot
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_svc_04_get_lineage(db_session: AsyncSession) -> None:
     """INT-SVC-04: 写入信号和快照 → get_lineage 正确返回两者"""
     repo = MarketDataRepository(db_session)
@@ -165,7 +161,6 @@ async def test_int_svc_04_get_lineage(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-SVC-05: update_status(ACTED) → 状态变更持久化
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_svc_05_update_status(db_session: AsyncSession) -> None:
     """INT-SVC-05: update_status(NEW→ACTED) → get_lineage 状态为 ACTED"""
     repo = MarketDataRepository(db_session)

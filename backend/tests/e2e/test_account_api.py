@@ -65,14 +65,12 @@ def _mock_flow(flow_id: int = 1, flow_type: str = "DEPOSIT") -> FundFlow:
 # GET /account
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_aapi_01_get_account_no_auth(client: AsyncClient) -> None:
     """GET /account 无鉴权 → 401。"""
     resp = await client.get("/api/v1/account")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_aapi_02_get_account_ok(client: AsyncClient) -> None:
     """GET /account 有鉴权 → 200，AccountSummary 结构。"""
     mock = AsyncMock()
@@ -91,7 +89,6 @@ async def test_aapi_02_get_account_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_aapi_03_get_account_not_found(client: AsyncClient) -> None:
     """GET /account 无账户 → 404。"""
     mock = AsyncMock()
@@ -108,14 +105,12 @@ async def test_aapi_03_get_account_not_found(client: AsyncClient) -> None:
 # POST /account/sync
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_aapi_04_sync_no_auth(client: AsyncClient) -> None:
     """POST /account/sync 无鉴权 → 401。"""
     resp = await client.post("/api/v1/account/sync", params={"account_id": 1})
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_aapi_05_sync_ok(client: AsyncClient) -> None:
     """POST /account/sync 有鉴权 → 200，返回 AccountSummary。"""
     mock = AsyncMock()
@@ -135,7 +130,6 @@ async def test_aapi_05_sync_ok(client: AsyncClient) -> None:
 # POST /account/trades
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_aapi_06_trades_no_auth(client: AsyncClient) -> None:
     """POST /account/trades 无鉴权 → 401。"""
     resp = await client.post("/api/v1/account/trades", json={
@@ -145,7 +139,6 @@ async def test_aapi_06_trades_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_aapi_07_trades_missing_field(client: AsyncClient) -> None:
     """POST /account/trades 缺少必填字段 → 422。"""
     resp = await client.post(
@@ -158,7 +151,6 @@ async def test_aapi_07_trades_missing_field(client: AsyncClient) -> None:
     assert "errors" in body
 
 
-@pytest.mark.anyio
 async def test_aapi_08_trades_buy_ok(client: AsyncClient) -> None:
     """POST /account/trades BUY → 200，返回 TradeRecordItem。"""
     mock_svc = AsyncMock()
@@ -184,7 +176,6 @@ async def test_aapi_08_trades_buy_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_signal_service, None)
 
 
-@pytest.mark.anyio
 async def test_aapi_09_trades_oversell(client: AsyncClient) -> None:
     """POST /account/trades SELL 超卖 → 400。"""
     mock_svc = AsyncMock()
@@ -213,7 +204,6 @@ async def test_aapi_09_trades_oversell(client: AsyncClient) -> None:
 # POST /account/deposit
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_aapi_10_deposit_no_auth(client: AsyncClient) -> None:
     """POST /account/deposit 无鉴权 → 401。"""
     resp = await client.post("/api/v1/account/deposit", json={
@@ -222,7 +212,6 @@ async def test_aapi_10_deposit_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_aapi_11_deposit_ok(client: AsyncClient) -> None:
     """POST /account/deposit DEPOSIT（无 ts_code） → 200。"""
     mock = AsyncMock()
@@ -240,7 +229,6 @@ async def test_aapi_11_deposit_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_aapi_12_deposit_dividend(client: AsyncClient) -> None:
     """POST /account/deposit DIVIDEND（含 ts_code） → 200。"""
     mock = AsyncMock()
@@ -267,7 +255,6 @@ async def test_aapi_12_deposit_dividend(client: AsyncClient) -> None:
 # POST /account/withdraw
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_aapi_13_withdraw_no_auth(client: AsyncClient) -> None:
     """POST /account/withdraw 无鉴权 → 401。"""
     resp = await client.post("/api/v1/account/withdraw", json={
@@ -276,7 +263,6 @@ async def test_aapi_13_withdraw_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_aapi_14_withdraw_ok(client: AsyncClient) -> None:
     """POST /account/withdraw → 200。"""
     mock = AsyncMock()
@@ -293,7 +279,6 @@ async def test_aapi_14_withdraw_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_aapi_15_withdraw_insufficient_cash(client: AsyncClient) -> None:
     """POST /account/withdraw 现金不足 → 400。"""
     mock = AsyncMock()
@@ -314,14 +299,12 @@ async def test_aapi_15_withdraw_insufficient_cash(client: AsyncClient) -> None:
 # GET /account/cashflow
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_aapi_16_cashflow_no_auth(client: AsyncClient) -> None:
     """GET /account/cashflow 无鉴权 → 401。"""
     resp = await client.get("/api/v1/account/cashflow", params={"account_id": 1})
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_aapi_17_cashflow_ok(client: AsyncClient) -> None:
     """GET /account/cashflow 有鉴权 → 200，含 items/total 分页结构。"""
     mock = AsyncMock()
@@ -340,7 +323,6 @@ async def test_aapi_17_cashflow_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_aapi_18_cashflow_invalid_date(client: AsyncClient) -> None:
     """GET /account/cashflow start_date 非法格式 → 422（FastAPI date 类型自动校验）。"""
     resp = await client.get(

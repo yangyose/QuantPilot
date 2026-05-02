@@ -69,7 +69,6 @@ class FakeRedis:
 # ---------------- 1. DB miss → 返回默认值 ----------------
 
 
-@pytest.mark.anyio
 async def test_db_miss_returns_default() -> None:
     """DB 无行 → 返回与默认值等价的 dataclass 实例。"""
     session = FakeSession(rows={})
@@ -84,7 +83,6 @@ async def test_db_miss_returns_default() -> None:
 # ---------------- 2. 部分覆盖 ----------------
 
 
-@pytest.mark.anyio
 async def test_partial_overlay_single_field() -> None:
     """DB 只存 buy_threshold=85 → 其他字段保持默认。"""
     session = FakeSession(rows={"signal_params": {"buy_threshold": 85.0}})
@@ -97,7 +95,6 @@ async def test_partial_overlay_single_field() -> None:
     assert result.stop_loss_pct == DEFAULT_SIGNAL_CONFIG.stop_loss_pct
 
 
-@pytest.mark.anyio
 async def test_partial_overlay_ignores_unknown_fields() -> None:
     """DB 存入未知字段（旧版兼容）→ 过滤掉，不抛异常。"""
     session = FakeSession(
@@ -112,7 +109,6 @@ async def test_partial_overlay_ignores_unknown_fields() -> None:
     assert result.max_industry_pct == DEFAULT_RISK_LIMITS.max_industry_pct
 
 
-@pytest.mark.anyio
 async def test_partial_overlay_strategy_weights_dict() -> None:
     """StrategyWeightsConfig 的 dict 字段支持整段替换。"""
     custom = {
@@ -130,7 +126,6 @@ async def test_partial_overlay_strategy_weights_dict() -> None:
     assert result.oscillation == DEFAULT_STRATEGY_WEIGHTS.oscillation
 
 
-@pytest.mark.anyio
 async def test_partial_overlay_strategy_weights_nested_partial() -> None:
     """StrategyWeightsConfig 的 nested dict 部分覆盖：仅写 uptrend.trend → 其它策略权重保留默认。
 
@@ -156,7 +151,6 @@ async def test_partial_overlay_strategy_weights_nested_partial() -> None:
 # ---------------- 3. Redis 缓存命中跳过 DB ----------------
 
 
-@pytest.mark.anyio
 async def test_redis_hit_skips_db() -> None:
     """Redis 命中时 DB 不被查询（execute.calls == 0）。"""
     redis = FakeRedis()
@@ -170,7 +164,6 @@ async def test_redis_hit_skips_db() -> None:
     assert session.calls == 0  # DB 未被查询
 
 
-@pytest.mark.anyio
 async def test_redis_miss_populates_cache() -> None:
     """Redis 未命中 → 查 DB → 回填缓存。"""
     redis = FakeRedis()
@@ -184,7 +177,6 @@ async def test_redis_miss_populates_cache() -> None:
     assert cached == {"buy_threshold": 82.0}
 
 
-@pytest.mark.anyio
 async def test_invalidate_deletes_cache() -> None:
     """invalidate 清除缓存；之后 get 重新查 DB。"""
     redis = FakeRedis()
@@ -202,7 +194,6 @@ async def test_invalidate_deletes_cache() -> None:
 # ---------------- 4. get_all_for_snapshot ----------------
 
 
-@pytest.mark.anyio
 async def test_get_all_for_snapshot_structure() -> None:
     """快照包含 12 个 config_key + _snapshot_at；每项是可 JSON 序列化 dict。"""
     session = FakeSession(rows={})
@@ -222,7 +213,6 @@ async def test_get_all_for_snapshot_structure() -> None:
     json.dumps(snap)  # 整体可 JSON 序列化（JSONB 持久化前提）
 
 
-@pytest.mark.anyio
 async def test_snapshot_can_reconstruct_dataclasses() -> None:
     """快照 dict 反序列化回 dataclass 等价原值（Pipeline CP2/CP3 复用模式）。"""
     session = FakeSession(rows={})
@@ -237,7 +227,6 @@ async def test_snapshot_can_reconstruct_dataclasses() -> None:
 # ---------------- 5. 无 Redis 时的降级行为 ----------------
 
 
-@pytest.mark.anyio
 async def test_no_redis_still_works() -> None:
     """redis=None 时 get 正常工作；invalidate no-op。"""
     session = FakeSession(rows={"signal_params": {"buy_threshold": 70.0}})
@@ -252,7 +241,6 @@ async def test_no_redis_still_works() -> None:
 # ---------------- 6. snapshot 冻结模式（Phase 10 §4.3 评审 C-01） ----------------
 
 
-@pytest.mark.anyio
 async def test_snapshot_mode_skips_db_and_redis() -> None:
     """snapshot 非 None → 完全不查 DB/Redis，直接派生 dataclass。"""
     redis = FakeRedis()
@@ -270,7 +258,6 @@ async def test_snapshot_mode_skips_db_and_redis() -> None:
     assert redis.store["config:signal_params"] == json.dumps({"buy_threshold": 999.0})
 
 
-@pytest.mark.anyio
 async def test_snapshot_mode_missing_key_returns_default() -> None:
     """snapshot 缺失 key → 返回默认 dataclass，仍不查 DB。"""
     session = FakeSession(rows={"signal_params": {"buy_threshold": 99.0}})  # DB 有但应被忽略
@@ -283,7 +270,6 @@ async def test_snapshot_mode_missing_key_returns_default() -> None:
     assert session.calls == 0  # 严格不查 DB
 
 
-@pytest.mark.anyio
 async def test_snapshot_mode_strategy_weights_nested_partial() -> None:
     """snapshot 模式同样保留 nested partial overlay 语义。"""
     snap = {"strategy_weights": {"uptrend": {"trend": 0.66}}}

@@ -40,7 +40,6 @@ def _make_session_with_pool(pool_rows: list[tuple]) -> MagicMock:
     return session
 
 
-@pytest.mark.anyio
 async def test_factor_alert_notifies_with_ic_mean(monkeypatch: pytest.MonkeyPatch) -> None:
     """当 detect_alert 返回非 None → notify_factor_alert 被调用，且 ic_mean 参数与计算值一致。"""
     # 缩减因子表只剩一个 → 测试简洁
@@ -88,7 +87,6 @@ async def test_factor_alert_notifies_with_ic_mean(monkeypatch: pytest.MonkeyPatc
     assert call.args[2] == "composite_score"
 
 
-@pytest.mark.anyio
 async def test_factor_no_alert_no_notify(monkeypatch: pytest.MonkeyPatch) -> None:
     """detect_alert 返回 None → notify_factor_alert 不被调用。"""
     monkeypatch.setattr(

@@ -24,7 +24,6 @@ from quantpilot.services.settings_service import SettingsService
 # ---------------------------------------------------------------------------
 # INT-NTF-01a: notify_market_state_change → InAppNotification 入库
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_ntf_01_market_state_change_persisted(db_session: AsyncSession) -> None:
     """市场状态变更 → 一条 InAppNotification 入库（wx_pushed=False，无 WxPusher）。"""
     cfg_svc = ConfigService(db_session)
@@ -54,7 +53,6 @@ async def test_int_ntf_01_market_state_change_persisted(db_session: AsyncSession
 # ---------------------------------------------------------------------------
 # INT-NTF-01b: notify_signal（BUY）→ InAppNotification + payload 含 signal_id
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_ntf_01_signal_buy_persisted(db_session: AsyncSession) -> None:
     """BUY 信号 → SIGNAL_BUY notification（含 signal_id/ts_code 关联）。"""
     cfg_svc = ConfigService(db_session)
@@ -87,7 +85,6 @@ async def test_int_ntf_01_signal_buy_persisted(db_session: AsyncSession) -> None
 # ---------------------------------------------------------------------------
 # INT-NTF-01c: 偏好关闭 → 不入库
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_ntf_01_preference_disabled_skips(db_session: AsyncSession) -> None:
     """notification_prefs.notify_risk_warn=False → notify_risk_warn 返回 None 且无入库。"""
     settings_svc = SettingsService(db_session)
@@ -118,7 +115,6 @@ async def test_int_ntf_01_preference_disabled_skips(db_session: AsyncSession) ->
 # ---------------------------------------------------------------------------
 # INT-NTF-01d: 重复 payload → 去重（同 1 天内）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_ntf_01_duplicate_payload_dedup(db_session: AsyncSession) -> None:
     """同 notify_type + 同 payload 在 1 天内只入库一次。"""
     cfg_svc = ConfigService(db_session)
@@ -151,7 +147,6 @@ async def test_int_ntf_01_duplicate_payload_dedup(db_session: AsyncSession) -> N
 # ---------------------------------------------------------------------------
 # INT-NTF-01e: list_notifications + count_unread + mark_read 联动
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_ntf_01_list_unread_mark(db_session: AsyncSession) -> None:
     """生成 2 条 → list 返回 2 → unread=2 → mark 单条 → unread=1 → mark_all → unread=0。"""
     cfg_svc = ConfigService(db_session)

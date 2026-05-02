@@ -82,7 +82,6 @@ async def _run(account_service, signal_service, notifier, *, is_trade: bool = Tr
             p.stop()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_skipped_non_trade_date() -> None:
     account_service = AsyncMock()
     account_service.get_all_positions = AsyncMock()
@@ -92,7 +91,6 @@ async def test_stop_loss_warn_skipped_non_trade_date() -> None:
     account_service.get_all_positions.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_triggers_within_threshold() -> None:
     """current=10.10, stop_loss=10.00 → distance_pct ≈ 0.0099 ≤ 0.02 → notify。"""
     position = _make_position("000001.SZ", 10.10)
@@ -115,7 +113,6 @@ async def test_stop_loss_warn_triggers_within_threshold() -> None:
     assert kwargs["distance_pct"] == pytest.approx(0.0099, abs=1e-4)
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_skipped_above_threshold() -> None:
     """current=11.00, stop_loss=10.00 → distance_pct ≈ 0.091 > 0.02 → 不 notify。"""
     position = _make_position("000001.SZ", 11.00)
@@ -131,7 +128,6 @@ async def test_stop_loss_warn_skipped_above_threshold() -> None:
     notifier.notify_stop_loss_warn.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_skipped_below_stop_loss() -> None:
     """current=9.90 < stop_loss=10.00 → distance_pct < 0 → 不 notify（已跌破，属风险告警范畴）。"""
     position = _make_position("000001.SZ", 9.90)
@@ -147,7 +143,6 @@ async def test_stop_loss_warn_skipped_below_stop_loss() -> None:
     notifier.notify_stop_loss_warn.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_skipped_no_current_price() -> None:
     position = _make_position("000001.SZ", None)
     account_service = AsyncMock()
@@ -161,7 +156,6 @@ async def test_stop_loss_warn_skipped_no_current_price() -> None:
     notifier.notify_stop_loss_warn.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_skipped_no_signal() -> None:
     position = _make_position("000001.SZ", 10.10)
     account_service = AsyncMock()
@@ -174,7 +168,6 @@ async def test_stop_loss_warn_skipped_no_signal() -> None:
     notifier.notify_stop_loss_warn.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_skipped_no_stop_loss_price() -> None:
     position = _make_position("000001.SZ", 10.10)
     signal = _make_signal(None)
@@ -188,7 +181,6 @@ async def test_stop_loss_warn_skipped_no_stop_loss_price() -> None:
     notifier.notify_stop_loss_warn.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_exception_isolated_per_position() -> None:
     """一个持仓通知失败不影响其他持仓。"""
     p_ok = _make_position("000001.SZ", 10.10)
@@ -211,7 +203,6 @@ async def test_stop_loss_warn_exception_isolated_per_position() -> None:
     assert notifier.notify_stop_loss_warn.await_count == 2
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_zero_current_price_skipped() -> None:
     position = _make_position("000001.SZ", 0.0)
     signal = _make_signal(10.00)
@@ -225,7 +216,6 @@ async def test_stop_loss_warn_zero_current_price_skipped() -> None:
     notifier.notify_stop_loss_warn.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_stop_loss_warn_empty_positions_no_notify() -> None:
     account_service = AsyncMock()
     account_service.get_all_positions = AsyncMock(return_value=[])

@@ -59,7 +59,6 @@ async def _delete_pipeline_run(factory: async_sessionmaker, trade_date: date) ->
 # INT-DP-01: 全流程 → PipelineRun status=SUCCESS，三个 CP 均完成
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_int_dp_01_full_pipeline_success(db_engine: AsyncEngine) -> None:
     """INT-DP-01: 全流程（mock Tushare）→ PipelineRun status=SUCCESS，三 CP 均标记完成。"""
     factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -115,7 +114,6 @@ async def test_int_dp_01_full_pipeline_success(db_engine: AsyncEngine) -> None:
 # INT-DP-02: 断点续传（cp1_data_ready=True）→ CP1 跳过，CP2/CP3 执行
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_int_dp_02_checkpoint_resume(db_engine: AsyncEngine) -> None:
     """INT-DP-02: 预写 PipelineRun(cp1_data_ready=True) → CP1 跳过，CP2/CP3 完成。"""
     factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -191,7 +189,6 @@ async def test_int_dp_02_checkpoint_resume(db_engine: AsyncEngine) -> None:
 # INT-DP-03: mark_to_market 写入 daily_portfolio_value
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_int_dp_03_mark_to_market_writes_dpv(db_engine: AsyncEngine) -> None:
     """INT-DP-03: 预写 Account+Position+DailyQuote → mark_to_market 写入 daily_portfolio_value。"""
     factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)

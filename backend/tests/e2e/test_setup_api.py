@@ -24,14 +24,12 @@ def _auth() -> dict:
 
 # ───────────────────── GET /setup/status ─────────────────────
 
-@pytest.mark.anyio
 async def test_sapi_setup_01_status_no_auth(client: AsyncClient) -> None:
     """GET /setup/status 无鉴权 → 401。"""
     resp = await client.get("/api/v1/setup/status")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_sapi_setup_02_status_initial(client: AsyncClient) -> None:
     """GET /setup/status 初次 → {completed: false, completed_at: null}。"""
     mock = AsyncMock()
@@ -47,7 +45,6 @@ async def test_sapi_setup_02_status_initial(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_setup_service, None)
 
 
-@pytest.mark.anyio
 async def test_sapi_setup_03_status_completed(client: AsyncClient) -> None:
     """GET /setup/status 已完成 → {completed: true, completed_at: iso}。"""
     mock = AsyncMock()
@@ -67,14 +64,12 @@ async def test_sapi_setup_03_status_completed(client: AsyncClient) -> None:
 
 # ───────────────────── POST /setup/complete ─────────────────────
 
-@pytest.mark.anyio
 async def test_sapi_setup_04_complete_no_auth(client: AsyncClient) -> None:
     """POST /setup/complete 无鉴权 → 401。"""
     resp = await client.post("/api/v1/setup/complete")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_sapi_setup_05_complete_ok(client: AsyncClient) -> None:
     """POST /setup/complete → 200 + completed=true + ISO 时间戳。"""
     mock = AsyncMock()

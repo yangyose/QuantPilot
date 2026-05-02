@@ -10,7 +10,6 @@ from quantpilot.services.settings_service import SettingsService
 # ---------------------------------------------------------------------------
 # INT-SET-01: upsert（首次创建）→ old_value=None，history 写入
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_set_01_upsert_creates_config(db_session: AsyncSession) -> None:
     """首次 upsert → UserConfig 创建，history.old_value=None。"""
     svc = SettingsService(db_session)
@@ -28,7 +27,6 @@ async def test_int_set_01_upsert_creates_config(db_session: AsyncSession) -> Non
 # ---------------------------------------------------------------------------
 # INT-SET-02: upsert（更新）→ old_value 记录前值，config 更新
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_set_02_upsert_updates_config(db_session: AsyncSession) -> None:
     """两次 upsert → 第二次 history.old_value = 第一次的 config_value。"""
     svc = SettingsService(db_session)
@@ -49,7 +47,6 @@ async def test_int_set_02_upsert_updates_config(db_session: AsyncSession) -> Non
 # ---------------------------------------------------------------------------
 # INT-SET-03: get_settings 返回所有配置
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_set_03_get_settings_all(db_session: AsyncSession) -> None:
     """get_settings() 返回全部 UserConfig，按 config_key 排序。"""
     svc = SettingsService(db_session)
@@ -70,7 +67,6 @@ async def test_int_set_03_get_settings_all(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-SET-04: revert_config → 恢复为 old_value
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_set_04_revert_config(db_session: AsyncSession) -> None:
     """revert_config(history_id) → 将 config_value 恢复为 history.old_value。"""
     svc = SettingsService(db_session)
@@ -88,7 +84,6 @@ async def test_int_set_04_revert_config(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-SET-05: revert_config 首次创建（old_value=None）→ ValueError
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_set_05_revert_no_old_value_raises(db_session: AsyncSession) -> None:
     """首次创建的 history（old_value=None）调用 revert_config → ValueError。"""
     svc = SettingsService(db_session)

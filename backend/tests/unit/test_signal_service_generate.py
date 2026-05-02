@@ -119,7 +119,6 @@ def _make_config_service() -> AsyncMock:
     return svc
 
 
-@pytest.mark.anyio
 async def test_generate_for_date_empty_pool_returns_empty() -> None:
     """空候选池 → 无持久化调用，返回 []。"""
     repo = _make_repo([], _snapshot_df([]))
@@ -133,7 +132,6 @@ async def test_generate_for_date_empty_pool_returns_empty() -> None:
     repo.upsert_signals.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_generate_for_date_full_chain_writes_signals() -> None:
     """评分 > 买入阈值 → BUY 信号经 SignalGenerator + PositionSizer + RiskChecker 后持久化。"""
     pool = [_pool_entry("000001.SZ", 85.0), _pool_entry("000002.SZ", 82.0)]
@@ -168,7 +166,6 @@ async def test_generate_for_date_full_chain_writes_signals() -> None:
     assert all(r["stop_loss_price"] is not None for r in rows)
 
 
-@pytest.mark.anyio
 async def test_generate_for_date_risk_checker_blocks_concentration() -> None:
     """行业集中度超限 → RiskChecker BLOCK → 信号在 save() 阶段被移除。
 
@@ -210,7 +207,6 @@ async def test_generate_for_date_risk_checker_blocks_concentration() -> None:
     repo.upsert_signals.assert_not_awaited()
 
 
-@pytest.mark.anyio
 async def test_generate_for_date_missing_account_service_raises() -> None:
     """缺 account_service → RuntimeError（Phase 10 §7.1 去除 V1.0 降级）。"""
     pool = [_pool_entry("000001.SZ", 85.0)]
@@ -223,7 +219,6 @@ async def test_generate_for_date_missing_account_service_raises() -> None:
         await svc.generate_for_date(TRADE_DATE)
 
 
-@pytest.mark.anyio
 async def test_generate_for_date_missing_config_service_raises() -> None:
     """缺 config_service → RuntimeError。"""
     pool = [_pool_entry("000001.SZ", 85.0)]
@@ -236,7 +231,6 @@ async def test_generate_for_date_missing_config_service_raises() -> None:
         await svc.generate_for_date(TRADE_DATE)
 
 
-@pytest.mark.anyio
 async def test_generate_for_date_market_state_fallback_oscillation() -> None:
     """market_state_history 缺失 → 默认 OSCILLATION（不抛错）。"""
     pool = [_pool_entry("000001.SZ", 85.0)]
@@ -258,7 +252,6 @@ async def test_generate_for_date_market_state_fallback_oscillation() -> None:
     repo.get_latest_market_state.assert_awaited()
 
 
-@pytest.mark.anyio
 async def test_generate_for_date_low_score_produces_no_buy() -> None:
     """评分低于 buy_threshold（默认 80）→ 无 BUY 信号。"""
     pool = [_pool_entry("000001.SZ", 70.0)]  # 70 < 80

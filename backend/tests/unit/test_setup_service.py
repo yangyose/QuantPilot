@@ -48,7 +48,6 @@ def _make_row(value: str | None) -> SystemConfig:
     return row
 
 
-@pytest.mark.anyio
 async def test_get_status_missing_row() -> None:
     session = _FakeSession()
     svc = SetupService(session=session)  # type: ignore[arg-type]
@@ -56,7 +55,6 @@ async def test_get_status_missing_row() -> None:
     assert result == {"completed": False, "completed_at": None}
 
 
-@pytest.mark.anyio
 async def test_get_status_empty_value() -> None:
     session = _FakeSession()
     session.queue(_make_row(""))
@@ -65,7 +63,6 @@ async def test_get_status_empty_value() -> None:
     assert result == {"completed": False, "completed_at": None}
 
 
-@pytest.mark.anyio
 async def test_get_status_invalid_json(caplog: pytest.LogCaptureFixture) -> None:
     session = _FakeSession()
     session.queue(_make_row("not-json"))
@@ -75,7 +72,6 @@ async def test_get_status_invalid_json(caplog: pytest.LogCaptureFixture) -> None
     assert any("setup_status_invalid_json" in r.message for r in caplog.records)
 
 
-@pytest.mark.anyio
 async def test_get_status_valid_completed() -> None:
     session = _FakeSession()
     session.queue(
@@ -89,7 +85,6 @@ async def test_get_status_valid_completed() -> None:
     }
 
 
-@pytest.mark.anyio
 async def test_mark_completed_returns_iso_timestamp() -> None:
     session = _FakeSession()
     svc = SetupService(session=session)  # type: ignore[arg-type]

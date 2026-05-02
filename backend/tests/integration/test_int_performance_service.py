@@ -32,7 +32,6 @@ async def _make_account(session: AsyncSession, cash: float = 1_000_000.0) -> Acc
 # INT-PS-01：get_summary 返回 7 项指标
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_int_ps_01_get_summary_returns_metrics(db_session: AsyncSession) -> None:
     """INT-PS-01：插入 account + fund_flow + daily_portfolio_value → get_summary 返回 7 项指标。"""
     account = await _make_account(db_session, cash=1_000_000.0)
@@ -80,7 +79,6 @@ async def test_int_ps_01_get_summary_returns_metrics(db_session: AsyncSession) -
 # INT-PS-02：get_attribution.by_strategy 按 score_breakdown 正确聚合
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_int_ps_02_attribution_by_strategy(db_session: AsyncSession) -> None:
     """INT-PS-02：trade_record + SignalScoreSnapshot → get_attribution.by_strategy 正确聚合。"""
     account = await _make_account(db_session)
@@ -144,7 +142,6 @@ async def test_int_ps_02_attribution_by_strategy(db_session: AsyncSession) -> No
 # INT-PS-03：get_behavioral_analysis.signal_compliance_rate
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_int_ps_03_signal_compliance_rate(db_session: AsyncSession) -> None:
     """INT-PS-03：一半 trade_record 有 signal_id → signal_compliance_rate = 0.5。"""
     account = await _make_account(db_session)

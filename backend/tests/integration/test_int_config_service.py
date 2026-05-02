@@ -42,7 +42,6 @@ class _FakeRedis:
 # ---------------------------------------------------------------------------
 # INT-CFG-01a: DB 缺失 → 返回 default 全量字段
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_01_db_missing_returns_default(db_session: AsyncSession) -> None:
     """user_config 不含 signal_params → 返回 DEFAULT_SIGNAL_CONFIG。"""
     svc = ConfigService(db_session)
@@ -57,7 +56,6 @@ async def test_int_cfg_01_db_missing_returns_default(db_session: AsyncSession) -
 # ---------------------------------------------------------------------------
 # INT-CFG-01b: DB 部分字段 → partial-overlay
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_01_partial_overlay(db_session: AsyncSession) -> None:
     """DB 只写 buy_threshold → 其它字段用默认值。"""
     settings_svc = SettingsService(db_session)
@@ -75,7 +73,6 @@ async def test_int_cfg_01_partial_overlay(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-CFG-01c: Redis 缓存命中 → 直接返回缓存值，不查 DB
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_01_redis_cache_hit(db_session: AsyncSession) -> None:
     """Redis 已存缓存 → ConfigService 直接读缓存（不与 DB 交互）。"""
     fake_redis = _FakeRedis()
@@ -90,7 +87,6 @@ async def test_int_cfg_01_redis_cache_hit(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-CFG-01d: invalidate 删除缓存 → 下次读取重新查 DB
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_01_invalidate_then_read_latest(db_session: AsyncSession) -> None:
     """流程：写入 v1 → 读（缓存写入 v1）→ 写入 v2 → invalidate → 读 v2。"""
     fake_redis = _FakeRedis()
@@ -119,7 +115,6 @@ async def test_int_cfg_01_invalidate_then_read_latest(db_session: AsyncSession) 
 # ---------------------------------------------------------------------------
 # INT-CFG-01e: get_pipeline_snapshot 不含 backtest_defaults（M1 修复验证）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_01_pipeline_snapshot_excludes_backtest(db_session: AsyncSession) -> None:
     """§4.3：pipeline_run.config_snapshot 不应含 backtest_defaults。"""
     svc = ConfigService(db_session)
@@ -141,7 +136,6 @@ async def test_int_cfg_01_pipeline_snapshot_excludes_backtest(db_session: AsyncS
 # ---------------------------------------------------------------------------
 # INT-CFG-01f: DB 含未知字段 → 过滤后正常构造
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_01_unknown_fields_filtered(db_session: AsyncSession) -> None:
     """DB 残留旧版字段（dataclass 不存在的 key）→ 过滤后构造，不抛 TypeError。"""
     settings_svc = SettingsService(db_session)
@@ -161,7 +155,6 @@ async def test_int_cfg_01_unknown_fields_filtered(db_session: AsyncSession) -> N
 # ---------------------------------------------------------------------------
 # INT-CFG-01g: 缓存返回非法 JSON → 静默回退至 DB
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_01_invalid_cache_falls_back_to_db(db_session: AsyncSession) -> None:
     """Redis 缓存值非合法 JSON → 不抛异常，回退查 DB。"""
     fake_redis = _FakeRedis()

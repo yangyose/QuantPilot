@@ -30,11 +30,6 @@ def override_admin_password() -> Generator[None, None, None]:
     settings.admin_password_hash = original
 
 
-@pytest.fixture(scope="session")
-def anyio_backend():
-    return "asyncio"
-
-
 @pytest.fixture
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """HTTP 测试客户端，动态注册测试路由并在测试后清理"""

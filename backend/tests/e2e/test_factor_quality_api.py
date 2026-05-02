@@ -42,14 +42,12 @@ def _mock_ic_record(
 # GET /factor-quality
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_fq_01_no_auth(client: AsyncClient) -> None:
     """GET /factor-quality 无鉴权 → 401。"""
     resp = await client.get("/api/v1/factor-quality")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_fq_02_ok_empty(client: AsyncClient) -> None:
     """GET /factor-quality 有鉴权，无数据 → 200，items=[]。"""
     mock = AsyncMock()
@@ -65,7 +63,6 @@ async def test_fq_02_ok_empty(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_factor_monitor_service, None)
 
 
-@pytest.mark.anyio
 async def test_fq_03_ok_with_data(client: AsyncClient) -> None:
     """GET /factor-quality 有数据 → 200，items 含 calc_month/strategy/factor/ic 字段。"""
     mock = AsyncMock()
@@ -88,7 +85,6 @@ async def test_fq_03_ok_with_data(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_factor_monitor_service, None)
 
 
-@pytest.mark.anyio
 async def test_fq_04_filter_by_strategy(client: AsyncClient) -> None:
     """GET /factor-quality?strategy_name=X → service.get_latest 被传入 strategy_name。"""
     mock = AsyncMock()
@@ -110,14 +106,12 @@ async def test_fq_04_filter_by_strategy(client: AsyncClient) -> None:
 # GET /factor-quality/history
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_fq_05_history_no_auth(client: AsyncClient) -> None:
     """GET /factor-quality/history 无鉴权 → 401。"""
     resp = await client.get("/api/v1/factor-quality/history")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_fq_06_history_ok(client: AsyncClient) -> None:
     """GET /factor-quality/history 有鉴权 → 200，含 items/total 分页结构。"""
     mock = AsyncMock()
@@ -134,7 +128,6 @@ async def test_fq_06_history_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_factor_monitor_service, None)
 
 
-@pytest.mark.anyio
 async def test_fq_07_history_with_filters(client: AsyncClient) -> None:
     """GET /factor-quality/history?strategy_name=X&factor_name=Y&limit=5 → 参数传递正确。"""
     mock = AsyncMock()

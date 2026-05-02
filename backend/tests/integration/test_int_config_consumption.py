@@ -33,7 +33,6 @@ _TRADE_DATE = date(2026, 4, 9)
 # ---------------------------------------------------------------------------
 # INT-CFG-02: 修改 signal_params.buy_threshold → 同一 pool 信号数变化
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_02_buy_threshold_change_filters_signals(
     db_session: AsyncSession,
 ) -> None:
@@ -129,7 +128,6 @@ async def test_int_cfg_02_buy_threshold_change_filters_signals(
 # ---------------------------------------------------------------------------
 # INT-CFG-03: DailyPipeline._write_config_snapshot → pipeline_run.config_snapshot
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_03_pipeline_config_snapshot_written(
     db_engine: AsyncEngine,
 ) -> None:
@@ -247,7 +245,6 @@ async def test_int_cfg_03_pipeline_config_snapshot_written(
 #  评审 C-01/C-02/C-03 修复后的回归守门：若有人将 `Scorer(weights_cfg)` 退回为
 #  `Scorer()`（默认权重），本用例立即失败。
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_cfg_04_strategy_weights_drives_composite_score(
     db_engine: AsyncEngine,
 ) -> None:

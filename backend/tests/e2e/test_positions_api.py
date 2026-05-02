@@ -41,14 +41,12 @@ def _mock_position(
 # GET /positions
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_papi_01_get_positions_no_auth(client: AsyncClient) -> None:
     """GET /positions 无鉴权 → 401。"""
     resp = await client.get("/api/v1/positions", params={"account_id": 1})
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_papi_02_get_positions_empty(client: AsyncClient) -> None:
     """GET /positions 有鉴权 → 200，空列表。"""
     mock = AsyncMock()
@@ -64,7 +62,6 @@ async def test_papi_02_get_positions_empty(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_papi_03_get_positions_with_data(client: AsyncClient) -> None:
     """GET /positions 有鉴权 → 200，返回持仓列表结构。"""
     mock = AsyncMock()
@@ -88,7 +85,6 @@ async def test_papi_03_get_positions_with_data(client: AsyncClient) -> None:
 # POST /positions
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_papi_04_create_position_no_auth(client: AsyncClient) -> None:
     """POST /positions 无鉴权 → 401。"""
     resp = await client.post("/api/v1/positions", json={
@@ -97,7 +93,6 @@ async def test_papi_04_create_position_no_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_papi_05_create_position_ok(client: AsyncClient) -> None:
     """POST /positions 有鉴权 → 200，返回 PositionItem。"""
     mock = AsyncMock()
@@ -117,7 +112,6 @@ async def test_papi_05_create_position_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_papi_06_create_position_invalid_account(client: AsyncClient) -> None:
     """POST /positions account 不存在 → 404。"""
     mock = AsyncMock()
@@ -138,14 +132,12 @@ async def test_papi_06_create_position_invalid_account(client: AsyncClient) -> N
 # PATCH /positions/{id}
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_papi_07_patch_position_no_auth(client: AsyncClient) -> None:
     """PATCH /positions/{id} 无鉴权 → 401。"""
     resp = await client.patch("/api/v1/positions/1", json={"phase": "HOLD"})
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_papi_08_patch_position_ok(client: AsyncClient) -> None:
     """PATCH /positions/{id} 有鉴权 → 200，返回更新后结构。"""
     updated = _mock_position(phase="HOLD")
@@ -162,7 +154,6 @@ async def test_papi_08_patch_position_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_papi_09_patch_position_invalid_phase(client: AsyncClient) -> None:
     """PATCH /positions/{id} phase 非法值 → 422（Pydantic Literal 校验）。"""
     mock = AsyncMock()
@@ -178,7 +169,6 @@ async def test_papi_09_patch_position_invalid_phase(client: AsyncClient) -> None
         app.dependency_overrides.pop(get_account_service, None)
 
 
-@pytest.mark.anyio
 async def test_papi_10_patch_position_not_found(client: AsyncClient) -> None:
     """PATCH /positions/{id} 不存在 → 404。"""
     mock = AsyncMock()

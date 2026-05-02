@@ -34,7 +34,6 @@ def _mock_ingest_result(trade_date: date = date(2026, 3, 12)) -> IngestResult:
     )
 
 
-@pytest.mark.anyio
 async def test_data_01_get_status_with_token(client: AsyncClient) -> None:
     """DATA-01: GET /api/v1/data/status（有 token）→ 200，code=0，data 含 latest_quote_date"""
     from quantpilot.api.v1.data import get_data_service
@@ -53,14 +52,12 @@ async def test_data_01_get_status_with_token(client: AsyncClient) -> None:
     assert "latest_quote_date" in body["data"]
 
 
-@pytest.mark.anyio
 async def test_data_02_get_status_no_token(client: AsyncClient) -> None:
     """DATA-02: GET /api/v1/data/status（无 token）→ 401"""
     resp = await client.get("/api/v1/data/status")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_data_03_ingest_daily_with_token(client: AsyncClient) -> None:
     """DATA-03: POST /api/v1/data/ingest/daily（有 token）→ 200，code=0"""
     from quantpilot.api.v1.data import get_data_service
@@ -84,7 +81,6 @@ async def test_data_03_ingest_daily_with_token(client: AsyncClient) -> None:
     assert "snapshot_version" in body["data"]
 
 
-@pytest.mark.anyio
 async def test_data_04_ingest_daily_non_trade_date(client: AsyncClient) -> None:
     """DATA-04: POST /api/v1/data/ingest/daily（非交易日）→ 400"""
     from quantpilot.api.v1.data import get_data_service

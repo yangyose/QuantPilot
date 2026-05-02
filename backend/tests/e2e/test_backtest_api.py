@@ -35,7 +35,6 @@ _VALID_BODY = {
 
 # ─── E2E-BT-01 ───
 
-@pytest.mark.anyio
 async def test_bt_01_run_no_auth(client: AsyncClient) -> None:
     """E2E-BT-01：POST /backtest/run 无鉴权 → 401。"""
     resp = await client.post("/api/v1/backtest/run", json=_VALID_BODY)
@@ -44,7 +43,6 @@ async def test_bt_01_run_no_auth(client: AsyncClient) -> None:
 
 # ─── E2E-BT-02 ───
 
-@pytest.mark.anyio
 async def test_bt_02_run_ok(client: AsyncClient) -> None:
     """E2E-BT-02：POST /backtest/run 有鉴权 + valid body → 200，data.task_id 非空。"""
     from quantpilot.api.deps import get_config_service
@@ -80,7 +78,6 @@ async def test_bt_02_run_ok(client: AsyncClient) -> None:
 
 # ─── E2E-BT-03 ───
 
-@pytest.mark.anyio
 async def test_bt_03_status_ok(client: AsyncClient) -> None:
     """E2E-BT-03：GET /backtest/{id}/status 有效 task_id → 200，data.status=PENDING。"""
     mock = AsyncMock()
@@ -102,7 +99,6 @@ async def test_bt_03_status_ok(client: AsyncClient) -> None:
 
 # ─── E2E-BT-04 ───
 
-@pytest.mark.anyio
 async def test_bt_04_status_not_found(client: AsyncClient) -> None:
     """E2E-BT-04：GET /backtest/{id}/status 无效 task_id → 404。"""
     mock = AsyncMock()
@@ -117,7 +113,6 @@ async def test_bt_04_status_not_found(client: AsyncClient) -> None:
 
 # ─── E2E-BT-05 ───
 
-@pytest.mark.anyio
 async def test_bt_05_result_pending(client: AsyncClient) -> None:
     """E2E-BT-05：GET /backtest/{id}/result PENDING 状态 → 409。"""
     mock = AsyncMock()
@@ -132,7 +127,6 @@ async def test_bt_05_result_pending(client: AsyncClient) -> None:
 
 # ─── E2E-BT-06 ───
 
-@pytest.mark.anyio
 async def test_bt_06_run_missing_start_date(client: AsyncClient) -> None:
     """E2E-BT-06：POST /backtest/run body 缺 start_date → 422。"""
     resp = await client.post(
@@ -145,7 +139,6 @@ async def test_bt_06_run_missing_start_date(client: AsyncClient) -> None:
 
 # ─── E2E-BT-07 ─── Phase 10 §4.4 partial-overlay + config_snapshot
 
-@pytest.mark.anyio
 async def test_bt_07_run_partial_overlay_uses_defaults(client: AsyncClient) -> None:
     """E2E-BT-07：body 未提供成本率 → 从 backtest_defaults 填充；snapshot 传入 create_task。"""
     from quantpilot.api.deps import get_config_service
@@ -203,7 +196,6 @@ async def test_bt_07_run_partial_overlay_uses_defaults(client: AsyncClient) -> N
 
 # ─── E2E-BT-08 ─── 部分字段提供则只覆盖未提供字段
 
-@pytest.mark.anyio
 async def test_bt_08_run_partial_overlay_mixed(client: AsyncClient) -> None:
     """E2E-BT-08：body 显式指定 commission_rate，其余走 defaults。"""
     from quantpilot.api.deps import get_config_service

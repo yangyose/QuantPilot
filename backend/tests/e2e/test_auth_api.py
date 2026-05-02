@@ -13,7 +13,6 @@ from tests.conftest import TEST_PASSWORD
 # HEALTH-01
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_health(client: AsyncClient):
     """HEALTH-01: GET /health 无需鉴权 → 200"""
     resp = await client.get("/health")
@@ -25,7 +24,6 @@ async def test_health(client: AsyncClient):
 # AUTH-01~03 : 登录
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_login_success(client: AsyncClient):
     """AUTH-01: 正确凭证 → 200 + access_token + refresh_token"""
     resp = await client.post(
@@ -39,7 +37,6 @@ async def test_login_success(client: AsyncClient):
     assert "refresh_token" in body["data"]
 
 
-@pytest.mark.anyio
 async def test_login_wrong_password(client: AsyncClient):
     """AUTH-02: 错误密码 → 401"""
     resp = await client.post(
@@ -50,7 +47,6 @@ async def test_login_wrong_password(client: AsyncClient):
     assert resp.json()["code"] == 401
 
 
-@pytest.mark.anyio
 async def test_login_wrong_username(client: AsyncClient):
     """AUTH-03: 错误用户名 → 401"""
     resp = await client.post(
@@ -64,7 +60,6 @@ async def test_login_wrong_username(client: AsyncClient):
 # AUTH-04 : health 端点（无需鉴权，验证 client 正常）
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_health_with_token(client: AsyncClient):
     """AUTH-04: 携带有效 access_token 访问 /health → 200（health 无需鉴权）"""
     token = create_token("access")
@@ -76,7 +71,6 @@ async def test_health_with_token(client: AsyncClient):
 # AUTH-05~07 : 受保护路由（conftest 中注入的 /test/protected）
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_protected_with_valid_token(client: AsyncClient):
     """AUTH-05: 有效 access_token → 200"""
     token = create_token("access")
@@ -87,14 +81,12 @@ async def test_protected_with_valid_token(client: AsyncClient):
     assert resp.json()["user"] == settings.admin_username
 
 
-@pytest.mark.anyio
 async def test_protected_without_token(client: AsyncClient):
     """AUTH-06: 无 token → 401"""
     resp = await client.get("/test/protected")
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_protected_with_tampered_token(client: AsyncClient):
     """AUTH-07: 篡改 token → 401"""
     resp = await client.get(
@@ -107,7 +99,6 @@ async def test_protected_with_tampered_token(client: AsyncClient):
 # AUTH-08~10 : refresh
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_refresh_success(client: AsyncClient):
     """AUTH-08: 有效 refresh_token → 新 access_token"""
     refresh_token = create_token("refresh")
@@ -120,7 +111,6 @@ async def test_refresh_success(client: AsyncClient):
     assert "access_token" in body["data"]
 
 
-@pytest.mark.anyio
 async def test_refresh_with_access_token(client: AsyncClient):
     """AUTH-09: 传入 access_token（类型错误）→ 401"""
     access_token = create_token("access")
@@ -130,7 +120,6 @@ async def test_refresh_with_access_token(client: AsyncClient):
     assert resp.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_refresh_with_invalid_token(client: AsyncClient):
     """AUTH-10: 无效 token → 401"""
     resp = await client.post(
@@ -143,7 +132,6 @@ async def test_refresh_with_invalid_token(client: AsyncClient):
 # FMT-01~03 : 统一响应格式
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_fmt_success_response(client: AsyncClient):
     """FMT-01: 成功响应 body 格式 → {code: 0, data: ..., msg: 'ok'}"""
     resp = await client.post(
@@ -156,7 +144,6 @@ async def test_fmt_success_response(client: AsyncClient):
     assert "data" in body
 
 
-@pytest.mark.anyio
 async def test_fmt_error_response(client: AsyncClient):
     """FMT-02: 4xx 错误 body 格式 → {code: 401, data: null, msg: '...'}"""
     resp = await client.post(
@@ -169,7 +156,6 @@ async def test_fmt_error_response(client: AsyncClient):
     assert isinstance(body["msg"], str)
 
 
-@pytest.mark.anyio
 async def test_fmt_validation_error_response(client: AsyncClient):
     """FMT-03: Pydantic 422 → {code: 422, data: null, msg: '...'} 而非原始 {detail: [...]}"""
     resp = await client.post("/api/v1/auth/login", content=b"")

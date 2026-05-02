@@ -36,7 +36,6 @@ async def _make_account(
 # ---------------------------------------------------------------------------
 # INT-ACC-01: BUY → Position 创建 + cash 扣减 + fund_flow 写入
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_01_buy_creates_position(db_session: AsyncSession) -> None:
     """BUY 成交 → 新建 Position，cash 扣减，fund_flow 写入 BUY_FEE。"""
     account = await _make_account(db_session, cash=100000.0)
@@ -75,7 +74,6 @@ async def test_int_acc_01_buy_creates_position(db_session: AsyncSession) -> None
 # ---------------------------------------------------------------------------
 # INT-ACC-02: 加仓 → WAC 成本价更新
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_02_add_to_position_wac(db_session: AsyncSession) -> None:
     """两次 BUY → WAC 正确聚合。"""
     account = await _make_account(db_session, cash=200000.0)
@@ -103,7 +101,6 @@ async def test_int_acc_02_add_to_position_wac(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-ACC-03: SELL 部分 → Position 减仓，phase=REDUCE
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_03_partial_sell(db_session: AsyncSession) -> None:
     """SELL 部分持仓 → shares 减少，phase=REDUCE，proceeds 入账。"""
     account = await _make_account(db_session, cash=100000.0)
@@ -138,7 +135,6 @@ async def test_int_acc_03_partial_sell(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-ACC-04: SELL 清仓 → Position 删除
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_04_full_sell_deletes_position(db_session: AsyncSession) -> None:
     """SELL 全部持仓 → Position 行删除。"""
     account = await _make_account(db_session, cash=100000.0)
@@ -160,7 +156,6 @@ async def test_int_acc_04_full_sell_deletes_position(db_session: AsyncSession) -
 # ---------------------------------------------------------------------------
 # INT-ACC-05: SELL 超卖 → ValueError
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_05_oversell_raises(db_session: AsyncSession) -> None:
     """SELL 数量超过持仓 → ValueError（超卖）。"""
     account = await _make_account(db_session, cash=100000.0)
@@ -180,7 +175,6 @@ async def test_int_acc_05_oversell_raises(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # INT-ACC-06: 分红 → cost_price 调整 + fund_flow DIVIDEND
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_06_dividend_adjusts_cost_price(db_session: AsyncSession) -> None:
     """手动录入分红 → cost_price 降低，写入 DIVIDEND fund_flow。"""
     account = await _make_account(db_session, cash=100000.0)
@@ -210,7 +204,6 @@ async def test_int_acc_06_dividend_adjusts_cost_price(db_session: AsyncSession) 
 # ---------------------------------------------------------------------------
 # INT-ACC-07: get_all_positions 跨账户
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_07_get_all_positions_cross_account(db_session: AsyncSession) -> None:
     """get_all_positions() 返回所有账户的持仓。"""
     acc1 = await _make_account(db_session, name="账户1", cash=100000.0)
@@ -235,7 +228,6 @@ async def test_int_acc_07_get_all_positions_cross_account(db_session: AsyncSessi
 # ---------------------------------------------------------------------------
 # INT-ACC-08: sync_account 更新价格（含 DailyQuote 数据）
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_08_sync_account_updates_price(db_session: AsyncSession) -> None:
     """sync_account 从 daily_quote 获取最新价，更新 position.current_price 和 total_assets。"""
     account = await _make_account(db_session, cash=100000.0)
@@ -273,7 +265,6 @@ async def test_int_acc_08_sync_account_updates_price(db_session: AsyncSession) -
 # ---------------------------------------------------------------------------
 # INT-ACC-09: withdraw cash 不足 → ValueError
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_09_withdraw_insufficient_cash(db_session: AsyncSession) -> None:
     """出金超过可用现金 → ValueError。"""
     account = await _make_account(db_session, cash=1000.0)
@@ -291,7 +282,6 @@ async def test_int_acc_09_withdraw_insufficient_cash(db_session: AsyncSession) -
 # INT-ACC-10 (V1.0 整改 Batch 2 — B2-6 / S7-GAP-04 回归):
 # 已平仓股票的分红仅写 fund_flow + cash 入账，不调整 cost_price
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_10_dividend_on_closed_position_keeps_no_cost_change(
     db_session: AsyncSession,
 ) -> None:
@@ -335,7 +325,6 @@ async def test_int_acc_10_dividend_on_closed_position_keeps_no_cost_change(
 # INT-ACC-11 (V1.0 整改 Batch 2 — B2-6 / B2-1 配套):
 # get_current_drawdown 基于 daily_portfolio_value 计算账户最大回撤
 # ---------------------------------------------------------------------------
-@pytest.mark.anyio
 async def test_int_acc_11_get_current_drawdown(db_session: AsyncSession) -> None:
     """seed daily_portfolio_value：100 → 110 → 88（峰 110，谷 88）→ 最大回撤 ≈ 20%。"""
     from datetime import timedelta as _td
