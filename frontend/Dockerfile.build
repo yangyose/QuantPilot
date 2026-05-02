@@ -1,0 +1,16 @@
+# 前端构建产物专用镜像：只生成 dist/，由 nginx 容器通过共享 volume 托管
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# 最终镜像只含构建产物，启动时 cp 到共享 volume
+FROM alpine:3.20
+WORKDIR /output
+COPY --from=builder /app/dist /dist
+CMD ["sh", "-c", "rm -rf /output/* && cp -r /dist/. /output/ && echo 'frontend dist copied to /output' && tail -f /dev/null"]

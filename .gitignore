@@ -1,0 +1,77 @@
+# === 环境变量（含密钥，绝对不提交）===
+.env
+.env.local
+.env.*.local
+.env.prod
+.env.prod.local
+
+# === Claude Code 个人本地配置（含权限白名单与真实凭据片段，不要提交）===
+# settings.json 是项目共享 hook 配置，可提交；settings.local.json 是个人本地配置
+.claude/settings.local.json
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+.uv/
+
+# === pytest / coverage ===
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# === mypy ===
+.mypy_cache/
+
+# === ruff ===
+.ruff_cache/
+
+# === Alembic（版本文件需要提交，但本地临时文件不需要）===
+# alembic/versions/ 目录整体需要提交，不排除
+
+# === Docker ===
+*.dockerignore
+
+# === 数据库 / 本地数据 ===
+*.db
+*.sqlite3
+postgres_data/
+redis_data/
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# === 日志 ===
+*.log
+logs/
+
+# === 备份 ===
+backups/
+
+# === 本地工作笔记 / 临时输出 ===
+temp/
+null
+
+# === Windows 系统残留 ===
+desktop.ini
+
+# === 前端（Phase 9 前占位）===
+frontend/node_modules/
+frontend/dist/
+frontend/.env

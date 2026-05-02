@@ -1,0 +1,44 @@
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --no-dev --frozen || uv sync --no-dev
+
+# ---------- Runtime ----------
+FROM python:3.12-slim AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 quantpilot
+
+COPY --from=builder /app/.venv /app/.venv
+COPY src/ src/
+COPY alembic/ alembic/
+COPY alembic.ini .
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH=/app/src \
+    PYTHONUNBUFFERED=1 \
+    LOG_DIR=/app/logs
+
+RUN mkdir -p /app/logs && chown -R quantpilot:quantpilot /app
+
+USER quantpilot
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# 单进程：APScheduler 在 lifespan 中启动 in-memory jobstore，与多 worker 不兼容
+# （每个 worker 都会重复触发定时任务）。单管理员场景下吞吐充足。
+CMD ["uvicorn", "quantpilot.main:app", "--host", "0.0.0.0", "--port", "8000"]

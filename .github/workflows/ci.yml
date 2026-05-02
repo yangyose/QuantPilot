@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: quantpilot_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --group dev
+
+      - name: Lint
+        working-directory: backend
+        run: uv run ruff check src/ tests/
+
+      - name: Generate test password hash
+        id: gen_hash
+        working-directory: backend
+        run: |
+          HASH=$(uv run python -c \
+            "import bcrypt; print(bcrypt.hashpw(b'ci-test-password', bcrypt.gensalt()).decode())")
+          echo "value=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Run tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/quantpilot_test
+          ADMIN_USERNAME: admin
+          ADMIN_PASSWORD_HASH: ${{ steps.gen_hash.outputs.value }}
+          JWT_SECRET_KEY: "ci-test-secret-key-64-chars-minimum-not-for-production-use-only"
+          JWT_ALGORITHM: HS256
+          JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+          JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
+          CORS_ORIGINS: '["http://localhost:5173"]'
+          DEBUG: "true"
+        run: uv run pytest tests/ --cov=quantpilot --cov-report=term-missing -v

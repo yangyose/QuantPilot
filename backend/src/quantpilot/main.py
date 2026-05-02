@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from quantpilot.api.v1 import (
+    account,
+    auth,
+    backtest,
+    data,
+    factor_quality,
+    market,
+    notifications,
+    performance,
+    pipeline,
+    positions,
+    reports,
+    setup,
+    signals,
+    watchlist,
+)
+from quantpilot.api.v1 import settings as settings_router
+from quantpilot.core.config import settings
+from quantpilot.core.exceptions import register_exception_handlers
+from quantpilot.core.logging_config import setup_logging
+
+setup_logging(
+    log_dir=settings.log_dir,
+    level=settings.log_level,
+    enable_json=settings.log_json,
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """初始化长期对象（adapter/calendar）并启动调度器。
+
+    只有在 TUSHARE_TOKEN 已配置时才尝试初始化；未配置时数据 API 返回 503。
+    """
+    app.state.adapter = None
+    app.state.calendar = None
+    app.state.scheduler = None
+
+    # Phase 10 §4.3 评审 C-02：保留 MarketStateEngine 单例供非流水线
+    # `/market/state/identify` API 路径使用；DailyPipeline 不再消费此单例，
+    # CP1 内根据 `run.config_snapshot.market_state_params` 即时实例化。
+    from quantpilot.engine.market_state import MarketStateEngine
+    app.state.market_state_engine = MarketStateEngine()
+    # Phase 8：Redis 客户端（WS 进度推送）；未配置时返回 None
+    app.state.redis = None
+
+    # Phase 10：WxPusher 通知渠道（app_token/uid 未配置时实例化后自动降级为 no-op）
+    from quantpilot.notification.wxpusher import WxPusherAdapter
+    app.state.wxpusher = WxPusherAdapter(
+        app_token=settings.wxpusher_app_token,
+        uid=settings.wxpusher_uid,
+    )
+
+    if settings.tushare_token:
+        from quantpilot.core.database import AsyncSessionLocal
+        from quantpilot.data.adapters.tushare import TushareAdapter
+        from quantpilot.data.calendar import TradingCalendar
+        from quantpilot.data.validators import DataValidator
+        from quantpilot.pipeline.scheduler import create_scheduler
+
+        adapter = TushareAdapter(settings.tushare_token)
+        app.state.adapter = adapter
+
+        today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
+        try:
+            calendar = await TradingCalendar.from_adapter(
+                adapter,
+                today - timedelta(days=730),
+                today + timedelta(days=30),
+            )
+            app.state.calendar = calendar
+
+            # Phase 10 §4.4 评审 C-02/C-03：BacktestEngine 不再作为单例驻留。
+            # 每次 POST /backtest/run 在后台任务中根据 task.config_snapshot 即时构造，
+            # 确保用户最新的策略/风险/池配置被消费。
+
+            scheduler = create_scheduler(
+                AsyncSessionLocal, adapter, DataValidator(), calendar,
+                redis=app.state.redis,
+                notification_channel=app.state.wxpusher,
+            )
+            scheduler.start()
+            app.state.scheduler = scheduler
+            logger.info("scheduler_started")
+        except Exception:
+            logger.exception("lifespan_init_failed_scheduler_not_started")
+    else:
+        logger.warning(
+            "TUSHARE_TOKEN not configured — data API endpoints will return 503"
+        )
+        # 无 Tushare token 时仍构造工作日历，支持前端回测演示（BacktestEngine 按任务即时构造）
+        try:
+            from quantpilot.data.calendar import TradingCalendar
+            _today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
+            _start = _today - timedelta(days=365 * 3)
+            _weekdays = [
+                _start + timedelta(days=i)
+                for i in range((_today - _start).days + 60)
+                if (_start + timedelta(days=i)).weekday() < 5
+            ]
+            fallback_calendar = TradingCalendar(_weekdays)
+            app.state.calendar = fallback_calendar
+            logger.info("fallback_calendar_initialized_no_tushare")
+        except Exception:
+            logger.exception("fallback_calendar_init_failed_no_tushare")
+
+    yield
+
+    if app.state.scheduler is not None:
+        app.state.scheduler.shutdown(wait=False)
+        logger.info("scheduler_stopped")
+
+
+app = FastAPI(
+    title="QuantPilot",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+register_exception_handlers(app)
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["认证"])
+app.include_router(data.router, prefix="/api/v1/data", tags=["数据"])
+app.include_router(market.router, prefix="/api/v1/market", tags=["市场状态"])
+app.include_router(watchlist.router, prefix="/api/v1/watchlist", tags=["黑白名单"])
+app.include_router(signals.router, prefix="/api/v1/signals", tags=["信号"])
+app.include_router(positions.router, prefix="/api/v1/positions", tags=["持仓"])
+app.include_router(account.router, prefix="/api/v1/account", tags=["账户"])
+app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["设置"])
+app.include_router(factor_quality.router, prefix="/api/v1/factor-quality", tags=["因子质量"])
+app.include_router(reports.router, prefix="/api/v1/reports", tags=["报告"])
+app.include_router(pipeline.router, prefix="/api/v1/pipeline", tags=["流水线"])
+app.include_router(performance.router, prefix="/api/v1/performance", tags=["绩效归因"])
+app.include_router(backtest.router, prefix="/api/v1/backtest", tags=["回测引擎"])
+app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["通知"])
+app.include_router(setup.router, prefix="/api/v1/setup", tags=["向导"])
+# WebSocket 路由（/ws/backtest/{task_id}/progress）复用 backtest.router 中的 ws 端点
+# 实际路径：/api/v1/backtest/{task_id}/progress（WebSocket）
+
+
+@app.get("/health", tags=["系统"])
+async def health():
+    return {"status": "ok", "version": "1.0.0"}

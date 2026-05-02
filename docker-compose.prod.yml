@@ -1,0 +1,107 @@
+# Phase 10 §8.1 生产 Docker Compose
+# 启动顺序：frontend-builder → backend（含 alembic upgrade）→ nginx
+# 用法：
+#   cp .env.prod.example .env.prod
+#   编辑 .env.prod 填入真实值
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-quantpilot}
+      POSTGRES_USER: ${POSTGRES_USER:-quantpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quantpilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 前端构建容器：生成 dist/ 到共享 volume 后退出（tail -f 保持容器存活供 nginx 读取）
+  frontend-builder:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.build
+    volumes:
+      - frontend_dist:/output
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+      WXPUSHER_APP_TOKEN: ${WXPUSHER_APP_TOKEN:-}
+      WXPUSHER_UID: ${WXPUSHER_UID:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost"]}
+      DEBUG: "false"
+      LOG_DIR: /app/logs
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: "true"
+      # APScheduler / NotificationService 推送时段均按 Asia/Shanghai 判断
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - backend_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # 启动时先跑 alembic upgrade head，再拉起 uvicorn（单进程）。
+    # APScheduler 使用 in-memory jobstore，多 worker 会让定时任务重复触发，
+    # 因此显式保持单进程；单管理员场景吞吐充足。
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn quantpilot.main:app --host 0.0.0.0 --port 8000"
+
+  nginx:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # 启用 HTTPS 时取消注释
+      # - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - frontend_dist:/usr/share/nginx/html:ro
+      - nginx_logs:/var/log/nginx
+      # - ./nginx/ssl:/etc/nginx/ssl:ro  # 启用 HTTPS 时取消注释
+    depends_on:
+      - backend
+      - frontend-builder
+
+volumes:
+  pg_data:
+  redis_data:
+  frontend_dist:
+  backend_logs:
+  nginx_logs:

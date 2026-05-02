@@ -1,0 +1,968 @@
+from __future__ import annotations
+
+from datetime import date
+
+import pandas as pd
+from sqlalchemy import func, nullslast, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from quantpilot.engine.market_state import MarketStateRecord
+from quantpilot.models.account import Account, Position
+from quantpilot.models.business import (
+    CandidatePool,
+    MarketStateHistory,
+    Signal,
+    SignalScoreSnapshot,
+    UserWatchlist,
+)
+from quantpilot.models.market import (
+    DailyQuote,
+    FinancialData,
+    IndexComponent,
+    IndexHistory,
+    StockInfo,
+)
+
+_STOCK_UPDATE_COLS = [
+    "name", "sw_industry_l1", "sw_industry_l2", "market", "delist_date", "is_active",
+]
+_QUOTE_UPDATE_COLS = [
+    "open", "high", "low", "close", "pre_close", "pct_chg", "vol", "amount",
+    "turnover_rate", "float_mkt_cap", "adj_factor",
+    "is_suspended", "is_st", "limit_up", "limit_down",
+]
+_FINANCIAL_UPDATE_COLS = [
+    "pe_ttm", "pb", "roe", "net_profit_yoy", "revenue_yoy",
+    "dividend_yield", "total_equity", "debt_to_asset",
+]
+_INDEX_UPDATE_COLS = ["open", "high", "low", "close", "vol", "pct_chg"]
+
+_BATCH_SIZE = 500
+
+
+class MarketDataRepository:
+    """市场数据仓库，所有写操作使用幂等 upsert。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    # ── stock_info ─────────────────────────────────────────────────────────────
+
+    async def upsert_stock_list(self, df: pd.DataFrame) -> int:
+        """批量 upsert stock_info。ON CONFLICT (ts_code) DO UPDATE"""
+        rows = df.to_dict(orient="records")
+        stmt = pg_insert(StockInfo).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["ts_code"],
+            set_={
+                **{col: stmt.excluded[col] for col in _STOCK_UPDATE_COLS if col in df.columns},
+                "updated_at": func.now(),
+            },
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount
+
+    async def get_active_stock_codes(self) -> list[str]:
+        """返回所有 is_active=True 的 ts_code 列表"""
+        result = await self._session.execute(
+            select(StockInfo.ts_code).where(StockInfo.is_active.is_(True))
+        )
+        return [row[0] for row in result.all()]
+
+    async def get_stock_info_bulk(
+        self, ts_codes: list[str] | None = None
+    ) -> pd.DataFrame:
+        """返回 stock_info 基础信息（index=ts_code）。ts_codes=None 时返回所有 is_active。"""
+        q = select(
+            StockInfo.ts_code,
+            StockInfo.name,
+            StockInfo.list_date,
+            StockInfo.sw_industry_l1,
+        )
+        if ts_codes is not None:
+            q = q.where(StockInfo.ts_code.in_(ts_codes))
+        else:
+            q = q.where(StockInfo.is_active.is_(True))
+        result = await self._session.execute(q)
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame(columns=["name", "list_date", "sw_industry_l1"])
+        df = pd.DataFrame(rows, columns=["ts_code", "name", "list_date", "sw_industry_l1"])
+        return df.set_index("ts_code")
+
+    # ── daily_quote ────────────────────────────────────────────────────────────
+
+    async def upsert_daily_quotes(self, df: pd.DataFrame) -> int:
+        """批量 upsert daily_quote，500 行/批"""
+        total = 0
+        rows = df.to_dict(orient="records")
+        for i in range(0, len(rows), _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            stmt = pg_insert(DailyQuote).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["ts_code", "trade_date"],
+                set_={col: stmt.excluded[col] for col in _QUOTE_UPDATE_COLS if col in df.columns},
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount
+        return total
+
+    async def get_latest_quote_date(self) -> date | None:
+        """返回 daily_quote 中最新的 trade_date"""
+        row = await self._session.scalar(
+            select(func.max(DailyQuote.trade_date))
+        )
+        return row if row else None
+
+    async def get_ingested_quote_dates(self, start_date: date, end_date: date) -> set[date]:
+        """返回 [start_date, end_date] 范围内 daily_quote 已有数据的交易日集合。
+
+        供 ingest_history 断点续传使用：只跳过实际已入库的日期，避免用 MAX(trade_date)
+        覆盖导致中间失败日期被误判为"已完成"。
+        """
+        result = await self._session.execute(
+            select(DailyQuote.trade_date)
+            .distinct()
+            .where(
+                DailyQuote.trade_date >= start_date,
+                DailyQuote.trade_date <= end_date,
+            )
+        )
+        return {row[0] for row in result.all()}
+
+    async def get_daily_quotes(
+        self, ts_code: str, start_date: date, end_date: date
+    ) -> pd.DataFrame:
+        """查询单只股票日线序列（含 close, adj_factor），用于复权计算"""
+        result = await self._session.execute(
+            select(DailyQuote)
+            .where(
+                DailyQuote.ts_code == ts_code,
+                DailyQuote.trade_date >= start_date,
+                DailyQuote.trade_date <= end_date,
+            )
+            .order_by(DailyQuote.trade_date)
+        )
+        rows = result.scalars().all()
+        if not rows:
+            return pd.DataFrame(columns=["trade_date", "close", "adj_factor"])
+        return pd.DataFrame(
+            [
+                {"trade_date": r.trade_date, "close": r.close, "adj_factor": r.adj_factor}
+                for r in rows
+            ]
+        )
+
+    async def get_snapshot_quotes(
+        self, ts_codes: list[str], trade_date: date
+    ) -> pd.DataFrame:
+        """返回指定日期多只股票的行情快照（index=ts_code），含 StockInfo 字段。
+
+        结果列：close, adj_factor, amount, vol, limit_up, is_st, is_suspended,
+                list_date, sw_industry_l1, name
+        """
+        if not ts_codes:
+            return pd.DataFrame()
+        result = await self._session.execute(
+            select(
+                DailyQuote.ts_code,
+                DailyQuote.close,
+                DailyQuote.adj_factor,
+                DailyQuote.amount,
+                DailyQuote.vol,
+                DailyQuote.limit_up,
+                DailyQuote.is_st,
+                DailyQuote.is_suspended,
+                StockInfo.list_date,
+                StockInfo.sw_industry_l1,
+                StockInfo.name,
+            )
+            .outerjoin(StockInfo, StockInfo.ts_code == DailyQuote.ts_code)
+            .where(
+                DailyQuote.ts_code.in_(ts_codes),
+                DailyQuote.trade_date == trade_date,
+            )
+        )
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame()
+        cols = ["ts_code", "close", "adj_factor", "amount", "vol", "limit_up",
+                "is_st", "is_suspended", "list_date", "sw_industry_l1", "name"]
+        df = pd.DataFrame(rows, columns=cols)
+        return df.set_index("ts_code")
+
+    async def get_adj_prices_bulk(
+        self, ts_codes: list[str], start_date: date, end_date: date
+    ) -> pd.DataFrame:
+        """返回多只股票的后复权收盘价矩阵（index=ts_code，columns=trade_date，升序）。
+
+        adj_close = close * adj_factor
+        """
+        if not ts_codes:
+            return pd.DataFrame()
+        result = await self._session.execute(
+            select(
+                DailyQuote.ts_code, DailyQuote.trade_date,
+                DailyQuote.close, DailyQuote.adj_factor,
+            )
+            .where(
+                DailyQuote.ts_code.in_(ts_codes),
+                DailyQuote.trade_date >= start_date,
+                DailyQuote.trade_date <= end_date,
+            )
+            .order_by(DailyQuote.trade_date)
+        )
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=["ts_code", "trade_date", "close", "adj_factor"])
+        df["adj_close"] = df["close"].astype(float) * df["adj_factor"].astype(float)
+        return df.pivot(index="ts_code", columns="trade_date", values="adj_close")
+
+    async def get_pe_pb_history_bulk(
+        self, ts_codes: list[str], start_date: date, end_date: date
+    ) -> pd.DataFrame:
+        """返回多只股票的 PE/PB 历史（MultiIndex(ts_code, trade_date)，columns=pe_ttm/pb）。
+
+        ValueStrategy 用于历史分位计算；trade_date 即 publish_date。
+        """
+        if not ts_codes:
+            return pd.DataFrame()
+        result = await self._session.execute(
+            select(
+                FinancialData.ts_code,
+                FinancialData.publish_date,
+                FinancialData.pe_ttm,
+                FinancialData.pb,
+            )
+            .where(
+                FinancialData.ts_code.in_(ts_codes),
+                FinancialData.publish_date >= start_date,
+                FinancialData.publish_date <= end_date,
+            )
+            .order_by(FinancialData.ts_code, FinancialData.publish_date)
+        )
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=["ts_code", "trade_date", "pe_ttm", "pb"])
+        df = df.set_index(["ts_code", "trade_date"])
+        df.index.names = ["ts_code", "trade_date"]
+        return df
+
+    # ── financial_data ─────────────────────────────────────────────────────────
+
+    async def upsert_financial_data(self, df: pd.DataFrame) -> int:
+        """批量 upsert financial_data。ON CONFLICT (ts_code, report_period, publish_date)
+        使用 COALESCE 保留已有非 NULL 值：两次分别 upsert fin_df 和 bal_df 时，
+        后者不会将前者写入的 roe 等字段覆盖为 NULL（C-04 修复）。
+        """
+        rows = df.to_dict(orient="records")
+        stmt = pg_insert(FinancialData).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["ts_code", "report_period", "publish_date"],
+            set_={
+                col: func.coalesce(stmt.excluded[col], FinancialData.__table__.c[col])
+                for col in _FINANCIAL_UPDATE_COLS if col in df.columns
+            },
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount
+
+    async def get_latest_financial(
+        self, ts_codes: list[str], as_of_date: date
+    ) -> pd.DataFrame:
+        """PIT 查询：DISTINCT ON (ts_code) ORDER BY ts_code, publish_date DESC，
+        仅返回每只股票最新一行。
+
+        避免全量历史加载后 Python-side groupby（潜在数百万行）。
+        """
+        if not ts_codes:
+            return pd.DataFrame()
+        stmt = (
+            select(
+                FinancialData.ts_code,
+                FinancialData.report_period,
+                FinancialData.publish_date,
+                FinancialData.pe_ttm,
+                FinancialData.pb,
+                FinancialData.roe,
+                FinancialData.net_profit_yoy,
+                FinancialData.revenue_yoy,
+                FinancialData.dividend_yield,
+                FinancialData.total_equity,
+                FinancialData.debt_to_asset,
+            )
+            .distinct(FinancialData.ts_code)
+            .where(
+                FinancialData.ts_code.in_(ts_codes),
+                FinancialData.publish_date <= as_of_date,
+            )
+            .order_by(FinancialData.ts_code, FinancialData.publish_date.desc())
+        )
+        result = await self._session.execute(stmt)
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows, columns=result.keys())
+
+    # ── index_history ──────────────────────────────────────────────────────────
+
+    async def upsert_index_history(self, df: pd.DataFrame) -> int:
+        """批量 upsert index_history。ON CONFLICT (index_code, trade_date) DO UPDATE"""
+        rows = df.to_dict(orient="records")
+        stmt = pg_insert(IndexHistory).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["index_code", "trade_date"],
+            set_={col: stmt.excluded[col] for col in _INDEX_UPDATE_COLS if col in df.columns},
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount
+
+    async def get_index_history(
+        self, index_code: str, start_date: date, end_date: date
+    ) -> pd.DataFrame:
+        """查询指数历史（含 OHLCV，Phase 3 计算 ADX 使用 high/low）"""
+        result = await self._session.execute(
+            select(IndexHistory)
+            .where(
+                IndexHistory.index_code == index_code,
+                IndexHistory.trade_date >= start_date,
+                IndexHistory.trade_date <= end_date,
+            )
+            .order_by(IndexHistory.trade_date)
+        )
+        rows = result.scalars().all()
+        if not rows:
+            return pd.DataFrame(
+                columns=[
+                    "index_code", "trade_date", "open", "high", "low", "close", "vol", "pct_chg",
+                ]
+            )
+        return pd.DataFrame(
+            [
+                {
+                    "index_code": r.index_code,
+                    "trade_date": r.trade_date,
+                    "open": r.open,
+                    "high": r.high,
+                    "low": r.low,
+                    "close": r.close,
+                    "vol": r.vol,
+                    "pct_chg": r.pct_chg,
+                }
+                for r in rows
+            ]
+        )
+
+    # ── index_component ────────────────────────────────────────────────────────
+
+    async def upsert_index_components(
+        self, index_code: str, trade_date: date, ts_codes: list[str]
+    ) -> int:
+        """批量 upsert index_component。ON CONFLICT DO NOTHING（幂等）"""
+        if not ts_codes:
+            return 0
+        rows = [
+            {"index_code": index_code, "ts_code": code, "trade_date": trade_date}
+            for code in ts_codes
+        ]
+        stmt = pg_insert(IndexComponent).values(rows)
+        stmt = stmt.on_conflict_do_nothing(
+            index_elements=["index_code", "ts_code", "trade_date"]
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount
+
+    async def get_index_components(
+        self, index_code: str, trade_date: date
+    ) -> list[str]:
+        """查询指定指数在 trade_date 的成分股列表。
+
+        若该日期无数据，向前回溯最多 30 个交易日。
+        """
+        result = await self._session.execute(
+            select(IndexComponent.ts_code)
+            .where(
+                IndexComponent.index_code == index_code,
+                IndexComponent.trade_date == trade_date,
+            )
+            .order_by(IndexComponent.ts_code)
+        )
+        codes = [row[0] for row in result.all()]
+        if codes:
+            return codes
+
+        # 向前回溯最多 30 天（按日历天数，不精确到交易日）
+        from datetime import timedelta
+
+        fallback_start = trade_date - timedelta(days=30)
+        result2 = await self._session.execute(
+            select(IndexComponent.trade_date)
+            .where(
+                IndexComponent.index_code == index_code,
+                IndexComponent.trade_date >= fallback_start,
+                IndexComponent.trade_date < trade_date,
+            )
+            .order_by(IndexComponent.trade_date.desc())
+            .limit(1)
+        )
+        latest_date = result2.scalar()
+        if not latest_date:
+            return []
+
+        result3 = await self._session.execute(
+            select(IndexComponent.ts_code)
+            .where(
+                IndexComponent.index_code == index_code,
+                IndexComponent.trade_date == latest_date,
+            )
+            .order_by(IndexComponent.ts_code)
+        )
+        return [row[0] for row in result3.all()]
+
+    # ── market_state_history ───────────────────────────────────────────────────
+
+    async def upsert_market_state(self, record: MarketStateRecord) -> None:
+        """INSERT ... ON CONFLICT (trade_date) DO UPDATE SET all fields"""
+        stmt = pg_insert(MarketStateHistory).values(
+            trade_date=record.trade_date,
+            market_state=str(record.market_state),
+            trend_strength=record.trend_strength,
+            adx_value=record.adx_value,
+            ma20=record.ma20,
+            ma60=record.ma60,
+            state_changed=record.state_changed,
+            description=record.description,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["trade_date"],
+            set_={
+                "market_state": stmt.excluded.market_state,
+                "trend_strength": stmt.excluded.trend_strength,
+                "adx_value": stmt.excluded.adx_value,
+                "ma20": stmt.excluded.ma20,
+                "ma60": stmt.excluded.ma60,
+                "state_changed": stmt.excluded.state_changed,
+                "description": stmt.excluded.description,
+            },
+        )
+        await self._session.execute(stmt)
+
+    async def get_latest_market_state(
+        self, before_date: date | None = None
+    ) -> MarketStateHistory | None:
+        """
+        返回最新的 market_state_history 行。
+        before_date 不为 None 时，仅返回 trade_date < before_date 的行（用于批量回填）。
+        """
+        q = select(MarketStateHistory)
+        if before_date is not None:
+            q = q.where(MarketStateHistory.trade_date < before_date)
+        q = q.order_by(MarketStateHistory.trade_date.desc()).limit(1)
+        result = await self._session.execute(q)
+        return result.scalar_one_or_none()
+
+    async def get_market_state_history(
+        self, start_date: date, end_date: date
+    ) -> list[MarketStateHistory]:
+        """返回 [start_date, end_date] 范围内的历史记录，按 trade_date 升序。"""
+        result = await self._session.execute(
+            select(MarketStateHistory)
+            .where(
+                MarketStateHistory.trade_date >= start_date,
+                MarketStateHistory.trade_date <= end_date,
+            )
+            .order_by(MarketStateHistory.trade_date)
+        )
+        return list(result.scalars().all())
+
+    # ── data status ────────────────────────────────────────────────────────────
+
+    # ── Phase 4：candidate_pool / watchlist / stock_industry ─────────────────
+
+    async def update_stock_industry(self, df: pd.DataFrame) -> int:
+        """TD-3：批量更新 stock_info 的申万行业分类字段。
+        df 列：ts_code, sw_industry_l1, sw_industry_l2
+        返回更新行数。
+        """
+        if df.empty:
+            return 0
+        count = 0
+        for row in df.itertuples(index=False):
+            await self._session.execute(
+                select(StockInfo).where(StockInfo.ts_code == row.ts_code).limit(1)
+            )
+            stmt = (
+                pg_insert(StockInfo)
+                .values(
+                    ts_code=row.ts_code,
+                    sw_industry_l1=row.sw_industry_l1,
+                    sw_industry_l2=getattr(row, "sw_industry_l2", None),
+                )
+                .on_conflict_do_update(
+                    index_elements=["ts_code"],
+                    set_={
+                        "sw_industry_l1": pg_insert(StockInfo).excluded.sw_industry_l1,
+                        "sw_industry_l2": pg_insert(StockInfo).excluded.sw_industry_l2,
+                    },
+                )
+            )
+            await self._session.execute(stmt)
+            count += 1
+        return count
+
+    async def upsert_candidate_pool(
+        self,
+        ts_code: str,
+        trade_date: date,
+        composite_score: float | None,
+        trend_score: float | None,
+        momentum_score: float | None,
+        reversion_score: float | None,
+        value_score: float | None,
+        market_state: str | None,
+        in_pool: bool,
+        is_holding: bool,
+    ) -> None:
+        """按 (ts_code, trade_date) 唯一键 upsert candidate_pool 表。"""
+        stmt = pg_insert(CandidatePool).values(
+            ts_code=ts_code,
+            trade_date=trade_date,
+            composite_score=composite_score,
+            trend_score=trend_score,
+            momentum_score=momentum_score,
+            reversion_score=reversion_score,
+            value_score=value_score,
+            market_state=market_state,
+            in_pool=in_pool,
+            is_holding=is_holding,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_candidate_pool_code_date",
+            set_={
+                "composite_score": stmt.excluded.composite_score,
+                "trend_score": stmt.excluded.trend_score,
+                "momentum_score": stmt.excluded.momentum_score,
+                "reversion_score": stmt.excluded.reversion_score,
+                "value_score": stmt.excluded.value_score,
+                "market_state": stmt.excluded.market_state,
+                "in_pool": stmt.excluded.in_pool,
+                "is_holding": stmt.excluded.is_holding,
+            },
+        )
+        await self._session.execute(stmt)
+
+    async def upsert_candidate_pool_bulk(self, entries: list[dict]) -> None:
+        """批量 upsert candidate_pool 表（单次 SQL，事务原子写入，无部分写入风险）。"""
+        if not entries:
+            return
+        stmt = pg_insert(CandidatePool).values(entries)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_candidate_pool_code_date",
+            set_={
+                "composite_score": stmt.excluded.composite_score,
+                "trend_score": stmt.excluded.trend_score,
+                "momentum_score": stmt.excluded.momentum_score,
+                "reversion_score": stmt.excluded.reversion_score,
+                "value_score": stmt.excluded.value_score,
+                "market_state": stmt.excluded.market_state,
+                "in_pool": stmt.excluded.in_pool,
+                "is_holding": stmt.excluded.is_holding,
+            },
+        )
+        await self._session.execute(stmt)
+
+    async def get_pool_codes(self, trade_date: date) -> set[str]:
+        """返回指定交易日 candidate_pool 中 in_pool=True 的 ts_code 集合。"""
+        result = await self._session.execute(
+            select(CandidatePool.ts_code).where(
+                CandidatePool.trade_date == trade_date,
+                CandidatePool.in_pool.is_(True),
+            )
+        )
+        return {row[0] for row in result.all()}
+
+    async def get_pool(
+        self,
+        trade_date: date | None = None,
+        in_pool_only: bool = True,
+    ) -> list[CandidatePool]:
+        """返回候选池条目列表，默认取最新交易日 in_pool=True 的标的。"""
+        q = select(CandidatePool)
+        if trade_date is not None:
+            q = q.where(CandidatePool.trade_date == trade_date)
+        if in_pool_only:
+            q = q.where(CandidatePool.in_pool.is_(True))
+        q = q.order_by(CandidatePool.trade_date.desc(), CandidatePool.composite_score.desc())
+        result = await self._session.execute(q)
+        return list(result.scalars().all())
+
+    async def get_stock_scores(
+        self,
+        ts_code: str,
+        limit: int = 30,
+    ) -> list[CandidatePool]:
+        """返回指定股票最近 N 个交易日的评分历史（按日期降序）。"""
+        result = await self._session.execute(
+            select(CandidatePool)
+            .where(CandidatePool.ts_code == ts_code)
+            .order_by(CandidatePool.trade_date.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_watchlist(
+        self,
+        list_type: str | None = None,
+    ) -> list[UserWatchlist]:
+        """返回黑白名单条目，list_type=None 时返回全部。"""
+        q = select(UserWatchlist)
+        if list_type is not None:
+            q = q.where(UserWatchlist.list_type == list_type)
+        q = q.order_by(UserWatchlist.created_at.desc())
+        result = await self._session.execute(q)
+        return list(result.scalars().all())
+
+    async def get_whitelist_codes(self) -> set[str]:
+        """返回 WHITELIST 中所有 ts_code 的集合。"""
+        result = await self._session.execute(
+            select(UserWatchlist.ts_code).where(UserWatchlist.list_type == "WHITELIST")
+        )
+        return {row[0] for row in result.all()}
+
+    async def get_blacklist_codes(self) -> set[str]:
+        """返回 BLACKLIST 中所有 ts_code 的集合。"""
+        result = await self._session.execute(
+            select(UserWatchlist.ts_code).where(UserWatchlist.list_type == "BLACKLIST")
+        )
+        return {row[0] for row in result.all()}
+
+    async def add_watchlist(
+        self,
+        ts_code: str,
+        list_type: str,
+        note: str = "",
+    ) -> UserWatchlist:
+        """幂等添加黑白名单条目（ts_code + list_type 唯一约束，重复时返回现有记录）。"""
+        stmt = pg_insert(UserWatchlist).values(
+            ts_code=ts_code,
+            list_type=list_type,
+            reason=note or None,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_watchlist_code_type",
+            set_={"reason": stmt.excluded.reason},
+        ).returning(UserWatchlist)
+        result = await self._session.execute(stmt)
+        return result.scalar_one()
+
+    async def remove_watchlist(
+        self,
+        ts_code: str,
+        list_type: str,
+    ) -> None:
+        """幂等删除黑白名单条目（不存在时静默成功）。"""
+        from sqlalchemy import delete as sa_delete
+        await self._session.execute(
+            sa_delete(UserWatchlist).where(
+                UserWatchlist.ts_code == ts_code,
+                UserWatchlist.list_type == list_type,
+            )
+        )
+
+    async def get_data_status(self) -> dict:
+        """返回各表数据新鲜度摘要"""
+        latest_quote = await self.get_latest_quote_date()
+        stock_count = await self._session.scalar(
+            select(func.count()).select_from(StockInfo).where(StockInfo.is_active.is_(True))
+        ) or 0
+        latest_fin = await self._session.scalar(
+            select(func.max(FinancialData.publish_date))
+        )
+        index_codes_result = await self._session.execute(
+            select(IndexHistory.index_code).distinct().order_by(IndexHistory.index_code)
+        )
+        index_codes = [row[0] for row in index_codes_result.all()]
+        return {
+            "latest_quote_date": latest_quote,
+            "stock_count": int(stock_count),
+            "index_codes": index_codes,
+            "latest_financial_date": latest_fin,
+        }
+
+    # ─── P5-PRE-4: 均量与财务历史查询 ──────────────────────────────────────────
+
+    async def get_avg_amount(
+        self,
+        ts_codes: list[str],
+        trade_date: date,
+        window: int = 20,
+    ) -> pd.DataFrame:
+        """返回各股票在 trade_date 之前 window 个自然交易日（不含当日）的日均成交额。
+        index=ts_code，columns=['avg_amount']（元）。
+        """
+        if not ts_codes:
+            return pd.DataFrame(
+                {"avg_amount": pd.Series(dtype=float)},
+                index=pd.Index([], name="ts_code"),
+            )
+        subq = (
+            select(
+                DailyQuote.ts_code,
+                DailyQuote.amount,
+                func.row_number().over(
+                    partition_by=DailyQuote.ts_code,
+                    order_by=DailyQuote.trade_date.desc(),
+                ).label("rn"),
+            )
+            .where(
+                DailyQuote.ts_code.in_(ts_codes),
+                DailyQuote.trade_date < trade_date,
+                DailyQuote.amount.is_not(None),
+            )
+            .subquery()
+        )
+        stmt = (
+            select(
+                subq.c.ts_code,
+                func.avg(subq.c.amount).label("avg_amount"),
+            )
+            .where(subq.c.rn <= window)
+            .group_by(subq.c.ts_code)
+        )
+        result = await self._session.execute(stmt)
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame(
+                {"avg_amount": pd.Series(dtype=float)},
+                index=pd.Index([], name="ts_code"),
+            )
+        df = pd.DataFrame(rows, columns=["ts_code", "avg_amount"])
+        return df.set_index("ts_code")
+
+    async def get_latest_n_financials(
+        self,
+        ts_codes: list[str],
+        as_of_date: date,
+        n: int = 2,
+    ) -> pd.DataFrame:
+        """按 PIT 原则返回每只股票最近 n 个报告期的财务数据。
+        index=(ts_code, report_period)，columns=FinancialData 各字段。
+        """
+        if not ts_codes:
+            return pd.DataFrame()
+        subq = (
+            select(
+                FinancialData.ts_code,
+                FinancialData.report_period,
+                FinancialData.net_profit_yoy,
+                FinancialData.roe,
+                FinancialData.revenue_yoy,
+                FinancialData.debt_to_asset,
+                FinancialData.total_equity,
+                func.row_number().over(
+                    partition_by=FinancialData.ts_code,
+                    order_by=FinancialData.report_period.desc(),
+                ).label("rn"),
+            )
+            .where(
+                FinancialData.ts_code.in_(ts_codes),
+                FinancialData.publish_date <= as_of_date,
+            )
+            .subquery()
+        )
+        stmt = select(subq).where(subq.c.rn <= n)
+        result = await self._session.execute(stmt)
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame()
+        cols = ["ts_code", "report_period", "net_profit_yoy", "roe",
+                "revenue_yoy", "debt_to_asset", "total_equity", "rn"]
+        df = pd.DataFrame(rows, columns=cols)
+        df = df.drop(columns=["rn"])
+        df = df.set_index(["ts_code", "report_period"])
+        return df
+
+    # ─── 信号 CRUD ──────────────────────────────────────────────────────────────
+
+    async def upsert_signals(self, rows: list[dict]) -> list[dict]:
+        """批量 upsert signal 表（ON CONFLICT ts_code, trade_date, signal_type）。
+
+        返回每行的 {id, ts_code, signal_type} 字典列表（RETURNING 子句）。
+        调用方可用 len(returned) 获取写入数量，并按 (ts_code, signal_type) 查询 signal_id
+        以便关联写入 SignalScoreSnapshot（C-02 修复）。
+
+        status 不在 DO UPDATE SET 中（C-03 修复）：
+        对于已有 VIEWED/ACTED 的信号，重复 save() 不会将状态重置为 NEW。
+        新插入的信号 status 仍由 rows 中的 'status' 字段决定（默认 'NEW'）。
+        """
+        if not rows:
+            return []
+        stmt = pg_insert(Signal).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_signal_code_date_type",
+            set_={
+                "score": stmt.excluded.score,
+                "suggested_pct": stmt.excluded.suggested_pct,
+                "suggested_price_low": stmt.excluded.suggested_price_low,
+                "suggested_price_high": stmt.excluded.suggested_price_high,
+                "stop_loss_price": stmt.excluded.stop_loss_price,
+                "signal_strength": stmt.excluded.signal_strength,
+                "liquidity_note": stmt.excluded.liquidity_note,
+                "t1_warning": stmt.excluded.t1_warning,
+                "reason": stmt.excluded.reason,
+                # status 不更新（C-03）：保留用户已操作的 VIEWED/ACTED 状态
+            },
+        ).returning(Signal.id, Signal.ts_code, Signal.signal_type)
+        result = await self._session.execute(stmt)
+        returned = result.all()
+        return [{"id": r.id, "ts_code": r.ts_code, "signal_type": r.signal_type} for r in returned]
+
+    async def get_signals_by_date(
+        self,
+        trade_date: date,
+        signal_type: str | None = None,
+        status: str | None = None,
+    ) -> list[Signal]:
+        """查询指定交易日的信号列表，支持按类型/状态过滤。"""
+        q = select(Signal).where(Signal.trade_date == trade_date)
+        if signal_type:
+            q = q.where(Signal.signal_type == signal_type)
+        if status:
+            q = q.where(Signal.status == status)
+        q = q.order_by(nullslast(Signal.score.desc()), Signal.id)
+        result = await self._session.execute(q)
+        return list(result.scalars().all())
+
+    async def get_signal_history(
+        self,
+        ts_code: str | None = None,
+        signal_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Signal]:
+        """查询历史信号（分页），支持多条件过滤。"""
+        q = select(Signal)
+        if ts_code:
+            q = q.where(Signal.ts_code == ts_code)
+        if signal_type:
+            q = q.where(Signal.signal_type == signal_type)
+        if status:
+            q = q.where(Signal.status == status)
+        q = q.order_by(Signal.trade_date.desc(), Signal.id.desc()).limit(limit).offset(offset)
+        result = await self._session.execute(q)
+        return list(result.scalars().all())
+
+    async def get_kline_bars(self, ts_code: str, limit: int = 60) -> list[DailyQuote]:
+        """查询单股 K 线数据（按日期升序返回最近 limit 条）。"""
+        result = await self._session.execute(
+            select(DailyQuote)
+            .where(DailyQuote.ts_code == ts_code)
+            .order_by(DailyQuote.trade_date.desc())
+            .limit(limit)
+        )
+        rows = list(result.scalars().all())
+        rows.sort(key=lambda r: r.trade_date)
+        return rows
+
+    async def get_signal_by_id(self, signal_id: int) -> Signal | None:
+        """按 ID 查询单条信号。"""
+        result = await self._session.execute(
+            select(Signal).where(Signal.id == signal_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_last_buy_signal(
+        self,
+        ts_code: str,
+        as_of_date: date | None = None,
+    ) -> Signal | None:
+        """按 ts_code 查询最近一条 BUY 信号（Phase 10 §5.5 止损预警）。
+
+        as_of_date：可选上界（包含），未指定则取全历史。
+        """
+        stmt = (
+            select(Signal)
+            .where(Signal.ts_code == ts_code, Signal.signal_type == "BUY")
+            .order_by(Signal.trade_date.desc(), Signal.id.desc())
+            .limit(1)
+        )
+        if as_of_date is not None:
+            stmt = stmt.where(Signal.trade_date <= as_of_date)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def update_signal_status(self, signal_id: int, status: str) -> Signal | None:
+        """更新信号状态字段。"""
+        from sqlalchemy import update as sa_update
+        await self._session.execute(
+            sa_update(Signal).where(Signal.id == signal_id).values(status=status)
+        )
+        return await self.get_signal_by_id(signal_id)
+
+    async def expire_signals_before(self, cutoff_date: date) -> int:
+        """将 (NEW/VIEWED) 状态且 trade_date < cutoff_date 的信号改为 EXPIRED。"""
+        from sqlalchemy import update as sa_update
+        result = await self._session.execute(
+            sa_update(Signal)
+            .where(
+                Signal.status.in_(["NEW", "VIEWED"]),
+                Signal.trade_date < cutoff_date,
+            )
+            .values(status="EXPIRED")
+        )
+        return result.rowcount
+
+    async def upsert_signal_snapshots(self, rows: list[dict]) -> int:
+        """批量 upsert signal_score_snapshot。"""
+        if not rows:
+            return 0
+        stmt = pg_insert(SignalScoreSnapshot).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["signal_id"],
+            set_={
+                "composite_score": stmt.excluded.composite_score,
+                "trend_score": stmt.excluded.trend_score,
+                "reversion_score": stmt.excluded.reversion_score,
+                "momentum_score": stmt.excluded.momentum_score,
+                "value_score": stmt.excluded.value_score,
+                "market_state": stmt.excluded.market_state,
+                "score_breakdown": stmt.excluded.score_breakdown,
+                "raw_factors": stmt.excluded.raw_factors,
+            },
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount
+
+    async def get_signal_snapshot(self, signal_id: int) -> SignalScoreSnapshot | None:
+        """返回信号对应的评分快照（若存在）。"""
+        result = await self._session.execute(
+            select(SignalScoreSnapshot).where(SignalScoreSnapshot.signal_id == signal_id)
+        )
+        return result.scalar_one_or_none()
+
+    # ─── 持仓/账户基础查询（Phase 6 AccountService 底层依赖） ──────────────────
+
+    async def get_positions_by_account(self, account_id: int) -> list[Position]:
+        """返回指定账户的全部持仓。"""
+        result = await self._session.execute(
+            select(Position).where(Position.account_id == account_id)
+        )
+        return list(result.scalars().all())
+
+    async def get_account_by_id(self, account_id: int) -> Account | None:
+        """按 ID 查询账户。"""
+        result = await self._session.execute(
+            select(Account).where(Account.id == account_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_default_account(self) -> Account | None:
+        """返回 id 最小的账户（单账户场景）。"""
+        result = await self._session.execute(
+            select(Account).order_by(Account.id).limit(1)
+        )
+        return result.scalar_one_or_none()
