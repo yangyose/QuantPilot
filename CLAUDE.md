@@ -171,6 +171,7 @@ created_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
 - `get_db()` yield 后自动 commit，异常自动 rollback；路由中无需手动 commit/rollback
 - **后台任务 session 生命周期**：`get_db()` 会话由框架自动 commit；`async with AsyncSessionLocal()` 直接创建的会话（后台任务 `asyncio.create_task` 等）**必须显式 commit**，否则写入不持久
+- **混合模式 Service 方法的 outer session**：Service 方法内部如果对部分工作单元用了自管理 per-iteration `AsyncSessionLocal`（如 `ingest_history` 的 per-day session），但其他批量写操作走 `self._repo`，则调用方必须在 outer `async with AsyncSessionLocal() as session: ... service.foo(...)` 块退出前显式 `await session.commit()`——否则 `self._repo` 那部分写入随 close 丢失。2026-05-12 真机验收抓到：`ingest_history` 内 index_history/index_components 走 `self._repo`，refill 脚本未 commit → 索引数据全空
 - 市场数据读写通过 `MarketDataRepository`；业务服务层（PerformanceService、BacktestService 等）可直接执行 ORM 查询，但禁止在 Route 层绕过 Service 直接操作 ORM
 - upsert 使用 `insert(...).on_conflict_do_update()`；`updated_at` 须显式写入 `func.now()`
 - 集成测试 `db_engine` fixture 必须 `poolclass=NullPool`（防止跨 event loop 连接复用），并且**禁止 `scope="session"`**：anyio 每个测试一个新 event loop，session 级 async engine 会触发 `Future attached to a different loop`。schema 建表用单独的同步 fixture（`_ensure_schema`，scope=session）跑 alembic；engine 改成函数级，每个测试独立创建/销毁。本地 Windows 偶发不报，CI ubuntu 必现。
@@ -189,6 +190,9 @@ created_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 - **`ingest_history` per-day 独立 `AsyncSessionLocal`**：跨日共用 outer session 时，asyncpg 语句级 savepoint 会让单条 upsert 失败只回滚自己那条、其他表照常 commit，形成「daily_quote 进库 / financial_data 全空」混合状态。每个交易日 errors 非空整日 rollback、否则整日 commit；调用 `ingest_daily(_repo=day_repo)` 注入 per-day repo
 - **`ingest_history` 断点续传查 `repo.get_fully_ingested_dates()`** 返回 `daily_quote ∩ financial_data` 双表交集，禁用单表 `get_ingested_quote_dates()` 或 `MAX(trade_date)`（Bug 6：上一轮 savepoint 半 commit 的日期会被错误判定为完成）
 - **Tushare `index_weight` 为月度稀疏接口**（仅 rebalance 日有 snapshot）：按 `trade_date` 单日查询大概率返回空。`fetch_index_components` 改用 `[trade_date-60d, trade_date]` range query 取 ≤ `trade_date` 的最近 snapshot 保 PIT；`fetch_index_components_range` 供 ingest_history 一次性批量加载
+- **Tushare `fina_indicator` 不支持 period-only 全市场调用**：必须 `period + ts_code` 组合查询（50 只/批 + `asyncio.sleep(0.3)`），单日 ingest 多 ~33s、ingest_history 60 天多 ~30 分钟，但换来真实 roe/yoy 字段。原 period-only 调用静默吞异常把 5 个字段填 NULL 是 RM-17 评分退化根因（2026-05-12 真机验收抓到）
+- **Tushare `namechange` 接口 start/end 是公告日期（ann_date）**，仅传 ingest 窗口只能拿到「窗口内被公告改名」的股票——早就叫 \*ST 的股票（公告在几年前）会全部缺失。`ingest_history` 必须把 namechange 回溯起点设为 `ingest_start - 5y`（覆盖绝大多数当前 ST 命名公告日，3 年净亏损实施 ST、超 5 年通常已强制退市）。RM-16（2026-05-12 真机验收）
+- **Tushare 分红接口名是 `dividend` 不是 `fina_dividend`**：`pro.dividend(ex_date=...)` 返回 cash_div_tax（税前每股，元）。错误接口名（如 `fina_dividend`）会被 Tushare 服务端返回「请指定正确的接口名」——单元测试用 mock 抓不到这类 typo，必须真机抽测一次或对方法名加 `is adapter._pro.dividend` 契约断言。RM-15（2026-05-12 真机验收）
 
 ### Engine 层
 

@@ -42,6 +42,11 @@ class TushareAdapter(DataSourceAdapter):
     def __init__(self, token: str, max_concurrent: int = 3) -> None:
         self._pro = ts.pro_api(token)
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        # RM-17 性能优化（2026-05-12 真机验收）：fina_indicator 按 (period_str,
+        # ts_codes_key) 缓存。ingest_history 60 天窗口里 last_quarter_end 通常
+        # 只有 1-2 个值（如 2025-12-31 / 2026-03-31），每天调一次重复 110 批
+        # ≈ 5 小时；缓存后整次 ingest_history 只调 1-2 × 110 批 ≈ 5-10 分钟。
+        self._fina_cache: dict[str, pd.DataFrame] = {}
 
     async def _call(self, func: Any, **kwargs: Any) -> pd.DataFrame:
         """受限并发的异步包装器"""
@@ -192,34 +197,47 @@ class TushareAdapter(DataSourceAdapter):
         codes_for_fina: list[str] = (
             ts_codes if ts_codes is not None else basic["ts_code"].dropna().tolist()
         )
-        fina_frames: list[pd.DataFrame] = []
-        for i in range(0, len(codes_for_fina), 50):
-            batch = codes_for_fina[i : i + 50]
-            try:
-                df_batch = await self._call(
-                    self._pro.fina_indicator,
-                    period=period_str,
-                    ts_code=",".join(batch),
-                    fields="ts_code,end_date,roe,netprofit_yoy,tr_yoy,debt_to_assets",
-                )
-                if df_batch is not None and not df_batch.empty:
-                    fina_frames.append(df_batch)
-            except Exception:
-                logger.exception(
-                    "fina_indicator_batch_failed",
-                    extra={"period": period_str, "batch_start": i, "batch_size": len(batch)},
-                )
-            if i + 50 < len(codes_for_fina):
-                await asyncio.sleep(0.3)
-        if fina_frames:
-            fina = pd.concat(fina_frames, ignore_index=True).drop_duplicates(
-                subset=["ts_code", "end_date"], keep="last"
+        # 按 period_str 缓存——ingest_history 60 天窗口里 period 通常只有 1-2 个值
+        # （last_quarter_end），重复 110 批 × 60 天 = 6600 调用降到 110~220。
+        # codes 集合按 as_of_date 略有变化（少量上市/退市），下游 merge by ts_code 自动
+        # 丢弃多余行；首次构建用全市场 codes，后续日期复用。
+        cache_key = period_str
+        if cache_key in self._fina_cache:
+            fina = self._fina_cache[cache_key]
+            logger.info(
+                "fina_indicator_cache_hit",
+                extra={"period": period_str, "rows": len(fina)},
             )
         else:
-            fina = pd.DataFrame(
-                columns=["ts_code", "end_date", "roe", "netprofit_yoy",
-                         "tr_yoy", "debt_to_assets"]
-            )
+            fina_frames: list[pd.DataFrame] = []
+            for i in range(0, len(codes_for_fina), 50):
+                batch = codes_for_fina[i : i + 50]
+                try:
+                    df_batch = await self._call(
+                        self._pro.fina_indicator,
+                        period=period_str,
+                        ts_code=",".join(batch),
+                        fields="ts_code,end_date,roe,netprofit_yoy,tr_yoy,debt_to_assets",
+                    )
+                    if df_batch is not None and not df_batch.empty:
+                        fina_frames.append(df_batch)
+                except Exception:
+                    logger.exception(
+                        "fina_indicator_batch_failed",
+                        extra={"period": period_str, "batch_start": i, "batch_size": len(batch)},
+                    )
+                if i + 50 < len(codes_for_fina):
+                    await asyncio.sleep(0.3)
+            if fina_frames:
+                fina = pd.concat(fina_frames, ignore_index=True).drop_duplicates(
+                    subset=["ts_code", "end_date"], keep="last"
+                )
+            else:
+                fina = pd.DataFrame(
+                    columns=["ts_code", "end_date", "roe", "netprofit_yoy",
+                             "tr_yoy", "debt_to_assets"]
+                )
+            self._fina_cache[cache_key] = fina
         # 注：total_equity（总股东权益）来自 balancesheet API（total_hldr_eqy_exc_min_int），
         # 不在 fina_indicator 中；V1.5 接入 fetch_balance_sheet 补充，V1.0 暂存 NaN。
 
