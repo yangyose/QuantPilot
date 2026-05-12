@@ -32,6 +32,65 @@ _QUOTE_UPDATE_COLS = [
     "turnover_rate", "float_mkt_cap", "adj_factor",
     "is_suspended", "is_st", "limit_up", "limit_down",
 ]
+def _clamp_to_schema_bounds(df: pd.DataFrame, bounds: dict[str, float]) -> pd.DataFrame:
+    """超出 PostgreSQL NUMERIC 列允许范围的值置 NaN（→ NULL）。
+
+    Tushare 偶尔返回极端值（如净资产接近 0 的微盘股 ROE > 100，新上市股
+    net_profit_yoy 在千百分位），asyncpg 写入 NUMERIC 列直接抛 OutOfRange
+    导致整个 batch 失败。本函数把这类异常值置 NaN，由 _df_to_dict_with_nulls
+    转 None → SQL NULL，下游因子计算自动跳过。
+
+    bounds: 列名 → 允许绝对值上界（含等号视为越界）
+    """
+    out = df.copy()
+    for col, upper in bounds.items():
+        if col in out.columns:
+            mask = out[col].abs() >= upper
+            if mask.any():
+                out.loc[mask, col] = float("nan")
+    return out
+
+
+_FINANCIAL_BOUNDS = {
+    # PostgreSQL Numeric(P, S) max abs value = 10 ** (P - S)
+    "pe_ttm": 10 ** (10 - 4),       # 1e6
+    "pb": 10 ** (8 - 4),            # 1e4
+    "roe": 10 ** (8 - 6),           # 1e2
+    "net_profit_yoy": 10 ** (8 - 4),  # 1e4
+    "revenue_yoy": 10 ** (8 - 4),     # 1e4
+    "dividend_yield": 10 ** (8 - 6),  # 1e2
+    "debt_to_asset": 10 ** (8 - 6),   # 1e2
+}
+_QUOTE_BOUNDS = {
+    # 行情字段一般不会超界但留接口；turnover_rate Numeric(8,6) 见 market.py
+    "turnover_rate": 10 ** (8 - 6),
+    "pct_chg": 10 ** (8 - 6),
+}
+
+
+def _df_to_dict_with_nulls(df: pd.DataFrame) -> list[dict]:
+    """Bug 9 修复 v2：把 DataFrame 转 list[dict]，所有 NaN/NaT/pd.NA 转 None。
+
+    早期实现用 `df.where(pd.notna(df), None).to_dict(orient="records")`，但
+    pandas 对 float64 列做 .where(..., None) 时 None 会被回退为 NaN（pandas
+    保持 dtype 一致性），结果 to_dict 后仍是 float('nan')；asyncpg 把它写入
+    PostgreSQL NUMERIC 字段作为特殊值 'NaN'（≠ NULL），下游 IS NOT NULL 误判。
+    解决：先 to_dict，再在 dict 层逐项检查 isinstance(v, float) and isnan(v)
+    显式转 None。也覆盖 pd.NaT（pd.isna 对其返回 True）。
+    """
+    import math as _m
+    records = df.to_dict(orient="records")
+    for row in records:
+        for k, v in row.items():
+            if v is None:
+                continue
+            if isinstance(v, float) and _m.isnan(v):
+                row[k] = None
+            elif pd.isna(v):  # 处理 pd.NaT / pd.NA / np.datetime64 NaT
+                row[k] = None
+    return records
+
+
 _FINANCIAL_UPDATE_COLS = [
     "pe_ttm", "pb", "roe", "net_profit_yoy", "revenue_yoy",
     "dividend_yield", "total_equity", "debt_to_asset",
@@ -53,10 +112,8 @@ class MarketDataRepository:
         """批量 upsert stock_info，500 行/批（asyncpg 单 SQL 参数上限 32767）。
         ON CONFLICT (ts_code) DO UPDATE"""
         total = 0
-        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
-        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
-        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
-        rows = df.where(pd.notna(df), None).to_dict(orient="records")
+        # Bug 9 修复 v2：dict 层显式 NaN→None；详见 _df_to_dict_with_nulls 注释
+        rows = _df_to_dict_with_nulls(df)
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
             stmt = pg_insert(StockInfo).values(batch)
@@ -104,10 +161,10 @@ class MarketDataRepository:
     async def upsert_daily_quotes(self, df: pd.DataFrame) -> int:
         """批量 upsert daily_quote，500 行/批"""
         total = 0
-        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
-        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
-        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
-        rows = df.where(pd.notna(df), None).to_dict(orient="records")
+        # 极端值（如 turnover_rate >= 100，理论不该发生但 Tushare 偶发）→ NaN → NULL
+        df = _clamp_to_schema_bounds(df, _QUOTE_BOUNDS)
+        # Bug 9 修复 v2：dict 层显式 NaN→None；详见 _df_to_dict_with_nulls 注释
+        rows = _df_to_dict_with_nulls(df)
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
             stmt = pg_insert(DailyQuote).values(batch)
@@ -291,10 +348,10 @@ class MarketDataRepository:
         覆盖为 NULL（C-04 修复）。
         """
         total = 0
-        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
-        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
-        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
-        rows = df.where(pd.notna(df), None).to_dict(orient="records")
+        # 极端值 → NaN → NULL（Tushare 微盘股 ROE/net_profit_yoy 偶发超 schema 范围）
+        df = _clamp_to_schema_bounds(df, _FINANCIAL_BOUNDS)
+        # Bug 9 修复 v2：dict 层显式 NaN→None；详见 _df_to_dict_with_nulls 注释
+        rows = _df_to_dict_with_nulls(df)
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
             stmt = pg_insert(FinancialData).values(batch)
@@ -344,7 +401,11 @@ class MarketDataRepository:
         rows = result.all()
         if not rows:
             return pd.DataFrame()
-        return pd.DataFrame(rows, columns=result.keys())
+        df = pd.DataFrame(rows, columns=result.keys())
+        # RM-17 修复：下游 strategy_service 与 ValueStrategy 全部 .reindex(universe=ts_code)
+        # 假设 financials 以 ts_code 为索引。修复前返回 RangeIndex DataFrame，
+        # reindex(ts_code 列表) 全部返回 NaN → value_score 全 NULL → 价值因子失效。
+        return df.set_index("ts_code")
 
     # ── index_history ──────────────────────────────────────────────────────────
 
@@ -352,10 +413,8 @@ class MarketDataRepository:
         """批量 upsert index_history，500 行/批（asyncpg 单 SQL 参数上限 32767）。
         ON CONFLICT (index_code, trade_date) DO UPDATE"""
         total = 0
-        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
-        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
-        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
-        rows = df.where(pd.notna(df), None).to_dict(orient="records")
+        # Bug 9 修复 v2：dict 层显式 NaN→None；详见 _df_to_dict_with_nulls 注释
+        rows = _df_to_dict_with_nulls(df)
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
             stmt = pg_insert(IndexHistory).values(batch)

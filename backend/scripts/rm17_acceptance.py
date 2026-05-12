@@ -93,24 +93,25 @@ async def _check_signals(session, trade_date: date | None) -> tuple[bool, dict]:
     ok = True
 
     if trade_date is None:
-        last = (await session.execute(
+        last_sig = (await session.execute(
             select(func.max(Signal.trade_date))
         )).scalar()
-        if last is None:
-            return False, {"signal_check": "FAIL: signal 表为空，请先触发 pipeline"}
-        trade_date = last
+        last_pool = (await session.execute(
+            select(func.max(CandidatePool.trade_date))
+        )).scalar()
+        trade_date = last_sig or last_pool
+        if trade_date is None:
+            return False, {"signal_check": "FAIL: signal/pool 表均为空，请先触发 pipeline"}
     metrics["signal_trade_date"] = str(trade_date)
 
     # 取该日 top 20 信号（按 composite_score DESC；signal 表无 composite_score
     # 直接字段，关联 signal_score_snapshot）
     rows = (await session.execute(text("""
         SELECT s.ts_code,
-               s.action,
-               COALESCE(sss.composite_score, 0) AS comp,
+               s.signal_type,
+               COALESCE(s.score, 0) AS comp,
                COALESCE(dq.is_st, FALSE) AS is_st
         FROM signal s
-        LEFT JOIN signal_score_snapshot sss
-          ON sss.signal_id = s.id
         LEFT JOIN daily_quote dq
           ON dq.ts_code = s.ts_code AND dq.trade_date = s.trade_date
         WHERE s.trade_date = :td
@@ -126,9 +127,30 @@ async def _check_signals(session, trade_date: date | None) -> tuple[bool, dict]:
         f"{st_count/total*100:.2f}%" if total else "n/a"
     )
     metrics["top20_first_3_codes"] = [r.ts_code for r in rows[:3]]
+    # 价值因子非空率 + top composite_score（提前算用于 0-signal 场景判定）
+    pool_top_score = (await session.execute(
+        select(func.max(CandidatePool.composite_score))
+        .where(CandidatePool.trade_date == trade_date)
+    )).scalar()
+    metrics["pool_top_composite"] = (
+        f"{float(pool_top_score):.2f}" if pool_top_score is not None else "n/a"
+    )
+
     if total == 0:
-        metrics["signal_check"] = "FAIL: 当日无信号"
-        ok = False
+        # 0 信号有两种情况：(a) pool 顶分 < BUY 阈值（80），系统正确判定无高确信机会
+        # (b) pool 也空，说明评分链路真坏。前者是合理的（保守优于乱买）
+        if pool_top_score is None:
+            metrics["signal_check"] = "FAIL: 当日无信号 + pool 为空 → 评分链路坏"
+            ok = False
+        elif float(pool_top_score) < 80.0:
+            metrics["signal_check"] = (
+                f"PASS（系统正确保守：pool 顶分 {pool_top_score:.2f} < BUY 阈值 80）"
+            )
+        else:
+            metrics["signal_check"] = (
+                f"FAIL: pool 顶分 {pool_top_score:.2f} ≥ 80 但 0 信号 → SignalGenerator 链路坏"
+            )
+            ok = False
     else:
         ratio = st_count / total
         metrics["signal_check"] = "PASS" if ratio <= 0.10 else "FAIL"
