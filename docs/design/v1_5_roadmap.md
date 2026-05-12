@@ -16,6 +16,7 @@
 |------|------|------|
 | **v1.0** | 2026-04-30 | 初版创建（方案 A）：合并 SDD §16 14 项产品功能 + V1.0 评审 P2/P3 25 项 + Phase 10 评审 G-1/G-2/G-4 共 42 项，按 10 主题打包；归类为设计文档（原 `docs/reviews/v1_5_roadmap_2026-04-30.md` 已废弃）|
 | **v1.1** | 2026-04-30 | 合入 SDD 外部专家评审（`docs/reviews/SDD_review_outside_2026-04-22.md`）：8 项 SDD-EXT-* 进入 V1.5（V1.5-A 4 项 / V1.5-C 2 项 / V1.5-D 2 项），3 项推迟 V2.0；新增 §3 SDD 外部评审合入项 + §5 推迟 V2.0 项；§4 Phase 10 评审章节由 §3 后移；§6 V1.5 主题包估算上调至 ~91-115 pd（+8 项；外部评审建议 #5"信号强度→非线性仓位"在已确认决策中删除，并入分数凯利不单独立项）|
+| **v1.2** | 2026-05-12 | 合入 V1.0 真机验收（2026-05-11~12 生产 Docker + 真实 Tushare 端到端）推迟项：新增 §2.9 4 项 RM-13/15/16/17（deposit 幂等 / dividend API 名 / is_st PIT / 评分退化）；§0 总览合计 50→54、估算 91-115 pd → 94-120 pd；修复顺序约束 RM-15→RM-16→重灌→RM-17 记录在 §2.9 |
 
 ---
 
@@ -36,10 +37,11 @@
 | V1.0 评审推迟（P3）| 6 | `v1_overall_review_2026-04-27.md` §3.4 |
 | SDD 外部评审合入 | 8 | `docs/reviews/SDD_review_outside_2026-04-22.md`（SDD-EXT-01/02s/03/04/06s/07/08/09s）|
 | Phase 10 评审推迟 | 3 | `phase10_design_review_2026-04-20.md`（G-1/G-2/G-4）|
-| **V1.5 合计** | **50** | |
+| V1.0 真机验收推迟 | 4 | 本文档 §2.9（RM-13/15/16/17）|
+| **V1.5 合计** | **54** | |
 | 推迟 V2.0 项（外部评审）| 3 | SDD-EXT-02f / 06f / 09f（详见 §5）|
 
-V1.5 主题划分（10 主题）见本文档 §6，估算合计 **~91-115 pd（6-8 个月）**。
+V1.5 主题划分（10 主题）见本文档 §6，估算合计 **~94-120 pd（6-8 个月）**（含 §2.9 真机验收 4 项 ~3-5.5 pd）。
 
 ---
 
@@ -138,6 +140,20 @@ V1.0 单管理员模型（SDD §3.3 范围内）；V1.5 自然延伸到多角色
 | D3-GAP-01 | SDD §10 因子参数与策略源码不一致 | 与 FIN-MED-12 同源；策略参数下沉后同步 | SDD §10 表与策略 dataclass 一致 | 0.3 pd |
 | D3-GAP-03 | 部署指南未提及单进程约束 | deployment.md §7 增"⚠️ uvicorn 必须 --workers 1" | 运维误改 workers 不再发生 | 0.2 pd |
 | D3-GAP-04 | 既有 phase 评审中"推迟到 V1.5"项缺统一汇总 | **本文档创建即解决** | — | 0 pd（本文档）|
+
+### 2.9 V1.0 真机验收推迟项（4 项）→ 各主题分散
+
+来自 2026-05-11~12 真机端到端验收（生产 Docker + 真实 Tushare）。核心通路 11 个 bug 已修，剩余 4 项因依赖大或验收标准未定推迟。
+
+| 编号 | 描述 | 推迟原因 | 修复条件 | 估算 | 所属主题 |
+|------|------|---------|---------|------|---------|
+| RM-13 | Wizard Step 3 初始资金 deposit 不幂等：用户三连点导致 3× 入金 | 需 idempotency_key 机制设计（前端 UUID + 后端去重表）| `/account/deposit` 接受 `idempotency_key`；24h 内同 key 返回首次结果；前端 Wizard 自动注入 | 0.5-1 pd | V1.5-J UX/合规 |
+| RM-15 | `fetch_dividend_data` Tushare API 名错误：调用返回"请指定正确的接口名" | 需查 Tushare 实际接口名（`dividend` vs `pro.dividend` vs `cashflow`）+ 字段映射重对 | adapter 切到正确接口；定增/送股/分红字段单独入 `dividend` 表；DailyPipeline Step 5 自动分红入账验证 | 0.5-1 pd | V1.5-A 回测引擎深化（与 FIN-MED-11 PIT 数据扩展一并） |
+| RM-16 | `daily_quote.is_st` 全部 FALSE：namechange 历史回填的 PIT 映射未应用到 daily_quote upsert | st_map 构造正确但 `ingest_history` 在 ingest_daily 之前才注入 `_st_codes`，需校验链路是否真生效 | INT-DATA-** 集成测试构造已知 ST 历史 → 回填后 daily_quote.is_st 与历史 namechange 一致；冒烟 API 抽样验证 | 1-1.5 pd | V1.5-A（与 FIN-MED-11 同主题）/ V1.5-J 测试加固 |
+| RM-17 | 评分退化：ROE NULL 导致 ValueStrategy 跳过价值陷阱过滤 → market_state 空降级为 OSCILLATION → 反转策略主导 → 真机 top 20 信号全部为 ST 股票（分 99.4-99.97） | 链式降级根因排查（前置依赖 RM-15/RM-16/Bug 9 修复后的财务数据重灌）+ 评分质量验收标准未定 | 财务全表重灌（NaN→NULL 已清理 213k 行）后真机评分中 ST 占比 ≤ 5%；MarketState 在 60 天回填后能稳定输出 UP/OSC/DOWN | 1-2 pd（依赖前置完成）| V1.5-A 回测引擎深化（重定义评分质量基线）|
+
+> **修复顺序约束**：RM-15 → RM-16 → 财务数据重灌 → RM-17 验收。RM-13 独立可并行。
+> **追溯路径**：Bug 编号与本文档 RM-* 映射、详细症状与诊断链路见 `CLAUDE.md §9` V1.0 真机验收行。
 
 ### 2.8 P3 长期改进（6 项）→ 各主题分散
 

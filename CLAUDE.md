@@ -178,12 +178,17 @@ created_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 ### API 层
 
 - **所有依赖注入函数**（`get_*_service`、`get_repo` 等）统一放在 `api/deps.py`，禁止在路由文件内定义（路由文件只允许 `from quantpilot.api.deps import ...`）
+- **BackgroundTasks 与 UNIQUE 约束并存时必须先显式 `await session.commit()` 再 `add_task()`**：Starlette `BackgroundTasks` 在请求 async 上下文内 await，`get_db()` yield 后的隐式 commit 推迟到所有 BG task 跑完；BG 内若需写同一 UNIQUE 行会被外层未 commit 行阻塞，外层 commit 又必须等 BG task 完成 → 循环死锁。`POST /pipeline/trigger` 真机验收抓到 90s 卡死 504
 
 ### 数据采集层
 
 - 所有 Tushare 调用通过 `_call()` 异步包装（`asyncio.to_thread` + `Semaphore`），禁止直接调用 SDK
 - 单位换算在适配器内完成，repository 收到的永远是最终单位（小数、元、股）
-- `ingest_history` 断点续传用 `get_ingested_quote_dates()` 返回的 `set[date]`，禁用 `MAX(trade_date)`
+- **bulk upsert 必须 `_BATCH_SIZE=500` 循环 `pg_insert.values(batch)`**：asyncpg 协议 16-bit 占位符总数上限 32767，5491 行 × 11 列直接超限。合成数据测试 < 3000 行容易绕过此约束，集成测试需 ≥ 3000 行场景才能抓到（2026-05-11 Bug：3 个 upsert 漏分批被真机验收抓到）
+- **upsert 前必须 `df.where(pd.notna(df), None)`** 把 NaN 转 None：pandas NaN/NaT 经 `to_dict("records")` 后是 `float('nan')`，asyncpg 原样写入 PostgreSQL NUMERIC 字段作为特殊值 `'NaN'`（≠ NULL），下游 `IS NOT NULL` 误判、数值过滤失效（2026-05-11 真机验收抓到 ROE 列 213k 行 `'NaN'`）
+- **`ingest_history` per-day 独立 `AsyncSessionLocal`**：跨日共用 outer session 时，asyncpg 语句级 savepoint 会让单条 upsert 失败只回滚自己那条、其他表照常 commit，形成「daily_quote 进库 / financial_data 全空」混合状态。每个交易日 errors 非空整日 rollback、否则整日 commit；调用 `ingest_daily(_repo=day_repo)` 注入 per-day repo
+- **`ingest_history` 断点续传查 `repo.get_fully_ingested_dates()`** 返回 `daily_quote ∩ financial_data` 双表交集，禁用单表 `get_ingested_quote_dates()` 或 `MAX(trade_date)`（Bug 6：上一轮 savepoint 半 commit 的日期会被错误判定为完成）
+- **Tushare `index_weight` 为月度稀疏接口**（仅 rebalance 日有 snapshot）：按 `trade_date` 单日查询大概率返回空。`fetch_index_components` 改用 `[trade_date-60d, trade_date]` range query 取 ≤ `trade_date` 的最近 snapshot 保 PIT；`fetch_index_components_range` 供 ingest_history 一次性批量加载
 
 ### Engine 层
 
@@ -257,6 +262,7 @@ DEBUG=false
 | Phase 9 | 前端（Vue 3 仪表盘） | **代码评审修复完成，手动验收进行中** |
 | Phase 10 | 配置消费 + 通知 + 部署收尾（ConfigService/12类config_key落地/WxPusher+站内信降级/Settings三级折叠+字段级 tier/术语 Tooltip/OnboardingWizard/YAML导入导出/生产Docker/RotatingFileHandler） | **完成 ✓**（480 tests + ruff 0 error + 冒烟 API-74~84 + 自审 G3/M2/M3 + 2026-04-27 代码评审 C-01~C-09 全部修复） |
 | **V1.0 整改批次** | **2026-04-27 V1.0 整体评审** 识别 8 P0 + 12 P1（详见 `docs/reviews/v1_overall_review_2026-04-27.md`），分 3 批修复：**Batch 1 合规链条 ✓ 完成 2026-05-01**（B1-1 重写 DISCLAIMER + B1-2 BacktestLimitationsBanner + B1-3 三视图 DisclaimerBanner + B1-4 SDD §7.7.5）/ **Batch 2 实盘风控+UX ✓ 完成 2026-05-01**（B2-1 CP3 max_drawdown_pct + B2-2 record_dividend 排查 + B2-3 闰年 bug + B2-4 LoginView 合规脚注 + B2-5 HTTPS 警示 + B2-6 INT-ACC-10/11 + INT-SIG-GEN-01d + LEAP-01~04 回归测试）/ **Batch 3 回测引擎重构 ✓ 完成 2026-05-01**（B3-1~10：BacktestDataBundle 全字段 + T+1 撮合 + PE/PB 真实切片 + RiskChecker 集成 + PIT is_st/is_suspended/delist_date + financials_history + DataValidator + 8 处异常合规化 + INT-BE-03~08 集成测试）；**V1.0 整改批次全部完成 ✓**；V1.5 完整 scope（SDD §16 14 项 + V1.0 评审 P2/P3 25 项 + SDD 外部评审 8 项 + Phase 10 评审 3 项 = 50 项）见设计文档 `docs/design/v1_5_roadmap.md` | **完成 ✓** |
+| **V1.0 真机验收** | **2026-05-11~12** 用生产 Docker 栈 + 真实 Tushare token 跑端到端验收，识别并修复 5 类共 11 个 bug：**数据层**（Bug 5 ingest_history per-day 原子性 / Bug 6 双表交集断点续传 / Bug 7a-b Tushare index_weight 月度稀疏接口 / Bug 9 pandas NaN → SQL `'NaN'` / asyncpg 32767 参数上限三个 upsert 漏分批）/ **API 层**（Bug 14 pipeline/trigger 与 BG task 的 UNIQUE 死锁）/ **迁移**（Bug 12 alembic 0008 幂等播种默认账户 id=1）/ **前端**（Bug 1 router 守卫漏 setup.completed 检查 / Bug 4 Wizard 跳过 refresh_stock_list / Bug 8 axios 15s 全局超时砍长任务 / Bug 10 回填天数语义错误）/ **运维**（Bug 11 nginx 90s 砍长任务 + deployment 指南标志补全）；**未修待 V1.5**：Bug 13（deposit 不幂等）/ Bug 15（fetch_dividend_data API 名）/ Bug 16（is_st PIT 还原）/ Bug 17（评分退化导致 ST 主导 top 20），见 `docs/design/v1_5_roadmap.md` §2.9 | **核心通路修复 ✓ / 4 项推迟 V1.5** |
 
 **开始新 phase 前**：确认对应设计文档已存在于 `docs/design/phases/`，若不存在先创建。
 
