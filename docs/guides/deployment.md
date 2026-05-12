@@ -125,11 +125,11 @@ scripts/deploy.sh
 ```
 
 `deploy.sh` 内部依次：
-1. `docker compose build --pull`（拉基础镜像并构建）
-2. `docker compose up -d db redis`
+1. `docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull`（拉基础镜像并构建）
+2. `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d db redis`
 3. 等 PostgreSQL `pg_isready`
-4. `docker compose up -d frontend-builder backend`（backend 启动时自动 `alembic upgrade head`）
-5. `docker compose up -d nginx`
+4. `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d frontend-builder backend`（backend 启动时自动 `alembic upgrade head`）
+5. `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d nginx`
 6. `curl http://localhost:${HTTP_PORT}/health` 健康检查
 
 ### 4.3 验证部署
