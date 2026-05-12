@@ -20,7 +20,7 @@ import { message } from 'ant-design-vue'
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { getDataStatus, ingestHistory } from '@/api/data'
+import { getDataStatus, ingestHistory, refreshStockList } from '@/api/data'
 import { deposit } from '@/api/positions'
 import { completeSetup, getSetupStatus } from '@/api/setup'
 import type { DataStatus, IngestHistoryResult } from '@/types/api'
@@ -40,7 +40,8 @@ const dataStatusLoading = ref(false)
 const dataStatusError = ref<string | null>(null)
 const ingestRunning = ref(false)
 const ingestResult = ref<IngestHistoryResult | null>(null)
-const backfillDays = ref<number>(60)
+// Bug 10 修复：默认 90 自然日（≈ 60 交易日），满足 SDD §10 首次因子计算 60 交易日下限
+const backfillDays = ref<number>(90)
 
 const STEPS = [
   { title: '欢迎' },
@@ -112,6 +113,10 @@ async function runHistoryIngest() {
   ingestRunning.value = true
   ingestResult.value = null
   try {
+    // 先刷新股票基础信息（stock_info），后续因子计算 / pool 选股都需要 join 此表；
+    // 缺失则 daily_quote 即便已入库，因子/信号链路也无法运行
+    await refreshStockList()
+
     const today = new Date()
     const startDate = offsetDate(today, backfillDays.value)
     const endDate = today.toISOString().slice(0, 10)
@@ -225,7 +230,7 @@ async function onComplete() {
           type="info"
           show-icon
           message="数据源就绪后，建议先回填最近的 OHLCV / 财务 / 指数数据"
-          description="不回填也可继续，但首次因子计算 / 信号生成需要至少 60 个交易日的历史窗口。"
+          description="不回填也可继续，但首次因子计算 / 信号生成需要至少 60 个交易日的历史窗口。回填窗口为自然日（含周末/节假日），90 自然日 ≈ 60 交易日。"
           style="margin-bottom: 16px"
         />
 
@@ -264,7 +269,7 @@ async function onComplete() {
         </a-spin>
 
         <a-form layout="inline" style="margin-bottom: 16px">
-          <a-form-item label="回填天数">
+          <a-form-item label="回填自然日">
             <a-input-number
               v-model:value="backfillDays"
               :min="1"
