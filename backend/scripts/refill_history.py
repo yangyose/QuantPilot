@@ -16,6 +16,10 @@
   # 可选 --dry-run 只删不重灌；--skip-confirm 跳过交互确认
   uv run python scripts/refill_history.py --start 2026-01-15 --end 2026-05-08 --skip-confirm
 
+  # 空 DB 场景（schema 刚 alembic upgrade head，stock_info 空）：加 --fresh，
+  # 在 ingest_history 之前先调 refresh_stock_list 拉全 A 股基础信息
+  uv run python scripts/refill_history.py --start 2026-01-15 --end 2026-05-08 --fresh --skip-confirm
+
 依赖：
   - TUSHARE_TOKEN / DATABASE_URL 环境变量
   - PostgreSQL 容器运行中
@@ -154,6 +158,8 @@ async def _main() -> int:
                         help="只删不重灌（用于先看会清掉多少行）")
     parser.add_argument("--skip-confirm", action="store_true",
                         help="跳过交互确认（非交互环境用）")
+    parser.add_argument("--fresh", action="store_true",
+                        help="空 DB 场景：在 ingest_history 之前先 refresh_stock_list")
     args = parser.parse_args()
 
     if args.start > args.end:
@@ -185,10 +191,25 @@ async def _main() -> int:
         return 0
 
     # 2) 重灌（per-day AsyncSessionLocal，Bug 5 修复保留）
-    print("[2/3] Re-ingesting via DataService.ingest_history (per-day session)...")
     adapter = TushareAdapter(token=settings.tushare_token)
     validator = DataValidator()
-    calendar = await TradingCalendar.from_adapter(adapter)
+    # 拉日历需要 start/end；放宽 30 天上下界以覆盖 namechange 5 年回溯下需要的
+    # 交易日（虽然回溯日历不参与日历日范围核对，但为安全留余量）
+    from datetime import timedelta as _td
+    calendar = await TradingCalendar.from_adapter(
+        adapter, args.start - _td(days=30), args.end + _td(days=30),
+    )
+
+    if args.fresh:
+        print("[2a/3] --fresh: refresh_stock_list 先拉全 A 股基础信息...")
+        async with AsyncSessionLocal() as session:
+            repo = MarketDataRepository(session)
+            service = DataService(adapter, validator, repo, calendar)
+            stock_summary = await service.refresh_stock_list()
+            await session.commit()
+        print(f"        - {stock_summary}")
+
+    print("[2/3] Re-ingesting via DataService.ingest_history (per-day session)...")
     async with AsyncSessionLocal() as session:
         repo = MarketDataRepository(session)
         service = DataService(adapter, validator, repo, calendar)
