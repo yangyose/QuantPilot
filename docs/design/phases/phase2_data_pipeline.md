@@ -1,6 +1,6 @@
 # Phase 2：数据采集层
 
-> **版本：** v1.0
+> **版本：** v1.3
 > **所属阶段：** Phase 2 / 10
 > **依据文档：** system_design.md §2.1、§2.5；SDD §4、§5
 > **日期：** 2026-03-13
@@ -17,6 +17,7 @@
 | **v1.0.1** | 2026-03-18 | 修正修订历史中测试计数笔误（57→61，Phase 2 新增 35 + Phase 1 既有 26 = 61）；§3.1 补充 index_component ORM 模型说明 |
 | **v1.1** | 2026-03-27 | **实现完成标记**：依据文档更新至 system_design_v1.1.md；勾选全部 DoD 复选框（Phase 2 验收通过）；§9 补充 CAL-07/VAL-05b/ADP-05b/ADP-07/ING-04~06/SCHEMA-01~04 共 10 个遗漏测试用例；测试计数全面修正（Phase 2 实际新增 46 个、Phase 1 实际 25 个，总计 71 个）；任务计划补充完成状态列；31 个冒烟测试全部通过（升级 Tushare 账号后去除速率延迟） |
 | **v1.2** | 2026-03-30 | **Phase 3 后整合修正**：§7 `create_scheduler` 签名同步实现——2 参数扩展为 5 参数（`session_factory / adapter / validator / calendar / market_state_engine`）；补充 CR-04 背景注解；lifespan 示例更新为实际调用方式 |
+| **v1.3** | 2026-05-12 | **V1.0 真机验收回写**：§4.8 `ingest_history` 契约修正为 per-day 独立 `AsyncSessionLocal`（修复 Bug 5 跨日共用 session + asyncpg 语句级 savepoint 导致的混合状态）；§8.3 同步明确双表交集断点续传规则（Bug 6）；§4.8 / §5.5 注明 `index_components` 改 range query 批量拉取（Bug 7a/7b：Tushare `index_weight` 月度稀疏）；新增 §8.4 asyncpg 单 SQL 32767 参数上限规格 + §8.5 `pandas NaN → SQL NULL` 转换（Bug 9：NUMERIC 列 `'NaN'` 特殊值 ≠ NULL） |
 
 ---
 
@@ -782,11 +783,22 @@ class DataService:
         progress_callback=None,
     ) -> dict:
         """历史数据回填：
-        按交易日循环调用 ingest_daily()，
-        支持断点续传：跳过 daily_quote 已有数据的交易日。
+        按交易日循环调用 ingest_daily()，**每个交易日独立 AsyncSessionLocal**：
+        当日所有 upsert（daily_quote + financial_data + index_history）任一失败 → 整日 rollback；
+        全部成功 → 整日 commit。**禁止**共用 outer session，否则 asyncpg 语句级 savepoint
+        会让单条 upsert 失败只回滚自己那条、其他表照常 commit，产生"daily_quote 进库
+        但 financial 全空"的混合状态（2026-05-11 真机验收发现的 Bug 5）。
+
+        断点续传：用 `repo.get_fully_ingested_dates(start, end)` 取 daily_quote ∩
+        financial_data 双表交集；只要任一表当日为空就视为未完成、需要补拉。**禁止**
+        只查 daily_quote（Bug 6：会把上一轮 savepoint 半 commit 的日期错误判定为完成）。
+
+        指数成分股 `index_components` 一次性 range query 批量拉取（4 次 vs N×4 次）：
+        Tushare `index_weight` 为月度稀疏接口（仅 rebalance 日有数据），按日循环大概率
+        全部返回空（Bug 7a/7b）。
+
         is_st 历史判断：回填开始前批量缓存 namechange 历史，按 trade_date 还原 ST 状态。
         progress_callback(current, total) 用于 WebSocket 进度推送（Phase 9）。
-        遇到单日失败：记录日志，继续下一日（不中断整批）。
         返回 {success_count, fail_count, failed_dates}
         """
 
@@ -1035,8 +1047,26 @@ Tushare Pro API 按积分分级限流（基础账户约每分钟 200 次）。
 ### 8.3 历史回填容错
 
 - 单日失败不中断整批（记录 `failed_dates` 列表）
-- 支持断点续传：检查 `daily_quote` 已有数据，跳过已入库的交易日
+- **每个交易日独立 `AsyncSessionLocal`**——当日所有 upsert 任一失败整日 rollback、全部成功整日 commit（Bug 5：禁止跨日共用 session，asyncpg 语句级 savepoint 会让单条失败只回滚自己那条、其他已成功表照常 commit，产生混合状态）
+- 断点续传查 `repo.get_fully_ingested_dates(start, end)` = `daily_quote ∩ financial_data`——只要任一表当日为空就重跑（Bug 6：仅查 daily_quote 会跳过上一轮半 commit 的日期）
 - 完成后输出 `{success_count, fail_count, failed_dates}` 摘要
+
+### 8.4 asyncpg 单 SQL 参数上限 32767
+
+PostgreSQL 协议 16-bit signed int 把单条 SQL 的占位符总数限制在 32767。批量 upsert 时：
+
+| 表 | 列数 | 每批最多行数（向下取整 32767/列）| 实际批 |
+|----|------|---------------------------------|--------|
+| `daily_quote` | 21 | 1560 | **500** |
+| `financial_data` | 11 | 2978 | **500** |
+| `index_history` | 9 | 3640 | **500** |
+| `stock_info` | 8 | 4095 | **500** |
+
+实现：repository 4 个 `upsert_*` 函数均按 `_BATCH_SIZE=500` 循环 `pg_insert(...).values(batch)`。**禁止**一次 `.values(df.to_dict("records"))` 全量入库——5491 只股票 × 11 列 = 60401 个参数直接触发 `PG_STMT_TOO_MANY_PARAMS`。合成数据测试用例 < 3000 行容易绕过此约束，集成测试需 ≥ 3000 行场景覆盖。
+
+### 8.5 pandas NaN → SQL NULL
+
+`df.to_dict("records")` 把 NaN/NaT 保留为 `float('nan')`，asyncpg 会原样写入 PostgreSQL `NUMERIC` 字段作为特殊值 `'NaN'`（≠ NULL）。下游 SQL 查询 `WHERE roe IS NOT NULL` 会误中、数值比较行为不可预期。**所有 upsert 在 `to_dict` 前必须 `df.where(pd.notna(df), None)`** 把 NaN 转 None → SQL NULL。已被污染的历史行可用 `UPDATE financial_data SET col = NULL WHERE col = 'NaN'` 清理。
 
 ---
 

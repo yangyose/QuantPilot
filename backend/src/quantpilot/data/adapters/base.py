@@ -80,6 +80,18 @@ class DataSourceAdapter(ABC):
         返回空列表时记录 WARNING（该日期数据源可能无数据，属正常情况）。
         """
 
+    async def fetch_index_components_range(
+        self, index_code: str, start_date: date, end_date: date
+    ) -> dict[date, list[str]]:
+        """范围批量版本：返回 [start_date, end_date] 内所有 snapshot
+        {snapshot_date: sorted_components}。
+
+        默认实现按 trade_date 逐日调用 fetch_index_components；速度慢，子类可覆盖
+        提供更高效的批量调用（如 Tushare 的 index_weight range query）。
+        不支持时抛 NotImplementedError。
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def fetch_namechange(
         self, start_date: date, end_date: date

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 
+from quantpilot.core.database import AsyncSessionLocal
 from quantpilot.data.adapters.base import DataSourceAdapter
 from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.repository import MarketDataRepository
@@ -82,6 +83,7 @@ class DataService:
         trade_date: date,
         _st_codes: set[str] | None = None,
         _skip_indexes: bool = False,
+        _repo: MarketDataRepository | None = None,
     ) -> IngestResult:
         """单日全量采集流程。
 
@@ -95,7 +97,10 @@ class DataService:
 
         校验失败（完整性不足）时：中止入库，errors 非空，snapshot_version 仍生成。
         _skip_indexes=True：供 ingest_history 使用，索引由外层批量拉取，避免 N×4 次重复调用。
+        _repo：可选 repo 覆盖；ingest_history 用 per-day session 构造本地 repo 传入实现
+        Bug 5 修复（per-day 原子性）；默认 None 时使用注入的 self._repo（直接 API 调用场景）。
         """
+        repo = _repo if _repo is not None else self._repo
         errors: list[str] = []
         quote_count = 0
         financial_count = 0
@@ -109,7 +114,7 @@ class DataService:
             # 历史回填时注入 namechange 缓存，按 PIT 还原 is_st（避免所有日期 is_st=False）
             if _st_codes is not None and "is_st" in quote_df.columns:
                 quote_df["is_st"] = quote_df["ts_code"].isin(_st_codes)
-            prev_count = await self._repo.get_active_stock_codes()
+            prev_count = await repo.get_active_stock_codes()
             vr = self._validator.validate_daily_quotes(quote_df, len(prev_count))
             if not vr.is_valid:
                 errors.extend(vr.errors)
@@ -118,7 +123,7 @@ class DataService:
                     extra={"trade_date": str(trade_date), "errors": vr.errors},
                 )
             else:
-                quote_count = await self._repo.upsert_daily_quotes(quote_df)
+                quote_count = await repo.upsert_daily_quotes(quote_df)
                 if vr.warnings:
                     logger.warning(
                         "daily_quotes_warnings",
@@ -141,7 +146,7 @@ class DataService:
             # 行级过滤：丢弃 invalid_rows，其余行仍入库
             valid_fin_df = fin_df.drop(index=vr_fin.invalid_rows)
             if not valid_fin_df.empty:
-                financial_count = await self._repo.upsert_financial_data(valid_fin_df)
+                financial_count = await repo.upsert_financial_data(valid_fin_df)
         except Exception as exc:
             errors.append(f"financial_data error: {exc}")
             logger.exception(
@@ -156,7 +161,7 @@ class DataService:
                         idx_code, trade_date, trade_date
                     )
                     if not idx_df.empty:
-                        await self._repo.upsert_index_history(idx_df)
+                        await repo.upsert_index_history(idx_df)
                 except Exception as exc:
                     errors.append(f"index_history[{idx_code}] error: {exc}")
                     logger.exception(
@@ -169,7 +174,7 @@ class DataService:
                 try:
                     components = await self._adapter.fetch_index_components(idx_code, trade_date)
                     if components:
-                        await self._repo.upsert_index_components(
+                        await repo.upsert_index_components(
                             idx_code, trade_date, components
                         )
                     else:
@@ -205,7 +210,9 @@ class DataService:
         返回 {success_count, fail_count, failed_dates}
         """
         trade_dates = self._calendar.get_trade_dates(start_date, end_date)
-        ingested_dates = await self._repo.get_ingested_quote_dates(start_date, end_date)
+        # Bug 6 修复：必须 daily_quote ∩ financial_data 两表都齐才算"已完成"，
+        # 否则 savepoint 半 commit 的日期会被错误跳过 financial 永远补不上
+        ingested_dates = await self._repo.get_fully_ingested_dates(start_date, end_date)
 
         # 回填前构建 is_st PIT 映射（namechange 历史缓存）
         st_map: dict[date, set[str]] = {}
@@ -237,6 +244,34 @@ class DataService:
                 )
                 logger.warning("index_history_batch error: %s", exc)
 
+        # ── 指数成分股批量拉取（Bug 7a 修复）─────────────────────────────────
+        # index_weight 为月度稀疏数据（仅 rebalance 日有 snapshot），range query 一次取全
+        for idx_code in _TARGET_INDEXES:
+            try:
+                snapshots = await self._adapter.fetch_index_components_range(
+                    idx_code, start_date, end_date
+                )
+                for snap_date, components in snapshots.items():
+                    if components:
+                        await self._repo.upsert_index_components(
+                            idx_code, snap_date, components
+                        )
+            except NotImplementedError:
+                # AKShare 等不支持 range 批量，记录降级
+                logger.warning(
+                    "index_components_range_not_implemented",
+                    extra={"adapter": type(self._adapter).__name__, "index_code": idx_code},
+                )
+            except Exception:
+                logger.exception(
+                    "index_components_batch_failed",
+                    extra={
+                        "index_code": idx_code,
+                        "start": str(start_date),
+                        "end": str(end_date),
+                    },
+                )
+
         success_count = 0
         fail_count = 0
         failed_dates: list[date] = []
@@ -249,29 +284,37 @@ class DataService:
                     progress_callback(i + 1, len(trade_dates))
                 continue
 
-            try:
-                result = await self.ingest_daily(
-                    td, _st_codes=st_map.get(td), _skip_indexes=True
-                )
-                if result.errors:
+            # Bug 5 修复：per-day 独立 session，要么整天 commit 要么整天 rollback。
+            # 修复前共用 outer session，asyncpg savepoint 让单条 upsert 失败只回滚
+            # 自己那条，造成"daily_quote 进库 financial 全空"的混合状态。
+            async with AsyncSessionLocal() as day_session:
+                day_repo = MarketDataRepository(day_session)
+                try:
+                    result = await self.ingest_daily(
+                        td, _st_codes=st_map.get(td), _skip_indexes=True, _repo=day_repo,
+                    )
+                    if result.errors:
+                        await day_session.rollback()
+                        fail_count += 1
+                        failed_dates.append(td)
+                        logger.error(
+                            "ingest_history_day_failed",
+                            extra={"trade_date": str(td), "errors": result.errors},
+                        )
+                    else:
+                        await day_session.commit()
+                        success_count += 1
+                except Exception as exc:
+                    await day_session.rollback()
                     fail_count += 1
                     failed_dates.append(td)
-                    logger.error(
-                        "ingest_history_day_failed",
-                        extra={"trade_date": str(td), "errors": result.errors},
+                    logger.exception(
+                        "ingest_history_day_exception",
+                        extra={"trade_date": str(td), "error": str(exc)},
                     )
-                else:
-                    success_count += 1
-            except Exception as exc:
-                fail_count += 1
-                failed_dates.append(td)
-                logger.exception(
-                    "ingest_history_day_exception",
-                    extra={"trade_date": str(td), "error": str(exc)},
-                )
-            finally:
-                # 批次间 sleep，避免触发 Tushare 速率限制（设计文档 §4.2）
-                await asyncio.sleep(0.3)
+
+            # 批次间 sleep，避免触发 Tushare 速率限制（设计文档 §4.2）
+            await asyncio.sleep(0.3)
 
             if progress_callback:
                 progress_callback(i + 1, len(trade_dates))

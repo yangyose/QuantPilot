@@ -50,18 +50,26 @@ class MarketDataRepository:
     # ── stock_info ─────────────────────────────────────────────────────────────
 
     async def upsert_stock_list(self, df: pd.DataFrame) -> int:
-        """批量 upsert stock_info。ON CONFLICT (ts_code) DO UPDATE"""
-        rows = df.to_dict(orient="records")
-        stmt = pg_insert(StockInfo).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["ts_code"],
-            set_={
-                **{col: stmt.excluded[col] for col in _STOCK_UPDATE_COLS if col in df.columns},
-                "updated_at": func.now(),
-            },
-        )
-        result = await self._session.execute(stmt)
-        return result.rowcount
+        """批量 upsert stock_info，500 行/批（asyncpg 单 SQL 参数上限 32767）。
+        ON CONFLICT (ts_code) DO UPDATE"""
+        total = 0
+        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
+        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
+        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
+        rows = df.where(pd.notna(df), None).to_dict(orient="records")
+        for i in range(0, len(rows), _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            stmt = pg_insert(StockInfo).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["ts_code"],
+                set_={
+                    **{col: stmt.excluded[col] for col in _STOCK_UPDATE_COLS if col in df.columns},
+                    "updated_at": func.now(),
+                },
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount
+        return total
 
     async def get_active_stock_codes(self) -> list[str]:
         """返回所有 is_active=True 的 ts_code 列表"""
@@ -96,7 +104,10 @@ class MarketDataRepository:
     async def upsert_daily_quotes(self, df: pd.DataFrame) -> int:
         """批量 upsert daily_quote，500 行/批"""
         total = 0
-        rows = df.to_dict(orient="records")
+        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
+        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
+        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
+        rows = df.where(pd.notna(df), None).to_dict(orient="records")
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
             stmt = pg_insert(DailyQuote).values(batch)
@@ -130,6 +141,25 @@ class MarketDataRepository:
             )
         )
         return {row[0] for row in result.all()}
+
+    async def get_fully_ingested_dates(self, start_date: date, end_date: date) -> set[date]:
+        """返回 daily_quote ∩ financial_data 两表均有数据的交易日集合。
+
+        Bug 6 修复：原 get_ingested_quote_dates 只查 daily_quote。当 SQLAlchemy savepoint
+        让 daily_quote 提交而 financial_data 失败时（Bug 5），下次重跑 resume 会误判已完成
+        而跳过补拉。本方法要求两表都有数据才算"已完成"。
+        """
+        quote_dates = await self.get_ingested_quote_dates(start_date, end_date)
+        fin_result = await self._session.execute(
+            select(FinancialData.publish_date)
+            .distinct()
+            .where(
+                FinancialData.publish_date >= start_date,
+                FinancialData.publish_date <= end_date,
+            )
+        )
+        fin_dates = {row[0] for row in fin_result.all()}
+        return quote_dates & fin_dates
 
     async def get_daily_quotes(
         self, ts_code: str, start_date: date, end_date: date
@@ -254,21 +284,30 @@ class MarketDataRepository:
     # ── financial_data ─────────────────────────────────────────────────────────
 
     async def upsert_financial_data(self, df: pd.DataFrame) -> int:
-        """批量 upsert financial_data。ON CONFLICT (ts_code, report_period, publish_date)
-        使用 COALESCE 保留已有非 NULL 值：两次分别 upsert fin_df 和 bal_df 时，
-        后者不会将前者写入的 roe 等字段覆盖为 NULL（C-04 修复）。
+        """批量 upsert financial_data，500 行/批（asyncpg 单 SQL 参数上限 32767）。
+
+        ON CONFLICT (ts_code, report_period, publish_date) 使用 COALESCE 保留已有非 NULL 值：
+        两次分别 upsert fin_df 和 bal_df 时，后者不会将前者写入的 roe 等字段
+        覆盖为 NULL（C-04 修复）。
         """
-        rows = df.to_dict(orient="records")
-        stmt = pg_insert(FinancialData).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["ts_code", "report_period", "publish_date"],
-            set_={
-                col: func.coalesce(stmt.excluded[col], FinancialData.__table__.c[col])
-                for col in _FINANCIAL_UPDATE_COLS if col in df.columns
-            },
-        )
-        result = await self._session.execute(stmt)
-        return result.rowcount
+        total = 0
+        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
+        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
+        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
+        rows = df.where(pd.notna(df), None).to_dict(orient="records")
+        for i in range(0, len(rows), _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            stmt = pg_insert(FinancialData).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["ts_code", "report_period", "publish_date"],
+                set_={
+                    col: func.coalesce(stmt.excluded[col], FinancialData.__table__.c[col])
+                    for col in _FINANCIAL_UPDATE_COLS if col in df.columns
+                },
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount
+        return total
 
     async def get_latest_financial(
         self, ts_codes: list[str], as_of_date: date
@@ -310,15 +349,23 @@ class MarketDataRepository:
     # ── index_history ──────────────────────────────────────────────────────────
 
     async def upsert_index_history(self, df: pd.DataFrame) -> int:
-        """批量 upsert index_history。ON CONFLICT (index_code, trade_date) DO UPDATE"""
-        rows = df.to_dict(orient="records")
-        stmt = pg_insert(IndexHistory).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["index_code", "trade_date"],
-            set_={col: stmt.excluded[col] for col in _INDEX_UPDATE_COLS if col in df.columns},
-        )
-        result = await self._session.execute(stmt)
-        return result.rowcount
+        """批量 upsert index_history，500 行/批（asyncpg 单 SQL 参数上限 32767）。
+        ON CONFLICT (index_code, trade_date) DO UPDATE"""
+        total = 0
+        # Bug 9 修复：pandas NaN/NaT 在 to_dict 后是 float('nan')，asyncpg 会把 NaN 写入
+        # PostgreSQL NUMERIC 作为特殊值 'NaN'（≠ NULL），导致 IS NOT NULL 误判、数值过滤失效。
+        # 这里 .where(notna, None) 把 NaN 转 None → SQL NULL。
+        rows = df.where(pd.notna(df), None).to_dict(orient="records")
+        for i in range(0, len(rows), _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            stmt = pg_insert(IndexHistory).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["index_code", "trade_date"],
+                set_={col: stmt.excluded[col] for col in _INDEX_UPDATE_COLS if col in df.columns},
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount
+        return total
 
     async def get_index_history(
         self, index_code: str, start_date: date, end_date: date

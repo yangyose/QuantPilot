@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
@@ -286,23 +286,60 @@ class TushareAdapter(DataSourceAdapter):
     async def fetch_index_components(
         self, index_code: str, trade_date: date
     ) -> list[str]:
-        """调用 index_weight，返回成分股 ts_code 列表（升序）。
+        """调用 index_weight 返回 PIT 成分股 ts_code 列表（升序）。
 
-        Tushare 免费接口可能无每日成分股，月度快照可接受；
-        返回空列表时记录 WARNING。
+        Bug 7b 修复：Tushare index_weight 是月度稀疏接口（仅 rebalance 日有数据），
+        直接传任意 trade_date 大概率返回空。本方法用 [trade_date - 60 天, trade_date]
+        range query 拿到窗口内所有 snapshot，再选 ≤ trade_date 的最近一次（PIT 正确）。
+        """
+        start = trade_date - timedelta(days=60)
+        df = await self._call(
+            self._pro.index_weight,
+            index_code=index_code,
+            start_date=self._fmt(start),
+            end_date=self._fmt(trade_date),
+        )
+        if df is None or df.empty:
+            logger.warning(
+                "fetch_index_components_empty",
+                extra={"index_code": index_code, "trade_date": str(trade_date)},
+            )
+            return []
+        latest_date = df["trade_date"].max()
+        snapshot = df[df["trade_date"] == latest_date]
+        return sorted(snapshot["con_code"].dropna().tolist())
+
+    async def fetch_index_components_range(
+        self, index_code: str, start_date: date, end_date: date
+    ) -> dict[date, list[str]]:
+        """一次 API 调用拿到 [start_date, end_date] 内所有成分股 snapshot。
+
+        Bug 7a 修复：供 ingest_history 批量加载用，避免按每个 trade_date 循环（4×N 次调用
+        变 4 次）。返回 {snapshot_date: sorted_components} 字典。
         """
         df = await self._call(
             self._pro.index_weight,
             index_code=index_code,
-            trade_date=self._fmt(trade_date),
+            start_date=self._fmt(start_date),
+            end_date=self._fmt(end_date),
         )
-        if df is None or len(df) == 0:
+        if df is None or df.empty:
             logger.warning(
-                "fetch_index_components returned empty",
-                extra={"index_code": index_code, "trade_date": str(trade_date)},
+                "fetch_index_components_range_empty",
+                extra={
+                    "index_code": index_code,
+                    "start": str(start_date),
+                    "end": str(end_date),
+                },
             )
-            return []
-        return sorted(df["con_code"].dropna().tolist())
+            return {}
+        result: dict[date, list[str]] = {}
+        for snap_date_str, group in df.groupby("trade_date"):
+            snap_date = self._to_date(snap_date_str)
+            if snap_date is None:
+                continue
+            result[snap_date] = sorted(group["con_code"].dropna().tolist())
+        return result
 
     # ── 历史改名（is_st PIT 还原）─────────────────────────────────────────────
 
