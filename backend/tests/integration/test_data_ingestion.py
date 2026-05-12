@@ -314,6 +314,48 @@ async def test_ing_04_ingest_history_st_pit_correct(repo, validator, calendar) -
 
 
 @pytest.mark.asyncio
+async def test_ing_04b_namechange_lookback_5_years(repo, validator, calendar) -> None:
+    """ING-04b（RM-16 回归）：ingest_history 必须用 5 年回溯调 fetch_namechange，
+    否则早就叫 *ST 的股票（公告在窗口前）会全部缺失 → is_st 全 FALSE。"""
+    from datetime import timedelta
+
+    captured_args: list[tuple[date, date]] = []
+
+    async def _capture_namechange(start_date: date, end_date: date) -> pd.DataFrame:
+        captured_args.append((start_date, end_date))
+        return pd.DataFrame(columns=["ts_code", "name", "start_date", "end_date"])
+
+    adapter = AsyncMock()
+    adapter.fetch_namechange = _capture_namechange
+    adapter.fetch_daily_quotes = AsyncMock(
+        return_value=pd.DataFrame(columns=["ts_code", "trade_date", "is_st"])
+    )
+    adapter.fetch_financial_data = AsyncMock(
+        return_value=pd.DataFrame(
+            columns=["ts_code", "report_period", "publish_date"]
+        )
+    )
+    adapter.fetch_index_history = AsyncMock(return_value=pd.DataFrame())
+    adapter.fetch_index_components = AsyncMock(return_value=[])
+    adapter.fetch_index_components_range = AsyncMock(return_value={})
+
+    service = DataService(adapter, validator, repo, calendar)
+    ingest_start = date(2026, 1, 2)
+    ingest_end = date(2026, 1, 6)
+    await service.ingest_history(ingest_start, ingest_end, _repo=repo)
+
+    assert len(captured_args) == 1
+    actual_start, actual_end = captured_args[0]
+    # 回溯起点应 ≈ ingest_start - 5 年
+    expected_start = ingest_start - timedelta(days=365 * 5)
+    assert actual_start == expected_start, (
+        f"namechange 回溯起点应 = ingest_start - 5y = {expected_start}，"
+        f"实际 {actual_start}（修复前 = {ingest_start} 即仅窗口内公告）"
+    )
+    assert actual_end == ingest_end
+
+
+@pytest.mark.asyncio
 async def test_ing_05_ingest_daily_index_components_written(repo, validator, calendar) -> None:
     """ING-05: fetch_index_components 返回非空列表时，成分股实际写入 DB"""
     stock_df = pd.DataFrame(

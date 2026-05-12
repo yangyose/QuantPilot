@@ -498,15 +498,21 @@ class TushareAdapter(DataSourceAdapter):
 
         仅返回 ex_date == trade_date 的记录（精确日期匹配）。
         输出列：ts_code, ex_date, cash_div（每股现金分红，元）。
-        数据源：Tushare fina_dividend API。
+        数据源：Tushare `dividend` API（积分需 ≥ 2000）。
 
-        【降级说明】fina_dividend 字段名为 cash_div_tax（税前每股分红），
-        本实现以此字段作为每股现金分红（cash_div），税后金额因个人税率差异不可统一处理。
-        恢复条件：若需税后分红，在调用层按持仓账户税率折算。
+        【降级说明】Tushare `dividend` 同时返回 `cash_div`（税后每股）和
+        `cash_div_tax`（税前每股）。本实现选用 `cash_div_tax` 作为每股现金分红，
+        理由：(a) A 股个税差别化（< 1 月 20% / 1-12 月 10% / ≥ 12 月 0%）取决于
+        持仓时长，V1.0 单账户场景无统一公式；(b) `cash_div` 字段是 Tushare 按
+        "持有 ≥ 1 年免税" 默认计算的结果，对短线持仓者会高估到账金额。
+        恢复条件：V1.5 接入 record_dividend 时按持仓 lot 分批计算 holding_days 实际税率。
+
+        Bug 15 修复（2026-05-12）：旧实现错调 `fina_dividend`（不存在的接口名）
+        导致 Tushare 返回 "请指定正确的接口名"；正确接口为 `dividend`。
         """
         ex_date_str = self._fmt(trade_date)
         df = await self._call(
-            self._pro.fina_dividend,
+            self._pro.dividend,
             ex_date=ex_date_str,
             fields="ts_code,ex_date,cash_div_tax",
         )

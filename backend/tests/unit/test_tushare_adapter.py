@@ -433,3 +433,50 @@ async def test_td_09_fetch_balance_sheet_empty_codes(adapter: TushareAdapter) ->
 
     call_mock.assert_not_called()
     assert len(result) == 0
+
+
+@pytest.mark.asyncio
+async def test_td_10_fetch_dividend_data_uses_correct_api(adapter: TushareAdapter) -> None:
+    """TD-10（Bug 15 回归）：fetch_dividend_data 必须调 `pro.dividend`，不是不存在的
+    `pro.fina_dividend`。锁住 API 名契约——后者真机调用返回"请指定正确的接口名"。"""
+    mock_df = pd.DataFrame(
+        {"ts_code": ["000001.SZ"], "ex_date": ["20260102"], "cash_div_tax": [0.5]}
+    )
+
+    captured_func = []
+
+    async def _capture_call(func, **kwargs):
+        captured_func.append(func)
+        return mock_df
+
+    with patch.object(adapter, "_call", new=_capture_call):
+        result = await adapter.fetch_dividend_data(date(2026, 1, 2))
+
+    # 锁定调用的是 _pro.dividend 这个绑定方法（不是 fina_dividend 或其他名字）
+    assert len(captured_func) == 1
+    assert captured_func[0] is adapter._pro.dividend, (
+        "fetch_dividend_data 必须调 _pro.dividend（Tushare 正确接口名），"
+        "禁止调 fina_dividend（不存在的接口名）"
+    )
+    # 顺带验证字段映射正常
+    assert len(result) == 1
+    assert result.iloc[0]["cash_div"] == 0.5
+    assert result.iloc[0]["ex_date"] == date(2026, 1, 2)
+
+
+@pytest.mark.asyncio
+async def test_td_11_fetch_dividend_data_filters_other_dates(adapter: TushareAdapter) -> None:
+    """TD-11：fetch_dividend_data 按 ex_date 精确过滤——Tushare 接口可能返回邻近日期
+    的记录（取决于 server 行为），本方法必须只保留 ex_date == trade_date 的行。"""
+    mock_df = pd.DataFrame(
+        {
+            "ts_code": ["000001.SZ", "000002.SZ", "000003.SZ"],
+            "ex_date": ["20260102", "20260103", "20260102"],
+            "cash_div_tax": [0.5, 1.0, 0.0],  # 第 3 行 cash_div=0 应被过滤
+        }
+    )
+    with patch.object(adapter, "_call", new=AsyncMock(return_value=mock_df)):
+        result = await adapter.fetch_dividend_data(date(2026, 1, 2))
+
+    assert len(result) == 1  # 仅 000001.SZ 满足 ex_date == 1/2 且 cash_div > 0
+    assert result.iloc[0]["ts_code"] == "000001.SZ"

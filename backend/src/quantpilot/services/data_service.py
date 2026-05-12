@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 from quantpilot.core.database import AsyncSessionLocal
 from quantpilot.data.adapters.base import DataSourceAdapter
@@ -224,13 +224,28 @@ class DataService:
         ingested_dates = await self._repo.get_fully_ingested_dates(start_date, end_date)
 
         # 回填前构建 is_st PIT 映射（namechange 历史缓存）
+        # RM-16 修复：fetch_namechange 的 start/end 是 Tushare 公告日期（ann_date），
+        # 仅传 ingest 窗口 [start_date, end_date] 只能拿到"窗口内被宣告改名"的股票。
+        # 早就已经叫 *ST 的股票（公告在几年前）会全部缺失 → st_map 几乎空 →
+        # daily_quote.is_st 全部 FALSE。把回溯起点放到 5 年前（覆盖绝大多数当前
+        # ST 股票的命名公告日；3 年净亏损被实施 ST，超 5 年通常已强制退市）。
+        # 【降级说明】若 5 年内有 > 5000 条 namechange（Tushare 单页上限）会被截断
+        # 最旧的部分；V1.5 按年分批拉取彻底解决。
+        ns_lookback_start = start_date - timedelta(days=365 * 5)
         st_map: dict[date, set[str]] = {}
         try:
-            namechange_df = await self._adapter.fetch_namechange(start_date, end_date)
+            namechange_df = await self._adapter.fetch_namechange(
+                ns_lookback_start, end_date
+            )
             st_map = _build_st_map(namechange_df, trade_dates)
             logger.info(
                 "namechange_cache_built",
-                extra={"trade_days": len(trade_dates)},
+                extra={
+                    "trade_days": len(trade_dates),
+                    "namechange_rows": len(namechange_df),
+                    "lookback_start": str(ns_lookback_start),
+                    "st_codes_total": sum(len(v) for v in st_map.values()),
+                },
             )
         except Exception as exc:
             logger.warning(
