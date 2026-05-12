@@ -184,30 +184,44 @@ class TushareAdapter(DataSourceAdapter):
             fields="ts_code,pe_ttm,pb,dv_ttm",
         )
 
-        # 2. 最近季报财务数据：fina_indicator(period=最近季度末)
-        # 已知限制：Tushare fina_indicator 不支持全市场按 period 批量查询，
-        # 必须指定 ts_code（单股）。全市场批量方案需在 Phase 4 前专项解决：
-        #   选项A：按 ts_code 分批循环（每批 1 只，慢但完整）
-        #   选项B：改用 income / balancesheet API 支持的批量接口
-        # 当前降级处理：仅保留 daily_basic 字段（pe_ttm/pb/dv_ttm），
-        # roe/net_profit_yoy/revenue_yoy/total_equity/debt_to_asset 暂存 NULL。
-        # 注：total_equity（总股东权益）来自 balancesheet API（total_hldr_eqy_exc_min_int），
-        # 不在 fina_indicator 中；Phase 4 前暂存 NULL，届时通过 balancesheet 补充。
-        try:
-            fina = await self._call(
-                self._pro.fina_indicator,
-                period=period_str,
-                fields="ts_code,end_date,roe,netprofit_yoy,tr_yoy,debt_to_assets",
+        # 2. 最近季报财务数据：fina_indicator(period=最近季度末, ts_code=批量)
+        # RM-17 修复（2026-05-12）：原 period-only 调用 Tushare 不支持，全部走
+        # except 分支让 roe/yoy/financial 字段全 NULL，导致 ValueStrategy 价值陷阱
+        # 过滤跳过 → 评分退化 → 真机 top 20 全 ST。改按 ts_code 分批传 50 只 + period
+        # 组合查询（fina_indicator 支持此组合），50 只/批 × 0.3s sleep ≈ 单日 +33s。
+        codes_for_fina: list[str] = (
+            ts_codes if ts_codes is not None else basic["ts_code"].dropna().tolist()
+        )
+        fina_frames: list[pd.DataFrame] = []
+        for i in range(0, len(codes_for_fina), 50):
+            batch = codes_for_fina[i : i + 50]
+            try:
+                df_batch = await self._call(
+                    self._pro.fina_indicator,
+                    period=period_str,
+                    ts_code=",".join(batch),
+                    fields="ts_code,end_date,roe,netprofit_yoy,tr_yoy,debt_to_assets",
+                )
+                if df_batch is not None and not df_batch.empty:
+                    fina_frames.append(df_batch)
+            except Exception:
+                logger.exception(
+                    "fina_indicator_batch_failed",
+                    extra={"period": period_str, "batch_start": i, "batch_size": len(batch)},
+                )
+            if i + 50 < len(codes_for_fina):
+                await asyncio.sleep(0.3)
+        if fina_frames:
+            fina = pd.concat(fina_frames, ignore_index=True).drop_duplicates(
+                subset=["ts_code", "end_date"], keep="last"
             )
-        except Exception:
-            logger.warning(
-                "fina_indicator_period_only_not_supported_financial_fields_null",
-                extra={"period": period_str},
-            )
+        else:
             fina = pd.DataFrame(
                 columns=["ts_code", "end_date", "roe", "netprofit_yoy",
                          "tr_yoy", "debt_to_assets"]
             )
+        # 注：total_equity（总股东权益）来自 balancesheet API（total_hldr_eqy_exc_min_int），
+        # 不在 fina_indicator 中；V1.5 接入 fetch_balance_sheet 补充，V1.0 暂存 NaN。
 
         # basic 为主表（全市场），LEFT JOIN fina（季报可能缺失部分股票）
         fina_cols = ["ts_code", "end_date", "roe", "netprofit_yoy", "tr_yoy", "debt_to_assets"]

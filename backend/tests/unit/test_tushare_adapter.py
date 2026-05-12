@@ -465,6 +465,61 @@ async def test_td_10_fetch_dividend_data_uses_correct_api(adapter: TushareAdapte
 
 
 @pytest.mark.asyncio
+async def test_td_12_fetch_financial_data_uses_ts_code_batches(
+    adapter: TushareAdapter,
+) -> None:
+    """TD-12（RM-17 回归）：fetch_financial_data 必须按 ts_code 分批调 fina_indicator，
+    禁止 period-only 调用（Tushare 不支持，会让 roe/yoy 全 NULL）。"""
+    mock_basic = pd.DataFrame(
+        {
+            "ts_code": [f"{i:06d}.SZ" for i in range(1, 75)],  # 74 只 → 2 批
+            "pe_ttm": [12.0] * 74,
+            "pb": [1.2] * 74,
+            "dv_ttm": [3.0] * 74,
+        }
+    )
+    mock_fina_batch = pd.DataFrame(
+        {
+            "ts_code": ["000001.SZ"],
+            "end_date": ["20250930"],
+            "roe": [15.0],
+            "netprofit_yoy": [10.0],
+            "tr_yoy": [8.0],
+            "debt_to_assets": [50.0],
+        }
+    )
+
+    captured_calls: list[dict] = []
+
+    async def _capture(func, **kwargs):
+        captured_calls.append({"func": func, **kwargs})
+        if func is adapter._pro.daily_basic:
+            return mock_basic
+        elif func is adapter._pro.fina_indicator:
+            return mock_fina_batch
+        return pd.DataFrame()
+
+    with patch.object(adapter, "_call", new=_capture):
+        result = await adapter.fetch_financial_data(date(2026, 1, 2))
+
+    # 1 次 daily_basic + 2 次 fina_indicator（74 只 / 50 = 2 批）
+    daily_basic_calls = [c for c in captured_calls if c["func"] is adapter._pro.daily_basic]
+    fina_calls = [c for c in captured_calls if c["func"] is adapter._pro.fina_indicator]
+    assert len(daily_basic_calls) == 1
+    assert len(fina_calls) == 2, f"应分 2 批调 fina_indicator，实际 {len(fina_calls)} 次"
+    # 每次 fina_indicator 调用必须含 period + ts_code 双参数（不能 period-only）
+    for c in fina_calls:
+        assert "period" in c, "必须传 period"
+        assert "ts_code" in c, "必须传 ts_code（不能 period-only，Tushare 不支持）"
+        assert "," in c["ts_code"] or c["ts_code"].count(".") == 1
+    # roe 单位换算（% → 小数）仍正常
+    row1 = result[result["ts_code"] == "000001.SZ"].iloc[0]
+    assert abs(row1["roe"] - 0.15) < 1e-9
+    assert row1["publish_date"] == date(2026, 1, 2)
+    assert len(result) == 74  # basic 为主表，全部 74 只在结果中
+
+
+@pytest.mark.asyncio
 async def test_td_11_fetch_dividend_data_filters_other_dates(adapter: TushareAdapter) -> None:
     """TD-11：fetch_dividend_data 按 ex_date 精确过滤——Tushare 接口可能返回邻近日期
     的记录（取决于 server 行为），本方法必须只保留 ex_date == trade_date 的行。"""

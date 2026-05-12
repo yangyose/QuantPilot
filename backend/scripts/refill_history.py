@@ -214,6 +214,10 @@ async def _main() -> int:
         repo = MarketDataRepository(session)
         service = DataService(adapter, validator, repo, calendar)
         summary = await service.ingest_history(args.start, args.end)
+        # ingest_history 内部对 daily_quote/financial_data 走 per-day session 自己 commit；
+        # 但 index_history / index_components_range 用 self._repo（= 本 outer session），
+        # 必须在退出 async with 前显式 commit，否则 close 时 rollback 丢数据。
+        await session.commit()
     print(f"      - success={summary['success_count']}  fail={summary['fail_count']}")
     if summary["failed_dates"]:
         print(f"      - failed_dates: {summary['failed_dates']}")
