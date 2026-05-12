@@ -437,4 +437,5 @@ async def test_ing_06_pit_violation_invalid_rows_excluded(repo, validator, calen
     )
     # 只有合规行（000001.SZ）入库，违规行（000002.SZ）被过滤掉
     assert len(fin_in_db) == 1
-    assert fin_in_db.iloc[0]["ts_code"] == "000001.SZ"
+    # ts_code 是索引（RM-17 修复后 set_index）
+    assert fin_in_db.index[0] == "000001.SZ"

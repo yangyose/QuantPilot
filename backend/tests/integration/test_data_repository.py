@@ -93,6 +93,8 @@ async def test_repo_03_get_latest_financial_pit(repo: MarketDataRepository) -> N
     result = await repo.get_latest_financial(["000001.SZ"], as_of_date=as_of)
 
     assert len(result) == 1
+    # ts_code 是索引（RM-17 修复后 set_index）；publish_date 仍是 column
+    assert result.index[0] == "000001.SZ"
     # 只能拿到 publish_date=2025-08-30 的记录
     assert result.iloc[0]["publish_date"] == date(2025, 8, 30)
 
