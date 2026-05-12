@@ -91,6 +91,12 @@ async def trigger_pipeline(
         await session.flush()
         await session.refresh(run)
 
+    # Bug 14 修复：必须在 add_task 之前显式 commit，否则形成死锁——
+    # Starlette BG tasks 在 get_db async with 上下文内 await，commit 推迟到所有 BG
+    # task 结束；但 BG 内 DailyPipeline 自己开 session 也要写同 trade_date 这行，
+    # 被 trade_date UNIQUE 约束阻塞等 trigger session commit → 循环死锁。
+    await session.commit()
+
     # 后台触发真实 DailyPipeline（依赖 app.state 中的长期对象）
     adapter = getattr(request.app.state, "adapter", None)
     if adapter is not None:
