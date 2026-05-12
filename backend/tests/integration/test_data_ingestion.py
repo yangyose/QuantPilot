@@ -206,9 +206,13 @@ async def test_ing_03_ingest_history_3_days(repo, validator, calendar) -> None:
     )
     adapter.fetch_index_history = AsyncMock(return_value=index_df)
     adapter.fetch_index_components = AsyncMock(return_value=[])
+    adapter.fetch_index_components_range = AsyncMock(return_value={})
 
     service = DataService(adapter, validator, repo, calendar)
-    summary = await service.ingest_history(date(2026, 1, 2), date(2026, 1, 6))
+    # _repo=repo 走测试注入路径，共用 db_session fixture 的事务（含 rollback 隔离）
+    summary = await service.ingest_history(
+        date(2026, 1, 2), date(2026, 1, 6), _repo=repo
+    )
 
     assert summary["success_count"] == 3
     assert summary["fail_count"] == 0
@@ -286,9 +290,10 @@ async def test_ing_04_ingest_history_st_pit_correct(repo, validator, calendar) -
         )
     )
     adapter.fetch_index_components = AsyncMock(return_value=[])
+    adapter.fetch_index_components_range = AsyncMock(return_value={})
 
     service = DataService(adapter, validator, repo, calendar)
-    summary = await service.ingest_history(trade_date, trade_date)
+    summary = await service.ingest_history(trade_date, trade_date, _repo=repo)
 
     assert summary["success_count"] == 1
     assert summary["fail_count"] == 0

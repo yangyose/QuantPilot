@@ -99,14 +99,22 @@ async def _seed_account(
     cash: float = 1_000_000.0,
     total_assets: float = 1_000_000.0,
 ) -> Account:
-    acc = Account(
-        name="测试账户",
-        account_type="REAL",
-        broker="MOCK",
-        total_assets=total_assets,
-        cash=cash,
-    )
-    session.add(acc)
+    # alembic 0008 已幂等播种 account id=1；复用它（生产单管理员假设：account_id=1 即默认账户）
+    # 修复前：autoincrement 拿到 id=2，但 signal_service.get_default_account 取 id=1
+    # → DailyPortfolioValue 永远挂在错号上 → drawdown 计算永远 0
+    acc = await session.get(Account, 1)
+    if acc is None:
+        acc = Account(
+            id=1, name="测试账户", account_type="REAL", broker="MOCK",
+            total_assets=total_assets, cash=cash,
+        )
+        session.add(acc)
+    else:
+        acc.name = "测试账户"
+        acc.account_type = "REAL"
+        acc.broker = "MOCK"
+        acc.total_assets = total_assets
+        acc.cash = cash
     await session.flush()
     return acc
 

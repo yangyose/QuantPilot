@@ -203,8 +203,17 @@ class DataService:
         start_date: date,
         end_date: date,
         progress_callback=None,
+        _repo: MarketDataRepository | None = None,
     ) -> dict:
         """历史数据回填，支持断点续传（跳过已入库的交易日）。
+
+        生产路径（`_repo` 默认 None）：per-day 独立 `AsyncSessionLocal`——当日 errors
+        非空整日 rollback、否则整日 commit（Bug 5 修复，见 phase2 §4.8 / §8.3）。
+
+        测试注入路径（`_repo` 显式传入）：所有交易日共用注入的 repo（通常来自集成
+        测试 `db_session` fixture），跳过 per-day session 创建。这样测试的事务隔离
+        + rollback 不被绕过；代价是这条路径不覆盖 per-day 原子性回滚逻辑，需要
+        独立的 INT-DATA-** 用例显式构造混合失败场景验证 day_session.rollback。
 
         遇到单日失败：记录日志，继续下一日（不中断整批）。
         返回 {success_count, fail_count, failed_dates}
@@ -284,17 +293,13 @@ class DataService:
                     progress_callback(i + 1, len(trade_dates))
                 continue
 
-            # Bug 5 修复：per-day 独立 session，要么整天 commit 要么整天 rollback。
-            # 修复前共用 outer session，asyncpg savepoint 让单条 upsert 失败只回滚
-            # 自己那条，造成"daily_quote 进库 financial 全空"的混合状态。
-            async with AsyncSessionLocal() as day_session:
-                day_repo = MarketDataRepository(day_session)
+            if _repo is not None:
+                # 测试注入路径：共用注入 repo（含集成测试 rollback 隔离的 session）
                 try:
                     result = await self.ingest_daily(
-                        td, _st_codes=st_map.get(td), _skip_indexes=True, _repo=day_repo,
+                        td, _st_codes=st_map.get(td), _skip_indexes=True, _repo=_repo,
                     )
                     if result.errors:
-                        await day_session.rollback()
                         fail_count += 1
                         failed_dates.append(td)
                         logger.error(
@@ -302,16 +307,43 @@ class DataService:
                             extra={"trade_date": str(td), "errors": result.errors},
                         )
                     else:
-                        await day_session.commit()
                         success_count += 1
                 except Exception as exc:
-                    await day_session.rollback()
                     fail_count += 1
                     failed_dates.append(td)
                     logger.exception(
                         "ingest_history_day_exception",
                         extra={"trade_date": str(td), "error": str(exc)},
                     )
+            else:
+                # 生产路径（Bug 5 修复）：per-day 独立 session，要么整天 commit 要么
+                # 整天 rollback。修复前共用 outer session，asyncpg savepoint 让单条
+                # upsert 失败只回滚自己那条，造成"daily_quote 进库 financial 全空"。
+                async with AsyncSessionLocal() as day_session:
+                    day_repo = MarketDataRepository(day_session)
+                    try:
+                        result = await self.ingest_daily(
+                            td, _st_codes=st_map.get(td), _skip_indexes=True, _repo=day_repo,
+                        )
+                        if result.errors:
+                            await day_session.rollback()
+                            fail_count += 1
+                            failed_dates.append(td)
+                            logger.error(
+                                "ingest_history_day_failed",
+                                extra={"trade_date": str(td), "errors": result.errors},
+                            )
+                        else:
+                            await day_session.commit()
+                            success_count += 1
+                    except Exception as exc:
+                        await day_session.rollback()
+                        fail_count += 1
+                        failed_dates.append(td)
+                        logger.exception(
+                            "ingest_history_day_exception",
+                            extra={"trade_date": str(td), "error": str(exc)},
+                        )
 
             # 批次间 sleep，避免触发 Tushare 速率限制（设计文档 §4.2）
             await asyncio.sleep(0.3)
