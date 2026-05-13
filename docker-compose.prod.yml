@@ -13,6 +13,27 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-quantpilot}
       POSTGRES_USER: ${POSTGRES_USER:-quantpilot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # 性能调优：默认 shared_buffers=128MB 在 5y 历史数据场景（daily_quote 2M+ 行）
+    # 不够，触发 buffer cache 颠簸（hit ratio 78% / 22% disk read）。下列保守值适配
+    # WSL2 backend 3.4GB Docker 配额约束：db 总内存 ~1.5GB，留 backend ~1.4GB 余量。
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - max_wal_size=1GB
+      - -c
+      - random_page_cost=1.1
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:

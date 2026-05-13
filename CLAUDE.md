@@ -194,6 +194,7 @@ created_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 - **Tushare `namechange` 接口 start/end 是公告日期（ann_date）**，仅传 ingest 窗口只能拿到「窗口内被公告改名」的股票——早就叫 \*ST 的股票（公告在几年前）会全部缺失。`ingest_history` 必须把 namechange 回溯起点设为 `ingest_start - 5y`（覆盖绝大多数当前 ST 命名公告日，3 年净亏损实施 ST、超 5 年通常已强制退市）。RM-16（2026-05-12 真机验收）
 - **Tushare 分红接口名是 `dividend` 不是 `fina_dividend`**：`pro.dividend(ex_date=...)` 返回 cash_div_tax（税前每股，元）。错误接口名（如 `fina_dividend`）会被 Tushare 服务端返回「请指定正确的接口名」——单元测试用 mock 抓不到这类 typo，必须真机抽测一次或对方法名加 `is adapter._pro.dividend` 契约断言。RM-15（2026-05-12 真机验收）
 - **完整性校验 `prev_count` 必须 PIT 活股数**：`DataService.ingest_daily` 调 `validate_daily_quotes(quote_df, prev_count)` 时必须用 `repo.get_active_stock_codes_as_of(trade_date)`（按 list_date/delist_date PIT 过滤），不能用 `get_active_stock_codes()` 的当前 is_active 快照。后者含 2026 年新上市股 5840 只，5 年前 fetch 返回 ~4300 只必然 < 5840×0.95 → 完整性校验失败 → per-day session 整日 rollback → 5 年回填跑完仍是空 DB。单元测试无法暴露（mock 总传任意 prev_count），需 5 年级别真机回填或专门构造 PIT 整合测试。RM-18（2026-05-13 真机验收）
+- **`refill_history.py` 双模式（2026-05-13）**：默认 = 扩存量（不删，走 `get_fully_ingested_dates` 双表交集断点续传）；`--force-clean` = 修脏（先 DELETE 4 表再重灌）；`--dry-run-plan` = 预检（仅打印 trade_dates / 已入库 / 待补，不删不拉）。早期默认 DELETE 是为"修脏"设计的，但"按需扩大历史窗口"（90 天 → 5 年）是更高频运维操作，两语义通过 flag 区分到一个脚本，避免重复维护
 
 ### Engine 层
 

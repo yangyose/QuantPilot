@@ -1,6 +1,6 @@
 # Phase 2：数据采集层
 
-> **版本：** v1.4
+> **版本：** v1.5
 > **所属阶段：** Phase 2 / 10
 > **依据文档：** system_design.md §2.1、§2.5；SDD §4、§5
 > **日期：** 2026-03-13
@@ -19,6 +19,7 @@
 | **v1.2** | 2026-03-30 | **Phase 3 后整合修正**：§7 `create_scheduler` 签名同步实现——2 参数扩展为 5 参数（`session_factory / adapter / validator / calendar / market_state_engine`）；补充 CR-04 背景注解；lifespan 示例更新为实际调用方式 |
 | **v1.3** | 2026-05-12 | **V1.0 真机验收回写**：§4.8 `ingest_history` 契约修正为 per-day 独立 `AsyncSessionLocal`（修复 Bug 5 跨日共用 session + asyncpg 语句级 savepoint 导致的混合状态）；§8.3 同步明确双表交集断点续传规则（Bug 6）；§4.8 / §5.5 注明 `index_components` 改 range query 批量拉取（Bug 7a/7b：Tushare `index_weight` 月度稀疏）；新增 §8.4 asyncpg 单 SQL 32767 参数上限规格 + §8.5 `pandas NaN → SQL NULL` 转换（Bug 9：NUMERIC 列 `'NaN'` 特殊值 ≠ NULL） |
 | **v1.4** | 2026-05-13 | **V1.0 真机验收 5y 回填回写**：新增 §8.6 完整性校验 `prev_count` 必须 PIT（RM-18）—— `DataService.ingest_daily` 改用 `repo.get_active_stock_codes_as_of(trade_date)` 按 list_date/delist_date PIT 过滤，避免当前 `is_active` 快照在 5 年回填时把当时 ~4300 只对比 ~5840 全部判 < 95% 阈值导致每日 rollback。§9.6 新增 REPO-05 集成测试（3 股 PIT 场景）；§4.3 DataValidator 文档明确 `prev_count` 语义为"截至 trade_date 实际上市未退市的股票数"|
+| **v1.5** | 2026-05-13 | **运维脚本 refill_history.py 双模式拆分**：新增 §8.3.1——原默认 DELETE 行为收编到 `--force-clean`（修脏场景），默认走 `get_fully_ingested_dates` 断点续传（扩存量场景），新增 `--dry-run-plan` 预检模式。动机：早期 refill 仅服务"修脏"，但实际"扩大历史窗口"是更高频的运维操作（如从 90 天扩到 5 年），两语义合并到一个脚本通过 flag 区分 |
 
 ---
 
@@ -1056,6 +1057,18 @@ Tushare Pro API 按积分分级限流（基础账户约每分钟 200 次）。
 - **每个交易日独立 `AsyncSessionLocal`**——当日所有 upsert 任一失败整日 rollback、全部成功整日 commit（Bug 5：禁止跨日共用 session，asyncpg 语句级 savepoint 会让单条失败只回滚自己那条、其他已成功表照常 commit，产生混合状态）
 - 断点续传查 `repo.get_fully_ingested_dates(start, end)` = `daily_quote ∩ financial_data`——只要任一表当日为空就重跑（Bug 6：仅查 daily_quote 会跳过上一轮半 commit 的日期）
 - 完成后输出 `{success_count, fail_count, failed_dates}` 摘要
+
+#### 8.3.1 运维脚本 `refill_history.py` 双模式（2026-05-13 拆分）
+
+`backend/scripts/refill_history.py` 支持两种语义，**默认走断点续传**：
+
+| 模式 | 触发 | 行为 | 典型场景 |
+|------|------|------|---------|
+| **扩存量**（默认） | 无 `--force-clean` | 不删任何已有数据，依赖 `get_fully_ingested_dates` 自动跳过已完整入库的日子 | 首次回填 / 按需扩大历史窗口（90 天 → 2 年 → 5 年） |
+| **修脏** | `--force-clean` | 先 DELETE 范围内 4 表数据再走 ingest_history 全量重灌 | 上一轮上游 bug 把数据写脏，断点续传会跳过脏行不刷新 |
+| **预检** | `--dry-run-plan` | 仅打印 trade_dates 总数 / 已完整入库 / 待补数量，不删不拉 | 决定要不要执行前的快速核查 |
+
+设计动机：早期 `refill_history.py` 仅服务"修脏"场景（默认 DELETE），但实际"扩大存量"是更高频的运维操作；两个语义合并到一个脚本通过 flag 区分，避免维护两份重复逻辑。
 
 ### 8.4 asyncpg 单 SQL 参数上限 32767
 

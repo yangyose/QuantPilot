@@ -392,7 +392,11 @@ async def seed():
             # ── 9. Reports ───────────────────────────────────────────────
             weekly_content = {
                 "summary": "本周组合净值 +1.82%，跑赢沪深300指数（+0.96%）",
-                "performance": {"weekly_return": 0.0182, "benchmark_return": 0.0096, "alpha": 0.0086},
+                "performance": {
+                    "weekly_return": 0.0182,
+                    "benchmark_return": 0.0096,
+                    "alpha": 0.0086,
+                },
                 "top_signals": [
                     {"ts_code": "601318.SH", "signal_type": "BUY", "score": 88.5},
                     {"ts_code": "000001.SZ", "signal_type": "BUY", "score": 74.2},
@@ -408,7 +412,10 @@ async def seed():
                     "sharpe_ratio": 1.85,
                     "win_rate": 0.625,
                 },
-                "factor_health": "momentum_20d IC均值 0.063（正常），rsi_reversal 连续2月IC为负（告警）",
+                "factor_health": (
+                    "momentum_20d IC均值 0.063（正常），"
+                    "rsi_reversal 连续2月IC为负（告警）"
+                ),
                 "suggestions": ["减少 rsi_reversal 策略权重", "关注消费板块机会"],
             }
             s.add(Report(
@@ -442,7 +449,11 @@ async def seed():
                 ),
                 UserConfig(
                     config_key="strategy_weights",
-                    config_value={"TrendStrategy": 0.5, "ValueStrategy": 0.3, "ReversionStrategy": 0.2},
+                    config_value={
+                        "TrendStrategy": 0.5,
+                        "ValueStrategy": 0.3,
+                        "ReversionStrategy": 0.2,
+                    },
                     user_level="USER",
                     description="策略权重配置",
                 ),

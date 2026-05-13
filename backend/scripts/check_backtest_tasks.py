@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 
 async def main() -> None:
