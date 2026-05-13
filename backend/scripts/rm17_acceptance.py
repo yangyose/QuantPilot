@@ -1,4 +1,4 @@
-"""RM-17 评分质量验收探针。
+"""RM-17 评分质量 + 5y 真机验收探针。
 
 依赖：refill_history.py 已成功跑完（财务/行情/指数/成分股齐全）。
 本脚本不修改数据，只做读探针 + 给出 PASS/FAIL 判定：
@@ -13,10 +13,19 @@
    - 最新一日的 top 20 信号 ST 占比 ≤ 10%（修复前 100%；目标 ≤ 5%，10% 为放宽阈值）
    - 价值因子非空率：candidate_pool.value_score 非空行数 / 总行数 ≥ 30%
 
+3) 5y 范围专属基线（仅当 --5y 启用）：
+   - daily_quote 覆盖 ≥ 1200 交易日（5 年 × 245 - 节假日）
+   - 早年 is_st 占比（2021-2022）与近年（2025-2026）差异 ≤ 3 pp（PIT 还原合理）
+   - 财务 period 分布 ≥ 18 个不同 quarter_end（5 年理论 20 个，允许 ≤ 2 偏差）
+   - index_history 4 个指数全部覆盖 ≥ 1200 交易日
+   - index_component 月度稀疏覆盖 ≥ 50 个不同 snapshot 日期（5 年 × 12 月预期 60）
+
 用法：
   docker exec -it quantpilot-backend-1 python scripts/rm17_acceptance.py
   # 或限定到特定日期
   docker exec -it quantpilot-backend-1 python scripts/rm17_acceptance.py --trade-date 2026-05-08
+  # 5y 模式（加跑 §3）
+  docker exec -it quantpilot-backend-1 python scripts/rm17_acceptance.py --5y
 
 退出码：0=PASS / 1=FAIL / 2=用法错。
 """
@@ -181,29 +190,116 @@ async def _check_signals(session, trade_date: date | None) -> tuple[bool, dict]:
     return ok, metrics
 
 
+async def _check_5y(session) -> tuple[bool, dict]:
+    """5y 范围专属基线：覆盖广度 + PIT 一致性 + 季度财务分布。"""
+    metrics: dict[str, object] = {}
+    ok = True
+
+    # daily_quote 总覆盖
+    dq_days = (await session.execute(
+        text("SELECT COUNT(DISTINCT trade_date) FROM daily_quote")
+    )).scalar() or 0
+    metrics["daily_quote_distinct_days"] = dq_days
+    metrics["dq_coverage_check"] = "PASS" if dq_days >= 1200 else "FAIL"
+    if dq_days < 1200:
+        ok = False
+
+    # 早年 vs 近年 is_st 占比一致性（PIT 还原是否合理）
+    early = await session.execute(text("""
+        SELECT
+          ROUND(100.0*SUM(CASE WHEN is_st THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0), 2) AS ratio
+        FROM daily_quote
+        WHERE trade_date BETWEEN '2021-05-13' AND '2022-12-31'
+    """))
+    late = await session.execute(text("""
+        SELECT
+          ROUND(100.0*SUM(CASE WHEN is_st THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0), 2) AS ratio
+        FROM daily_quote
+        WHERE trade_date BETWEEN '2025-01-01' AND '2026-05-12'
+    """))
+    early_ratio = float(early.scalar() or 0)
+    late_ratio = float(late.scalar() or 0)
+    diff_pp = abs(early_ratio - late_ratio)
+    metrics["is_st_ratio_2021_2022"] = f"{early_ratio:.2f}%"
+    metrics["is_st_ratio_2025_2026"] = f"{late_ratio:.2f}%"
+    metrics["is_st_pit_diff_pp"] = f"{diff_pp:.2f} pp"
+    metrics["is_st_pit_check"] = (
+        "PASS" if diff_pp <= 3.0 else f"FAIL（差 {diff_pp:.2f} pp > 3 pp）"
+    )
+    if diff_pp > 3.0:
+        ok = False
+
+    # 财务 period 分布（按 report_period quarter_end 计数）
+    period_count = (await session.execute(text("""
+        SELECT COUNT(DISTINCT report_period) FROM financial_data
+    """))).scalar() or 0
+    metrics["financial_distinct_periods"] = period_count
+    metrics["fina_period_check"] = "PASS" if period_count >= 18 else "FAIL"
+    if period_count < 18:
+        ok = False
+
+    # 指数 4 个分别覆盖
+    idx_rows = (await session.execute(text("""
+        SELECT index_code, COUNT(DISTINCT trade_date) AS days
+        FROM index_history GROUP BY index_code ORDER BY index_code
+    """))).all()
+    idx_dict = {r.index_code: r.days for r in idx_rows}
+    metrics["index_history_per_code"] = (
+        idx_dict if idx_dict else "EMPTY（5y 范围内 index_history 未入库）"
+    )
+    min_idx_days = min(idx_dict.values()) if idx_dict else 0
+    metrics["index_coverage_check"] = (
+        "PASS" if len(idx_dict) >= 4 and min_idx_days >= 1200 else "FAIL"
+    )
+    if len(idx_dict) < 4 or min_idx_days < 1200:
+        ok = False
+
+    # 指数成分股月度稀疏覆盖
+    comp_days = (await session.execute(text("""
+        SELECT COUNT(DISTINCT trade_date) FROM index_component
+    """))).scalar() or 0
+    metrics["index_component_distinct_days"] = comp_days
+    metrics["index_component_check"] = "PASS" if comp_days >= 50 else "FAIL"
+    if comp_days < 50:
+        ok = False
+
+    return ok, metrics
+
+
 async def _main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", type=_parse_date,
                         help="评估特定 trade_date（默认 = signal 表 MAX）")
+    parser.add_argument("--5y", dest="five_y", action="store_true",
+                        help="加跑 §3 5y 范围专属基线检查")
     args = parser.parse_args()
 
-    print("=== RM-17 评分质量验收探针 ===\n")
+    print("=== RM-17 评分质量 + 5y 真机验收探针 ===\n")
     all_ok = True
+    n_sections = 3 if args.five_y else 2
 
     async with AsyncSessionLocal() as session:
-        print("[1/2] 数据基线检查...")
+        print(f"[1/{n_sections}] 数据基线检查...")
         ok1, baseline = await _check_baseline(session)
         for k, v in baseline.items():
             print(f"      {k}: {v}")
         all_ok = all_ok and ok1
         print()
 
-        print("[2/2] 信号质量检查...")
+        print(f"[2/{n_sections}] 信号质量检查...")
         ok2, sig_metrics = await _check_signals(session, args.trade_date)
         for k, v in sig_metrics.items():
             print(f"      {k}: {v}")
         all_ok = all_ok and ok2
         print()
+
+        if args.five_y:
+            print(f"[3/{n_sections}] 5y 范围专属基线检查...")
+            ok3, fy_metrics = await _check_5y(session)
+            for k, v in fy_metrics.items():
+                print(f"      {k}: {v}")
+            all_ok = all_ok and ok3
+            print()
 
     print("=" * 40)
     print(f"OVERALL: {'PASS ✓' if all_ok else 'FAIL ✗'}")
