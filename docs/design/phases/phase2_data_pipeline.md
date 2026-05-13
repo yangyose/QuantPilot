@@ -1,6 +1,6 @@
 # Phase 2：数据采集层
 
-> **版本：** v1.3
+> **版本：** v1.4
 > **所属阶段：** Phase 2 / 10
 > **依据文档：** system_design.md §2.1、§2.5；SDD §4、§5
 > **日期：** 2026-03-13
@@ -18,6 +18,7 @@
 | **v1.1** | 2026-03-27 | **实现完成标记**：依据文档更新至 system_design_v1.1.md；勾选全部 DoD 复选框（Phase 2 验收通过）；§9 补充 CAL-07/VAL-05b/ADP-05b/ADP-07/ING-04~06/SCHEMA-01~04 共 10 个遗漏测试用例；测试计数全面修正（Phase 2 实际新增 46 个、Phase 1 实际 25 个，总计 71 个）；任务计划补充完成状态列；31 个冒烟测试全部通过（升级 Tushare 账号后去除速率延迟） |
 | **v1.2** | 2026-03-30 | **Phase 3 后整合修正**：§7 `create_scheduler` 签名同步实现——2 参数扩展为 5 参数（`session_factory / adapter / validator / calendar / market_state_engine`）；补充 CR-04 背景注解；lifespan 示例更新为实际调用方式 |
 | **v1.3** | 2026-05-12 | **V1.0 真机验收回写**：§4.8 `ingest_history` 契约修正为 per-day 独立 `AsyncSessionLocal`（修复 Bug 5 跨日共用 session + asyncpg 语句级 savepoint 导致的混合状态）；§8.3 同步明确双表交集断点续传规则（Bug 6）；§4.8 / §5.5 注明 `index_components` 改 range query 批量拉取（Bug 7a/7b：Tushare `index_weight` 月度稀疏）；新增 §8.4 asyncpg 单 SQL 32767 参数上限规格 + §8.5 `pandas NaN → SQL NULL` 转换（Bug 9：NUMERIC 列 `'NaN'` 特殊值 ≠ NULL） |
+| **v1.4** | 2026-05-13 | **V1.0 真机验收 5y 回填回写**：新增 §8.6 完整性校验 `prev_count` 必须 PIT（RM-18）—— `DataService.ingest_daily` 改用 `repo.get_active_stock_codes_as_of(trade_date)` 按 list_date/delist_date PIT 过滤，避免当前 `is_active` 快照在 5 年回填时把当时 ~4300 只对比 ~5840 全部判 < 95% 阈值导致每日 rollback。§9.6 新增 REPO-05 集成测试（3 股 PIT 场景）；§4.3 DataValidator 文档明确 `prev_count` 语义为"截至 trade_date 实际上市未退市的股票数"|
 
 ---
 
@@ -398,6 +399,11 @@ class DataValidator:
         - 成交量非负：vol >= 0
         - 复权连续性：相邻两日 adj_factor 变化率 <= 20%（排除已知除权日）
         异常行打标，不直接丢弃；errors 中记录阻断性问题。
+
+        prev_count 语义（RM-18 修复）：截至 trade_date 时实际上市未退市的股票数，
+        必须由调用方 `MarketDataRepository.get_active_stock_codes_as_of(trade_date)`
+        提供；禁止用 `get_active_stock_codes()`（当前 is_active 快照），后者在历史
+        回填场景下会把当时 ~4300 只对比当前 ~5840 必然 < 95% 阈值。详见 §8.6。
         """
 
     def validate_financial_data(
@@ -1068,6 +1074,19 @@ PostgreSQL 协议 16-bit signed int 把单条 SQL 的占位符总数限制在 32
 
 `df.to_dict("records")` 把 NaN/NaT 保留为 `float('nan')`，asyncpg 会原样写入 PostgreSQL `NUMERIC` 字段作为特殊值 `'NaN'`（≠ NULL）。下游 SQL 查询 `WHERE roe IS NOT NULL` 会误中、数值比较行为不可预期。**所有 upsert 在 `to_dict` 前必须 `df.where(pd.notna(df), None)`** 把 NaN 转 None → SQL NULL。已被污染的历史行可用 `UPDATE financial_data SET col = NULL WHERE col = 'NaN'` 清理。
 
+### 8.6 完整性校验 prev_count 必须 PIT（RM-18，2026-05-13 真机验收）
+
+`DataService.ingest_daily` 调 `validator.validate_daily_quotes(quote_df, prev_count)` 完整性阈值为 `prev_count × 0.95`。`prev_count` **必须**用 `MarketDataRepository.get_active_stock_codes_as_of(trade_date)` 按 `list_date / delist_date` PIT 过滤，**不能**用 `get_active_stock_codes()` 的当前 `is_active` 快照。
+
+**Bug 表现**：2026 年 stock_info 当前活股 ~5840 只；5 年前（2021-05-13）`fetch_daily_quotes` 返回当时实际上市的 ~4300 只 → `4300 < 5840×0.95 = 5548` → 完整性失败 → per-day session 整日 rollback（§8.3 行为）→ 5 年回填跑完 wall time ~4h 后 daily_quote 仍是 **0 行**。
+
+**为什么 V1.0 之前所有 phase 都没暴露**：单元测试 `validate_daily_quotes` 直接传任意 `prev_count` mock；近期 ingest（trade_date 在最近几日）时 stock_info 与 fetch 返回数量相近；首次 5 年级别真机回填才暴露。
+
+**测试覆盖**：
+- 单元测试不足以覆盖（mock 路径绕过 PIT 语义）
+- 集成测试 REPO-05 `test_repo_05_active_codes_as_of_pit` 构造三股 PIT 场景（上市/退市/未上市）验证 list_date / delist_date 过滤正确
+- 5 年回填本身即为隐式集成验收
+
 ---
 
 ## 9. 测试用例
@@ -1149,8 +1168,9 @@ adj_factor = [1.0,  1.0,  0.9, 0.9, 0.9, 0.9]
 |----|------|--------|
 | REPO-01 | `upsert_stock_list()` 批量插入 → 查询确认行数 | count 匹配 |
 | REPO-02 | `upsert_daily_quotes()` 重复 upsert 同一天 → 不报错，数据被更新 | 幂等性 |
-| REPO-03 | `get_latest_financial(as_of_date)` PIT 查询 → 不返回未来公告 | publish_date 约束 |
+| REPO-03 | `get_latest_financial(as_of_date)` PIT 查询 → 不返回未来公告 | publish_date 约束；ts_code 是 DataFrame 索引 |
 | REPO-04 | `upsert_index_history()` + `get_index_history()` 范围查询 | 日期区间正确，含 high/low 字段 |
+| REPO-05 | `get_active_stock_codes_as_of(trade_date)` PIT 过滤 — RM-18 修复 | 构造 3 股（活/未上市/已退市）三个日期点：2021-05-13 / 2019-06-01 / 2023-06-01 各自只返回当时实际上市未退市的子集 |
 
 ### 9.7 集成测试：DataService（`tests/integration/test_data_ingestion.py`）
 

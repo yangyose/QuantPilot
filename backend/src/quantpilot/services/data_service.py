@@ -114,7 +114,12 @@ class DataService:
             # 历史回填时注入 namechange 缓存，按 PIT 还原 is_st（避免所有日期 is_st=False）
             if _st_codes is not None and "is_st" in quote_df.columns:
                 quote_df["is_st"] = quote_df["ts_code"].isin(_st_codes)
-            prev_count = await repo.get_active_stock_codes()
+            # RM-18 修复（2026-05-13 真机验收）：完整性校验必须用 PIT 活股数（截至
+            # trade_date 时实际上市未退市的股票数），而非 get_active_stock_codes() 的
+            # 当前 is_active 快照。后者含 2026 年新上市股，5 年前 fetch_daily_quotes
+            # 返回 ~4300 只对比当前 ~5840 必然校验失败，5 年回填每日 rollback 跑完仍
+            # 是空 DB。
+            prev_count = await repo.get_active_stock_codes_as_of(trade_date)
             vr = self._validator.validate_daily_quotes(quote_df, len(prev_count))
             if not vr.is_valid:
                 errors.extend(vr.errors)

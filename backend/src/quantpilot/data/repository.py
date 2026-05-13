@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
-from sqlalchemy import func, nullslast, select
+from sqlalchemy import func, nullslast, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,6 +132,27 @@ class MarketDataRepository:
         """返回所有 is_active=True 的 ts_code 列表"""
         result = await self._session.execute(
             select(StockInfo.ts_code).where(StockInfo.is_active.is_(True))
+        )
+        return [row[0] for row in result.all()]
+
+    async def get_active_stock_codes_as_of(self, trade_date: date) -> list[str]:
+        """返回截至 trade_date 时实际上市且未退市的股票 ts_code 列表（PIT）。
+
+        与 get_active_stock_codes() 的区别：后者读取当前 is_active 快照，含 2026 年
+        新上市股。本方法按 list_date / delist_date 做 PIT 过滤，正确返回当时的活股
+        集合。历史回填的完整性校验（DataValidator.validate_daily_quotes 的 prev_count）
+        必须用 PIT 版本——否则 5 年前的 fetch_daily_quotes 返回 ~4300 只对比当前
+        ~5840 必然校验失败（RM-18，2026-05-13 真机验收）。
+        """
+        result = await self._session.execute(
+            select(StockInfo.ts_code).where(
+                StockInfo.list_date.is_not(None),
+                StockInfo.list_date <= trade_date,
+                or_(
+                    StockInfo.delist_date.is_(None),
+                    StockInfo.delist_date > trade_date,
+                ),
+            )
         )
         return [row[0] for row in result.all()]
 

@@ -100,6 +100,44 @@ async def test_repo_03_get_latest_financial_pit(repo: MarketDataRepository) -> N
 
 
 @pytest.mark.asyncio
+async def test_repo_05_active_codes_as_of_pit(repo: MarketDataRepository) -> None:
+    """REPO-05: get_active_stock_codes_as_of PIT 过滤 — RM-18 修复。
+
+    场景：stock_info 含 3 只股票：
+      - A：2018 上市，未退市（应在所有 PIT 查询里）
+      - B：2022 上市，未退市（2021-05-13 查不到，2023-06-01 能查到）
+      - C：2015 上市，2020-12-31 退市（2019 能查到，2021 查不到）
+
+    断言：
+      - PIT(2021-05-13) → {A}
+      - PIT(2019-06-01) → {A, C}
+      - PIT(2023-06-01) → {A, B}
+    """
+    df = pd.DataFrame(
+        {
+            "ts_code": ["A.SZ", "B.SZ", "C.SZ"],
+            "name": ["A", "B", "C"],
+            "market": ["MAIN", "MAIN", "MAIN"],
+            "sw_industry_l1": [None, None, None],
+            "sw_industry_l2": [None, None, None],
+            "list_date": [date(2018, 1, 1), date(2022, 1, 1), date(2015, 1, 1)],
+            "delist_date": [None, None, date(2020, 12, 31)],
+            "is_active": [True, True, False],
+        }
+    )
+    await repo.upsert_stock_list(df)
+
+    codes_2021 = set(await repo.get_active_stock_codes_as_of(date(2021, 5, 13)))
+    assert codes_2021 == {"A.SZ"}, f"2021-05-13 应只 A（B 未上市/C 已退市），得 {codes_2021}"
+
+    codes_2019 = set(await repo.get_active_stock_codes_as_of(date(2019, 6, 1)))
+    assert codes_2019 == {"A.SZ", "C.SZ"}, f"2019-06-01 应 A+C，得 {codes_2019}"
+
+    codes_2023 = set(await repo.get_active_stock_codes_as_of(date(2023, 6, 1)))
+    assert codes_2023 == {"A.SZ", "B.SZ"}, f"2023-06-01 应 A+B，得 {codes_2023}"
+
+
+@pytest.mark.asyncio
 async def test_repo_04_upsert_index_history_ohlcv(repo: MarketDataRepository) -> None:
     """REPO-04: upsert_index_history + get_index_history 范围查询，含 high/low 字段"""
     df = pd.DataFrame(
