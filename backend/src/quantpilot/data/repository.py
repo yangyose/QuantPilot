@@ -772,6 +772,12 @@ class MarketDataRepository:
         if has_phase11:
             for col in phase11_cols:
                 set_clause[col] = stmt.excluded[col]
+        # Phase 12 §3.1.2 评审 P1-3/P1-4 修订：5 步管线产物 3 列（同样按需纳入）
+        phase12_cols = ["factor_winsorized", "factor_neutralized", "factor_orthogonal"]
+        has_phase12 = any(col in entries[0] for col in phase12_cols)
+        if has_phase12:
+            for col in phase12_cols:
+                set_clause[col] = stmt.excluded[col]
         stmt = stmt.on_conflict_do_update(
             constraint="uq_candidate_pool_code_date",
             set_=set_clause,
@@ -1143,6 +1149,10 @@ class MarketDataRepository:
                 "market_state": stmt.excluded.market_state,
                 "score_breakdown": stmt.excluded.score_breakdown,
                 "raw_factors": stmt.excluded.raw_factors,
+                # Phase 12 §3.1.2（评审 P1-4 修订）：5 步管线 3 列重跑也刷
+                "factor_winsorized": stmt.excluded.factor_winsorized,
+                "factor_neutralized": stmt.excluded.factor_neutralized,
+                "factor_orthogonal": stmt.excluded.factor_orthogonal,
             },
         )
         result = await self._session.execute(stmt)

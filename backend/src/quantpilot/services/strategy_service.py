@@ -29,8 +29,11 @@ _PRICE_WINDOW_DAYS = 180
 # PE/PB 历史窗口：近 5 年
 _PE_PB_HISTORY_YEARS = 5
 
-# Phase 11 §3.4 默认正交化顺序（冷启动 / factor_monitor 缺失时 fallback）
-_DEFAULT_ORDER = ["trend", "momentum", "mean_reversion", "value"]
+# Phase 11 §3.4 默认正交化顺序：按 default_matrix 当前 state 权重降序动态生成
+# （评审 R12-P2-6 修订：原 _DEFAULT_ORDER 硬编码 ["trend", "momentum",
+# "mean_reversion", "value"] 在 DOWNTREND 状态下让 value 权重 0.70 被放最后，
+# 与 Gram-Schmidt "高 ICIR/权重策略先正交化"的原则相反。生产 DailyPipeline 总
+# 注入 FactorMonitorService 走 ICIR 排序，此 fallback 仅供脚本 / 单测路径使用。）
 
 
 class ScoringService:
@@ -446,7 +449,8 @@ class ScoringService:
             default_w = DEFAULT_STRATEGY_WEIGHTS.oscillation
             weights_runtime = dict(weights_map.get(market_state_str, default_w))
             weights_source = "default_matrix"
-            order = list(_DEFAULT_ORDER)
+            # 评审 R12-P2-6：按 default_matrix 当前 state 权重降序，让高权重策略先正交化
+            order = sorted(weights_runtime, key=lambda s: weights_runtime[s], reverse=True)
             hysteresis_status = "stable"
 
         # 3. Scorer.aggregate（5 步管线）
@@ -517,6 +521,10 @@ class ScoringService:
                 "hysteresis_status": cs.hysteresis_status if cs else None,
                 "score_breakdown_raw": cs.score_breakdown_raw if cs else None,
                 "score_breakdown_residual": cs.score_breakdown_residual if cs else None,
+                # Phase 12 新列（5 步管线 Step 1/2/4b 中间产物，P12 评审 P1-3/P1-4 修订）
+                "factor_winsorized": cs.factor_winsorized if cs else None,
+                "factor_neutralized": cs.factor_neutralized if cs else None,
+                "factor_orthogonal": cs.factor_orthogonal if cs else None,
             })
 
         await self._repo.upsert_candidate_pool_bulk(in_pool_rows)
@@ -546,6 +554,9 @@ class ScoringService:
                     "hysteresis_status": None,
                     "score_breakdown_raw": None,
                     "score_breakdown_residual": None,
+                    "factor_winsorized": None,
+                    "factor_neutralized": None,
+                    "factor_orthogonal": None,
                 }
                 for ts_code in fade_out_codes
             ])

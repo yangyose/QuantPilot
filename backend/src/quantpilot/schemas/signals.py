@@ -24,9 +24,10 @@ class SignalResponse(BaseModel):
     status: str
     created_at: datetime | None
     # Phase 11 §9.1：分位主路径三层输出 + trigger_reason 细分
+    # 注：weights_source 不在 Signal ORM（仅在 candidate_pool / signal_score_snapshot
+    # 上下文有意义），Phase 12 评审 R12-P2-2 删除该字段避免响应永远 null 误导前端。
     composite_z: float | None = None
     composite_pct_in_market: float | None = None
-    weights_source: str | None = None
     trigger_reason: str | None = None
     model_config = ConfigDict(from_attributes=True)
 

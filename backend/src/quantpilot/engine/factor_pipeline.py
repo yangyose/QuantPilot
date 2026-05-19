@@ -95,8 +95,13 @@ class FactorPipeline:
         df["_industry"] = industry_series.reindex(df.index)
 
         if not self._cfg.neutralize_industry:
-            # 强制开关闭时回 Z-score 前一步：直接返回 winsorize 后值
-            # （Phase 11 V1.0 锁定 neutralize_industry=True，此分支仅用于研究模式）
+            # V1.0 锁定 ``ScoringPipelineConfig.neutralize_industry = True``（SDD §7.1
+            # Step 2 强制开）。本分支返回 winsorize 后值不做中性化，仅供以下场景：
+            #   1. 研究模式 / 离线脚本（直接构造 FactorPipelineConfig(neutralize_industry=False)）
+            #   2. Phase 14 backtest 单策略回测（单策略独立评分时无需行业中性化）
+            #   3. 行业字段尚未回填的旧历史数据兼容（5y 真机 PIT industry 覆盖率 100%）
+            # 单测：tests/unit/test_factor_pipeline.py::test_neutralize_industry_disabled
+            # 评审 R12-P2-3 修订：保留分支 + 注释 + 单测，不删除（V1.5 研究模式仍可消费）。
             return values.copy()
 
         df = df[df["_industry"].notna()]

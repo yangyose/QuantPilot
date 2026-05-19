@@ -178,6 +178,9 @@ class SignalService:
             if signal_id is None:
                 continue
 
+            factor_winsorized = None
+            factor_neutralized = None
+            factor_orthogonal = None
             if sig.ts_code in composite_df.index:
                 row_data = composite_df.loc[sig.ts_code]
                 composite_score = _safe_float(row_data.get("composite_score", sig.score))
@@ -186,6 +189,10 @@ class SignalService:
                 momentum_score = _safe_float(row_data.get("momentum_score"))
                 value_score = _safe_float(row_data.get("value_score"))
                 market_state = row_data.get("market_state")
+                # Phase 12 P12 评审 P1-4：5 步管线产物落 signal_score_snapshot
+                factor_winsorized = row_data.get("factor_winsorized")
+                factor_neutralized = row_data.get("factor_neutralized")
+                factor_orthogonal = row_data.get("factor_orthogonal")
             else:
                 composite_score = sig.score
                 trend_score = reversion_score = momentum_score = value_score = None
@@ -203,6 +210,10 @@ class SignalService:
                 "market_state": market_state,
                 "score_breakdown": sig.score_breakdown,
                 "raw_factors": sig.raw_factors,
+                # Phase 12 §3.1.2：3 个新 JSONB 列写入（修 P12 评审 P1-4）
+                "factor_winsorized": factor_winsorized,
+                "factor_neutralized": factor_neutralized,
+                "factor_orthogonal": factor_orthogonal,
             })
         return rows
 
@@ -477,6 +488,11 @@ class SignalService:
                     ),
                     "weights_source": getattr(e, "weights_source", None),
                     "score_breakdown": getattr(e, "score_breakdown_raw", None),
+                    # Phase 12 §3.1.2：5 步管线产物快照透传给 _build_snapshot_rows，
+                    # 让 signal_score_snapshot 3 列真写入（修 P12 评审 P1-4）
+                    "factor_winsorized": getattr(e, "factor_winsorized", None),
+                    "factor_neutralized": getattr(e, "factor_neutralized", None),
+                    "factor_orthogonal": getattr(e, "factor_orthogonal", None),
                 }
                 for e in pool_entries
             ]

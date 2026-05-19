@@ -64,6 +64,15 @@ class CandidatePool(Base):
     score_breakdown_raw: Mapped[dict | None] = mapped_column(JSONB)
     score_breakdown_residual: Mapped[dict | None] = mapped_column(JSONB)
 
+    # === Phase 12（v1.0-r7）新增字段：5 步管线 Step 1/2/4 中间产物（alembic 0010）===
+    # 与 signal_score_snapshot 同名 3 列对齐；candidate_pool 覆盖全 pool（~50 只）
+    # 比 signal_score_snapshot（仅当日 BUY/SELL 信号股，~10-50 只）样本更全，
+    # AttributionService 多因子归因优先读 candidate_pool。Phase 11 设计评审 P1-3
+    # 数据源指向修正后落地。
+    factor_winsorized: Mapped[dict | None] = mapped_column(JSONB)
+    factor_neutralized: Mapped[dict | None] = mapped_column(JSONB)
+    factor_orthogonal: Mapped[dict | None] = mapped_column(JSONB)
+
     __table_args__ = (
         UniqueConstraint("ts_code", "trade_date", name="uq_candidate_pool_code_date"),
         Index("idx_pool_date_score", "trade_date", "composite_score"),

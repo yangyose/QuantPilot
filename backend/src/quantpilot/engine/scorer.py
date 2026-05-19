@@ -13,6 +13,7 @@ Phase 11 改造：
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 
@@ -27,6 +28,8 @@ from quantpilot.engine.factor_pipeline import FactorPipeline
 from quantpilot.engine.market_state import MarketStateEnum
 from quantpilot.engine.orthogonalizer import Orthogonalizer
 from quantpilot.engine.strategies.base import MarketSnapshot, StrategyScore
+
+logger = logging.getLogger(__name__)
 
 # SDD §7.5 权重矩阵默认值（保留为模块级常量方便回溯；实际值以 DEFAULT_STRATEGY_WEIGHTS 为准）
 WEIGHTS: dict[MarketStateEnum, dict[str, float]] = {
@@ -149,19 +152,49 @@ class Scorer:
         beta = snapshot.get("beta")
 
         # --- Step 1~3：策略内逐列 Winsorize → Neutralize → Zscore，再列向平均得 strategy_z ---
+        # P12 评审 P1-4 修复：拆 run_steps_1_to_3 为显式 winsorize/neutralize/zscore 调用，
+        # 把每只股票每个 raw 因子的中间产物（winsorized / neutralized）按
+        # {strategy: {factor: value}} 累积，最终塞 CompositeScore.factor_* 持久化
+        # （signal_score_snapshot 3 列 + candidate_pool 3 列）。
         strategy_z_cols: dict[str, pd.Series] = {}
+        winsorized_per_code: dict[str, dict[str, dict[str, float]]] = {}
+        neutralized_per_code: dict[str, dict[str, dict[str, float]]] = {}
+        trade_date_repr = snapshot.get("trade_date") if isinstance(snapshot, dict) else None
         for s_name, df in strategy_factors.items():
             if df is None or df.empty:
+                logger.info(
+                    "scorer_strategy_skipped_empty: strategy=%s trade_date=%s",
+                    s_name, trade_date_repr,
+                )
                 continue
             # 全 NaN raw 输入 → 跳过该策略：zscore 兜底返回全 0，但策略未提供任何信息，
             # 不应该误判为"composite_z=0 = 中性信号"
             if df.isna().all().all():
+                # R12-P2-1：原 silent continue，Phase 13 可观测性接入前先加 logger.info
+                logger.info(
+                    "scorer_strategy_skipped_all_nan: strategy=%s trade_date=%s "
+                    "rows=%d cols=%s",
+                    s_name, trade_date_repr, len(df), list(df.columns),
+                )
                 continue
             col_zs: list[pd.Series] = []
             for col in df.columns:
                 raw = df[col].astype(float)
-                z = self._pipeline.run_steps_1_to_3(raw, industry, market_cap, beta)
+                winsorized = self._pipeline.winsorize(raw)
+                neutralized = self._pipeline.neutralize(winsorized, industry, market_cap, beta)
+                z = self._pipeline.zscore(neutralized)
                 col_zs.append(z.rename(col))
+                # 累积中间产物（仅非 NaN 行；NaN 用 None 在 dict 里也可省略）
+                for ts_code, v in winsorized.items():
+                    if pd.notna(v):
+                        winsorized_per_code.setdefault(str(ts_code), {}).setdefault(
+                            s_name, {}
+                        )[col] = float(v)
+                for ts_code, v in neutralized.items():
+                    if pd.notna(v):
+                        neutralized_per_code.setdefault(str(ts_code), {}).setdefault(
+                            s_name, {}
+                        )[col] = float(v)
             if not col_zs:
                 continue
             # 策略内多因子合成：列向均值（V1.0 简化；P11-A2 §3.0.1 透传 V1.5+ 替换为
@@ -171,6 +204,11 @@ class Scorer:
             # 全 NaN 行剔除
             strategy_z = strategy_z.dropna()
             if strategy_z.empty:
+                # R12-P2-1：原 silent continue，加 logger.info 供 Phase 13 告警接入
+                logger.info(
+                    "scorer_strategy_z_empty_after_dropna: strategy=%s trade_date=%s",
+                    s_name, trade_date_repr,
+                )
                 continue
             # v1.3 修订（Barra Robust Z-score 标准流程）：策略内合成后再做
             # standardize + clip 到 ±3.5σ。
@@ -320,8 +358,20 @@ class Scorer:
             else:
                 explanation = f"该股票位列全市场 top {pct_value * 100:.1f}%（{strength}）。"
 
+            # P12 评审 P1-4 修复：factor_orthogonal 每股聚合
+            # ({strategy: {z_orthogonal_normalized: float}})
+            ts_code_str = str(ts_code)
+            factor_orth_dict: dict[str, dict[str, float]] = {}
+            for s_name in active_strategies:
+                norm_col = f"{s_name}_normalized"
+                if norm_col not in orthogonal_matrix.columns:
+                    continue
+                v = orthogonal_matrix.loc[ts_code, norm_col]
+                if pd.notna(v):
+                    factor_orth_dict[s_name] = {"z_orthogonal_normalized": float(v)}
+
             results.append(CompositeScore(
-                ts_code=str(ts_code),
+                ts_code=ts_code_str,
                 composite_score=float(composite_score.loc[ts_code]),
                 trend_score=_scalar("trend"),
                 momentum_score=_scalar("momentum"),
@@ -336,6 +386,10 @@ class Scorer:
                 score_breakdown_residual=breakdown_residual,
                 weights_source=weights_source,
                 hysteresis_status=hysteresis_status,
+                # P12 评审 P1-4：5 步管线 Step 1/2/4b 中间产物每股快照
+                factor_winsorized=winsorized_per_code.get(ts_code_str) or None,
+                factor_neutralized=neutralized_per_code.get(ts_code_str) or None,
+                factor_orthogonal=factor_orth_dict or None,
             ))
 
         return results

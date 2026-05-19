@@ -134,6 +134,30 @@ class TestNeutralize:
         # 仍能跑出来（不要求市值）
         assert residuals.notna().sum() > 0
 
+    def test_neutralize_industry_disabled(self) -> None:
+        """评审 R12-P2-3：``neutralize_industry=False`` 分支保留 + 单测。
+
+        SDD §7.1 Step 2 行业中性化强制开（V1.0 锁定 True），但配置字段保留为
+        研究模式 / Phase 14 backtest 单策略回测 / 行业字段缺失兼容路径。本测试
+        验证 ``neutralize`` 在 ``neutralize_industry=False`` 时直接返回 winsorize
+        后原值（实测：return values.copy()），不做 OLS 残差化。
+        """
+        cfg = FactorPipelineConfig(
+            neutralize_industry=False,
+            neutralize_market_cap=False,
+            neutralize_beta=False,
+        )
+        pipeline = FactorPipeline(cfg)
+        values, industries, mv = self._mk_data(n_per_ind=20)
+        result = pipeline.neutralize(values, industries, market_cap=mv)
+        # 残差 = 原值（不做中性化）
+        pd.testing.assert_series_equal(result, values)
+        # 即使提供市值 + Beta（cfg 都关），输出仍 == 输入
+        result_with_beta = pipeline.neutralize(
+            values, industries, market_cap=mv, beta=pd.Series(0.5, index=values.index),
+        )
+        pd.testing.assert_series_equal(result_with_beta, values)
+
     def test_negative_market_cap_treated_as_nan(self) -> None:
         # market_cap ≤ 0 不能 log → 该行输出 NaN
         values = pd.Series({"A1": 1.0, "A2": 2.0, "A3": 3.0, "A4": 4.0, "B1": 5.0, "B2": 6.0})
