@@ -325,7 +325,9 @@ class ScoringService:
         - ``score_universe`` → composites（5 步管线）
         - ``write_candidate_pool`` → 入池 + fade-out 写入
 
-        ``session`` 通过 ``self._repo._session`` 获取（与 Phase 4 旧路径一致）。
+        ``session`` 通过 ``self._repo.session`` 显式获取（同源于构造时的
+        ``MarketDataRepository(session)``），透传给 ``score_universe`` 内
+        ``FactorMonitorService.get_active_weights`` 查询当日 active 权重。
         """
         ts_codes = await self._repo.get_active_stock_codes()
         if not ts_codes:
@@ -378,9 +380,8 @@ class ScoringService:
         else:
             market_state = MarketStateEnum(state_record.market_state)
 
-        session = self._repo._session  # type: ignore[attr-defined]
         composites = await self.score_universe(
-            session, trade_date, list(universe), market_state,
+            self._repo.session, trade_date, list(universe), market_state,
         )
 
         await self.write_candidate_pool(

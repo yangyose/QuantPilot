@@ -106,6 +106,19 @@ class MarketDataRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @property
+    def session(self) -> AsyncSession:
+        """显式 session 访问点。
+
+        Phase 7 C-02 原意是禁止 Service 层 raw SQL 绕过 Repository 接口；本属性
+        仅供同 Service 内部把 session 透传给 Engine 层或其他无状态 Repository
+        （如 ``ScoringService.score_universe`` 把 session 透传给
+        ``FactorMonitorService.get_active_weights`` / ``FactorICRepository.*``），
+        不得用于 Service 自身的 ``await self._repo.session.execute(stmt)``——
+        新增查询请改为 ``MarketDataRepository`` 方法。
+        """
+        return self._session
+
     # ── stock_info ─────────────────────────────────────────────────────────────
 
     async def upsert_stock_list(self, df: pd.DataFrame) -> int:
@@ -1141,6 +1154,46 @@ class MarketDataRepository:
             select(SignalScoreSnapshot).where(SignalScoreSnapshot.signal_id == signal_id)
         )
         return result.scalar_one_or_none()
+
+    async def get_recent_score_snapshots_for_holdings(
+        self,
+        holding_codes: list[str],
+        trade_date: date,
+    ) -> list[tuple]:
+        """查询给定持仓股每只最近 N 条 SignalScoreSnapshot（按 trade_date desc）。
+
+        供 ``SignalService._compute_holding_signal_states`` Phase 11 §5.2 双重失效
+        止损"短期 z 降幅"判定使用：每只持仓股取最新 2 条 ``factor_orthogonal`` +
+        ``score_breakdown``，比较核心策略 ``z_orthogonal_normalized`` 差值。
+
+        Args:
+            holding_codes: 持仓 ts_code 列表（空则返回空 list）。
+            trade_date: 上界 trade_date（含）。
+
+        Returns:
+            行元组 ``(ts_code, trade_date, factor_orthogonal, score_breakdown)``，
+            按 ``ts_code asc, trade_date desc`` 排序——调用方按 ``ts_code`` group
+            后取每组前 2 条做今 / 昨对比。
+        """
+        if not holding_codes:
+            return []
+        stmt = (
+            select(
+                SignalScoreSnapshot.ts_code,
+                SignalScoreSnapshot.trade_date,
+                SignalScoreSnapshot.factor_orthogonal,
+                SignalScoreSnapshot.score_breakdown,
+            )
+            .where(
+                SignalScoreSnapshot.ts_code.in_(holding_codes),
+                SignalScoreSnapshot.trade_date <= trade_date,
+            )
+            .order_by(
+                SignalScoreSnapshot.ts_code.asc(),
+                SignalScoreSnapshot.trade_date.desc(),
+            )
+        )
+        return list((await self._session.execute(stmt)).all())
 
     # ─── 持仓/账户基础查询（Phase 6 AccountService 底层依赖） ──────────────────
 

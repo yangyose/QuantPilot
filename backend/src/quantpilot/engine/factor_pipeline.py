@@ -15,10 +15,13 @@ NaN 处理原则：
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -126,8 +129,19 @@ class FactorPipeline:
         # 合并 y + X，丢含 NaN 行
         combined = pd.concat([df["y"].rename("y"), X], axis=1).dropna()
         if combined.shape[0] <= combined.shape[1]:
-            # 自由度不足（例如单只票 / 所有票同行业）→ 降级残差=原值
-            # 仅对 industry 存在的行写原值；industry 缺失行保持 NaN
+            # 【降级说明】自由度不足（n_obs <= n_features）—— 典型场景：单只票
+            # 通过过滤，或所有票同行业（行业 dummy 列接近列满秩）。OLS 退化无
+            # 唯一解，降级为残差=原值（等价于"未做中性化"），下游 Z-score 仍
+            # 能跑。仅对 industry 存在的行写原值；industry 缺失行保持 NaN。
+            # 恢复条件：universe 扩张到 industry 多样的子集 + market_cap 覆盖
+            # 率回升。Phase 13 可观测性接入后由 WARN 级日志触发告警；当前
+            # 5y 真机 4 trade_date × 3 state 未触发本路径。
+            logger.warning(
+                "factor_pipeline.neutralize_degraded_dof: n_obs=%d <= n_features=%d "
+                "(industry over-concentrated or universe too small after filter); "
+                "falling back to winsorized values for %s",
+                combined.shape[0], combined.shape[1], values.name,
+            )
             out.loc[df.index] = values.loc[df.index]
             return out
 
@@ -137,6 +151,13 @@ class FactorPipeline:
         try:
             beta_hat, *_ = np.linalg.lstsq(x_mat, y_arr, rcond=None)
         except np.linalg.LinAlgError:
+            # 【降级说明】lstsq SVD 失败（设计矩阵奇异，如 log_mv 全相等导致
+            # 共线、或某行业 dummy 与 const 完全共线）。降级为残差=原值；
+            # 恢复条件：market_cap 范围回归正常 / industry 多样性恢复。
+            logger.exception(
+                "factor_pipeline.neutralize_lstsq_failed: returning raw values for %s",
+                values.name,
+            )
             return values.copy()
 
         y_hat = x_mat @ beta_hat

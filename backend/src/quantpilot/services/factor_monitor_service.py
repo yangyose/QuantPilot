@@ -144,6 +144,14 @@ class FactorMonitorService:
     ) -> int:
         """计算并存储当月所有策略因子 IC/IR/半衰期。返回写入行数。
 
+        .. deprecated:: Phase 11
+            Phase 11 起改用 :meth:`apply_monthly_rebalance`（写新表
+            ``factor_ic_window_state`` + ``strategy_weights_history``）；本方法
+            仍由 MonthlyScheduler 在 ``run_factor_monitoring`` 路径继续写入旧表
+            ``factor_ic_history``，仅作 Phase 7~10 baseline 兼容（5y 真机历史
+            数据已在旧表中累积）。Phase 14 决策是否归并到新表后 stop 调用。
+            **不要在新代码中调用本方法。**
+
         Args:
             calc_month:    月末最后一个交易日
             return_window: 前向收益率窗口（交易日，默认 20）
@@ -152,6 +160,13 @@ class FactorMonitorService:
         Returns:
             写入 factor_ic_history 的行数（0 表示数据不足，未写入）。
         """
+        logger.warning(
+            "factor_monitor.run_monthly_deprecated: Phase 11 起改用 apply_monthly_rebalance"
+            "（写 factor_ic_window_state + strategy_weights_history）；旧表"
+            " factor_ic_history 仅作 Phase 7~10 baseline 兼容继续写入。Phase 14"
+            " 决定是否归并 + 停写。calc_month=%s",
+            calc_month,
+        )
         import pandas as pd
 
         # 1. 取 calc_month 当日候选池

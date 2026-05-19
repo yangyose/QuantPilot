@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from quantpilot.core.exceptions import SignalNotFoundError
+from quantpilot.data.factor_ic_repository import FactorICRepository
 from quantpilot.data.repository import MarketDataRepository
+from quantpilot.engine.market_state import MarketStateEnum
 from quantpilot.engine.risk import RiskWarning
 from quantpilot.engine.signal import TradeSignal
 from quantpilot.models.business import Signal as SignalModel
@@ -46,12 +48,16 @@ class SignalService:
         account_service: AccountService | None = None,
         config_service: ConfigService | None = None,
         notification_service: NotificationService | None = None,
+        factor_ic_repo: FactorICRepository | None = None,
     ) -> None:
         self._repo = repo
         self._account_svc = account_service
         self._cfg = config_service
         # Phase 10 §5.4：注入后 generate_for_date 将把风险告警推送给通知服务
         self._notifier = notification_service
+        # Phase 11 §5.2：双重失效止损中"中期 ICIR 翻转"判定走 factor_ic_window_state；
+        # FactorICRepository 为无状态 repo，默认 instantiate 一个即可，单测可注入 mock。
+        self._factor_ic_repo = factor_ic_repo or FactorICRepository()
 
     async def save(
         self,
@@ -268,14 +274,15 @@ class SignalService:
         self,
         holdings: list,
         trade_date: date,
+        market_state: MarketStateEnum,
     ) -> dict[str, dict]:
         """Phase 11 §5.2：为每个持仓预计算短期 z 降幅 + 中期 ICIR 翻转标志。
 
         - 短期：从 signal_score_snapshot.factor_orthogonal JSONB 取昨日 vs 今日
           核心贡献策略（取 score_breakdown_raw.contribution 降序首位）的
           z_orthogonal_normalized 差值；昨日缺失 → 不计算
-        - 中期：查 factor_ic_window_state 近 ~30 天最近 2 次聚合行，本月 ICIR < 0
-          且上月 ICIR ≥ 0 → 标记翻转；任一缺失 → False
+        - 中期：查 factor_ic_window_state 当日 ``state=market_state`` 维度最近 2 行
+          聚合行，本月 ICIR < 0 且上月 ICIR ≥ 0 → 标记翻转；任一缺失 → False
 
         本方法返回 ``{ts_code: {"short_term_z_drop_value": float|None,
         "mid_term_icir_flipped": bool}}``。SignalGenerator 内查表，缺键不触发。
@@ -283,43 +290,25 @@ class SignalService:
         【V1.0 简化】Phase 11 §5.2 完整实现需访问 signal_score_snapshot +
         factor_ic_window_state 两张表；为保持 SignalService 路径单一职责，本方法
         在数据缺失时静默返回空字典，不抛异常（自然降级）。
+
+        【P1-1 修订（2026-05-19 实施评审）】两段 raw SQL 改为 Repository 方法：
+        - 短期路径：``self._repo.get_recent_score_snapshots_for_holdings``
+        - 中期路径：``self._factor_ic_repo.get_recent_aggregates``（已存在的
+          通用方法，按 state 维度过滤）
+        消除 Phase 7 C-02 违反（Service 层禁止 raw SQL 绕 Repository）。
         """
         if not holdings:
             return {}
-
-        from datetime import timedelta as _td
-
-        from sqlalchemy import select
-
-        from quantpilot.models.business import (
-            FactorICWindowState,
-            SignalScoreSnapshot,
-        )
 
         # 仅对真正持仓的 ts_code 查询，避免无意义 IO
         holding_codes = [p.ts_code for p in holdings]
         out: dict[str, dict] = {}
 
         # ─── 短期 z 降幅：今日 vs 昨日 signal_score_snapshot.factor_orthogonal ───
-        # 取每只持仓股最近 2 条 signal_score_snapshot（按 trade_date desc）
         try:
-            stmt = (
-                select(
-                    SignalScoreSnapshot.ts_code,
-                    SignalScoreSnapshot.trade_date,
-                    SignalScoreSnapshot.factor_orthogonal,
-                    SignalScoreSnapshot.score_breakdown,
-                )
-                .where(
-                    SignalScoreSnapshot.ts_code.in_(holding_codes),
-                    SignalScoreSnapshot.trade_date <= trade_date,
-                )
-                .order_by(
-                    SignalScoreSnapshot.ts_code.asc(),
-                    SignalScoreSnapshot.trade_date.desc(),
-                )
+            rows = await self._repo.get_recent_score_snapshots_for_holdings(
+                holding_codes, trade_date,
             )
-            rows = (await self._repo._session.execute(stmt)).all()
         except Exception:
             logger.exception("compute_holding_states_snapshot_query_failed")
             rows = []
@@ -353,14 +342,11 @@ class SignalService:
             out.setdefault(code, {})
             out[code]["short_term_z_drop_value"] = float(prev_v) - float(today_v)
 
-        # ─── 中期 ICIR 翻转：factor_ic_window_state 近 ~30 天最近 2 行聚合 ───
-        # V1.0 简化：strategy=factor 名；查 4 个策略中"核心策略"（用 top_strategy 同源）
-        # 为简化实现，仅检查 holding 的 top_strategy（来自 signal_score_snapshot）；
-        # 无 top_strategy 时跳过（不计入翻转）。
+        # ─── 中期 ICIR 翻转：factor_ic_window_state state=market_state 维度近 2 行 ───
+        # V1.0 简化：strategy=factor 名；查 4 个策略中"核心策略"（用 top_strategy 同源）。
+        market_state_str = market_state.value
         for code in holding_codes:
             state_info = out.get(code, {})
-            # 用 short_term 部分已经查到的 top_strategy；若没有 short_term 数据但需要
-            # 中期判定，可再查一次 score_breakdown。
             today_breakdown = None
             snaps = per_code_snapshots.get(code, [])
             if snaps:
@@ -375,19 +361,14 @@ class SignalService:
             except (ValueError, TypeError, KeyError):
                 continue
             try:
-                stmt2 = (
-                    select(FactorICWindowState)
-                    .where(
-                        FactorICWindowState.strategy == top_strategy,
-                        FactorICWindowState.factor == top_strategy,  # V1.0 简化
-                        FactorICWindowState.trade_date <= trade_date,
-                        FactorICWindowState.trade_date >= trade_date - _td(days=70),
-                        FactorICWindowState.icir.isnot(None),
-                    )
-                    .order_by(FactorICWindowState.trade_date.desc())
-                    .limit(2)
+                ic_rows = await self._factor_ic_repo.get_recent_aggregates(
+                    self._repo.session,
+                    strategy=top_strategy,
+                    factor=top_strategy,  # V1.0 简化：strategy=factor 名
+                    state=market_state_str,
+                    as_of=trade_date,
+                    limit=2,
                 )
-                ic_rows = (await self._repo._session.execute(stmt2)).scalars().all()
             except Exception:
                 logger.exception("compute_holding_states_icir_query_failed")
                 continue
@@ -531,6 +512,7 @@ class SignalService:
         holding_signal_states = await self._compute_holding_signal_states(
             holdings=positions,
             trade_date=trade_date,
+            market_state=market_state,
         )
 
         # ── Engine 层链路 ──────────────────────────────────────────────────────
