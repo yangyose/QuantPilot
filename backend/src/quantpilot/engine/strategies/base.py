@@ -12,8 +12,13 @@ if TYPE_CHECKING:
     pass
 
 
-class MarketSnapshot(TypedDict):
-    """由 ScoringService 构建后只读传入各策略。"""
+class MarketSnapshot(TypedDict, total=False):
+    """由 ScoringService 构建后只读传入各策略。
+
+    Phase 11 §3.0 P0-3 扩展：industry / market_cap / beta 三个新字段，给 5 步管线
+    Step 2（行业 + 市值中性化）使用。旧路径（aggregate_legacy / 各策略 score()）
+    不消费这些字段。``total=False`` 允许冷启动 / 单元测试场景不全量构造。
+    """
 
     trade_date: date
     adj_prices: pd.DataFrame       # index=ts_code，columns=trade_date，后复权收盘价（近180日历天）
@@ -22,6 +27,11 @@ class MarketSnapshot(TypedDict):
     pe_pb_history: pd.DataFrame    # index=(ts_code, trade_date)，universe 过滤后近5年 pe_ttm/pb
     # index=index_code，columns=trade_date，Wide 格式（与 adj_prices 结构一致）
     index_adj_prices: pd.DataFrame
+
+    # === Phase 11 §3.0 P0-3 新增字段 ===
+    industry: dict[str, str]            # ts_code -> 行业代码（来自 StockInfo.sw_industry_l1）
+    market_cap: pd.Series | None        # index=ts_code，float_mkt_cap PIT 切片；neutralize 时取 log
+    beta: pd.Series | None              # V1.0 永远 None（NEUTRALIZE_BETA=false）；Phase 12+ 实现
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,21 @@ class BaseStrategy(ABC):
         - 纯函数，禁止修改 market_data 内任何 DataFrame
         - 无法计算的标的返回 NaN（横截面 rank 时自动排除）
         """
+
+    def compute_strategy_factors(
+        self,
+        universe: pd.Index,
+        market_data: MarketSnapshot,
+    ) -> pd.DataFrame:
+        """Phase 11 §3.0.1 P0-4：5 步管线 raw 因子矩阵入口。
+
+        默认实现透传 ``compute_raw_factors``——子类无需覆写。V1.5+ 策略可能在
+        ``compute_raw_factors`` 之上做降维 / 多周期合成 / PCA 等中间产物（如 MA
+        系列合成主成分、PE/PB 合成 value_composite 等）作为 5 步管线入口，此时
+        重写本方法不影响 ``compute_raw_factors``（后者继续用于 ``_build_reason``
+        L1 文本生成 / 冷启动 score() 路径）。
+        """
+        return self.compute_raw_factors(universe, market_data)
 
     def score(
         self,

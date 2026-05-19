@@ -75,6 +75,14 @@ class LineageService:
                 ),
                 "market_state": snapshot.market_state,
                 "score_breakdown": snapshot.score_breakdown,
+                # Phase 11 §9.1：因子级溯源 5 字段（前端分层视图 Phase 12 渲染）
+                "score_breakdown_raw": getattr(snapshot, "score_breakdown_raw", None),
+                "score_breakdown_residual": getattr(
+                    snapshot, "score_breakdown_residual", None,
+                ),
+                "factor_winsorized": getattr(snapshot, "factor_winsorized", None),
+                "factor_neutralized": getattr(snapshot, "factor_neutralized", None),
+                "factor_orthogonal": getattr(snapshot, "factor_orthogonal", None),
             }
 
         # 3. 取当日 PipelineRun（可能不存在，V1.0 best-effort）

@@ -212,10 +212,17 @@ class DailyPipeline:
 
         Phase 10 §4.3 评审 C-01：UniverseFilter / 4 个策略 / Scorer / CandidatePoolManager
         全部从 `run.config_snapshot` 派生 dataclass 实例化，不再使用默认配置。
+
+        Phase 11 §6.3：注入 FactorMonitorService → ScoringService 自动走 5 步管线
+        （score_universe + write_candidate_pool）；调用形态不变，
+        ``run_daily_scoring`` 内部根据 ``self._factor_monitor`` 是否注入切换。
         """
         from sqlalchemy import select
 
+        from quantpilot.data.factor_ic_repository import FactorICRepository
         from quantpilot.data.repository import MarketDataRepository
+        from quantpilot.engine.factor_monitor import FactorMonitorEngine
+        from quantpilot.engine.factor_pipeline import FactorPipeline, FactorPipelineConfig
         from quantpilot.engine.pool import CandidatePoolManager
         from quantpilot.engine.scorer import Scorer
         from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
@@ -225,6 +232,7 @@ class DailyPipeline:
         from quantpilot.engine.universe import UniverseFilter
         from quantpilot.models.system import PipelineRun
         from quantpilot.services.config_snapshot import from_snapshot
+        from quantpilot.services.factor_monitor_service import FactorMonitorService
         from quantpilot.services.strategy_service import ScoringService
 
         snap = run.config_snapshot
@@ -234,9 +242,23 @@ class DailyPipeline:
         momentum_cfg = from_snapshot(snap, "strategy_params_momentum")
         mr_cfg = from_snapshot(snap, "strategy_params_mean_reversion")
         value_cfg = from_snapshot(snap, "strategy_params_value")
+        # Phase 11 §7.2：派生 FactorPipelineConfig（snapshot 缺失时回退默认）
+        sp_dict = (snap or {}).get("scoring_pipeline_params") or {}
+        fp_cfg = FactorPipelineConfig(
+            winsorize_lower_pct=sp_dict.get("winsorize_lower_pct", 0.01),
+            winsorize_upper_pct=sp_dict.get("winsorize_upper_pct", 0.99),
+            neutralize_industry=sp_dict.get("neutralize_industry", True),
+            neutralize_market_cap=sp_dict.get("neutralize_market_cap", True),
+            neutralize_beta=sp_dict.get("neutralize_beta", False),
+        )
 
         async with self._session_factory() as session:
             repo = MarketDataRepository(session)
+            # Phase 11 §6.3：FactorMonitorService 注入用于 score_universe 内
+            # get_active_weights 查询 strategy_weights_history（冷启动 fallback default_matrix）
+            factor_monitor = FactorMonitorService(
+                session, FactorMonitorEngine(), FactorICRepository(),
+            )
             scoring_service = ScoringService(
                 repo=repo,
                 universe_filter=UniverseFilter(universe_cfg),
@@ -246,9 +268,11 @@ class DailyPipeline:
                     MeanReversionStrategy(mr_cfg),
                     ValueStrategy(value_cfg),
                 ],
-                scorer=Scorer(weights_cfg),
+                # Phase 11 §7.2：scoring_pipeline_params 驱动 FactorPipeline 5 步管线开关
+                scorer=Scorer(weights_cfg, pipeline=FactorPipeline(fp_cfg)),
                 pool_manager=CandidatePoolManager(universe_cfg),
                 calendar=self._calendar,
+                factor_monitor=factor_monitor,
             )
             scores = await scoring_service.run_daily_scoring(trade_date)
             await session.commit()

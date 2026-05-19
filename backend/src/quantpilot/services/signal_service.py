@@ -125,6 +125,10 @@ class SignalService:
                 "t1_warning": sig.t1_warning if sig.signal_type == "BUY" else None,
                 "reason": " | ".join(reason_parts) if reason_parts else None,
                 "status": "NEW",
+                # Phase 11 §5 新列：TradeSignal 透传到 Signal ORM
+                "composite_z": sig.composite_z,
+                "composite_pct_in_market": sig.composite_pct_in_market,
+                "trigger_reason": sig.trigger_reason,
             })
 
         returned_signals = await self._repo.upsert_signals(rows)
@@ -260,6 +264,145 @@ class SignalService:
         """
         return await self._repo.get_last_buy_signal(ts_code, as_of_date)
 
+    async def _compute_holding_signal_states(
+        self,
+        holdings: list,
+        trade_date: date,
+    ) -> dict[str, dict]:
+        """Phase 11 §5.2：为每个持仓预计算短期 z 降幅 + 中期 ICIR 翻转标志。
+
+        - 短期：从 signal_score_snapshot.factor_orthogonal JSONB 取昨日 vs 今日
+          核心贡献策略（取 score_breakdown_raw.contribution 降序首位）的
+          z_orthogonal_normalized 差值；昨日缺失 → 不计算
+        - 中期：查 factor_ic_window_state 近 ~30 天最近 2 次聚合行，本月 ICIR < 0
+          且上月 ICIR ≥ 0 → 标记翻转；任一缺失 → False
+
+        本方法返回 ``{ts_code: {"short_term_z_drop_value": float|None,
+        "mid_term_icir_flipped": bool}}``。SignalGenerator 内查表，缺键不触发。
+
+        【V1.0 简化】Phase 11 §5.2 完整实现需访问 signal_score_snapshot +
+        factor_ic_window_state 两张表；为保持 SignalService 路径单一职责，本方法
+        在数据缺失时静默返回空字典，不抛异常（自然降级）。
+        """
+        if not holdings:
+            return {}
+
+        from datetime import timedelta as _td
+
+        from sqlalchemy import select
+
+        from quantpilot.models.business import (
+            FactorICWindowState,
+            SignalScoreSnapshot,
+        )
+
+        # 仅对真正持仓的 ts_code 查询，避免无意义 IO
+        holding_codes = [p.ts_code for p in holdings]
+        out: dict[str, dict] = {}
+
+        # ─── 短期 z 降幅：今日 vs 昨日 signal_score_snapshot.factor_orthogonal ───
+        # 取每只持仓股最近 2 条 signal_score_snapshot（按 trade_date desc）
+        try:
+            stmt = (
+                select(
+                    SignalScoreSnapshot.ts_code,
+                    SignalScoreSnapshot.trade_date,
+                    SignalScoreSnapshot.factor_orthogonal,
+                    SignalScoreSnapshot.score_breakdown,
+                )
+                .where(
+                    SignalScoreSnapshot.ts_code.in_(holding_codes),
+                    SignalScoreSnapshot.trade_date <= trade_date,
+                )
+                .order_by(
+                    SignalScoreSnapshot.ts_code.asc(),
+                    SignalScoreSnapshot.trade_date.desc(),
+                )
+            )
+            rows = (await self._repo._session.execute(stmt)).all()
+        except Exception:
+            logger.exception("compute_holding_states_snapshot_query_failed")
+            rows = []
+
+        per_code_snapshots: dict[str, list] = {}
+        for r in rows:
+            per_code_snapshots.setdefault(r.ts_code, []).append(r)
+
+        for code in holding_codes:
+            snaps = per_code_snapshots.get(code, [])
+            if len(snaps) < 2:
+                continue
+            today_snap, prev_snap = snaps[0], snaps[1]
+            today_orth = today_snap.factor_orthogonal or {}
+            prev_orth = prev_snap.factor_orthogonal or {}
+            breakdown = today_snap.score_breakdown or {}
+            if not today_orth or not prev_orth or not breakdown:
+                continue
+            # 找核心贡献策略 = score_breakdown.contribution 降序首位
+            try:
+                top_strategy = max(
+                    breakdown.items(),
+                    key=lambda kv: float(kv[1].get("contribution", 0.0)),
+                )[0]
+            except (ValueError, TypeError, KeyError):
+                continue
+            today_v = today_orth.get(top_strategy, {}).get("z_orthogonal_normalized")
+            prev_v = prev_orth.get(top_strategy, {}).get("z_orthogonal_normalized")
+            if today_v is None or prev_v is None:
+                continue
+            out.setdefault(code, {})
+            out[code]["short_term_z_drop_value"] = float(prev_v) - float(today_v)
+
+        # ─── 中期 ICIR 翻转：factor_ic_window_state 近 ~30 天最近 2 行聚合 ───
+        # V1.0 简化：strategy=factor 名；查 4 个策略中"核心策略"（用 top_strategy 同源）
+        # 为简化实现，仅检查 holding 的 top_strategy（来自 signal_score_snapshot）；
+        # 无 top_strategy 时跳过（不计入翻转）。
+        for code in holding_codes:
+            state_info = out.get(code, {})
+            # 用 short_term 部分已经查到的 top_strategy；若没有 short_term 数据但需要
+            # 中期判定，可再查一次 score_breakdown。
+            today_breakdown = None
+            snaps = per_code_snapshots.get(code, [])
+            if snaps:
+                today_breakdown = snaps[0].score_breakdown
+            if not today_breakdown:
+                continue
+            try:
+                top_strategy = max(
+                    today_breakdown.items(),
+                    key=lambda kv: float(kv[1].get("contribution", 0.0)),
+                )[0]
+            except (ValueError, TypeError, KeyError):
+                continue
+            try:
+                stmt2 = (
+                    select(FactorICWindowState)
+                    .where(
+                        FactorICWindowState.strategy == top_strategy,
+                        FactorICWindowState.factor == top_strategy,  # V1.0 简化
+                        FactorICWindowState.trade_date <= trade_date,
+                        FactorICWindowState.trade_date >= trade_date - _td(days=70),
+                        FactorICWindowState.icir.isnot(None),
+                    )
+                    .order_by(FactorICWindowState.trade_date.desc())
+                    .limit(2)
+                )
+                ic_rows = (await self._repo._session.execute(stmt2)).scalars().all()
+            except Exception:
+                logger.exception("compute_holding_states_icir_query_failed")
+                continue
+            if len(ic_rows) < 2:
+                continue
+            this_icir = float(ic_rows[0].icir) if ic_rows[0].icir is not None else None
+            prev_icir = float(ic_rows[1].icir) if ic_rows[1].icir is not None else None
+            if this_icir is None or prev_icir is None:
+                continue
+            flipped = (this_icir < 0) and (prev_icir >= 0)
+            state_info["mid_term_icir_flipped"] = flipped
+            out[code] = state_info
+
+        return out
+
     async def expire_old_signals(
         self,
         as_of_date: date,
@@ -317,6 +460,9 @@ class SignalService:
         ts_codes = [e.ts_code for e in pool_entries]
 
         # ── 构建 composite_df（SignalGenerator 输入 + SignalScoreSnapshot 血缘）────
+        # Phase 11 §5：携带新 6 列（composite_z / composite_pct_in_market /
+        # score_breakdown_raw / weights_source / hysteresis_status），由
+        # SignalGenerator 走分位阈值主路径。旧 candidate_pool 行新列 NULL → 自然回 V1.0-r5 旧路径。
         composite_df = pd.DataFrame(
             [
                 {
@@ -337,6 +483,19 @@ class SignalService:
                         float(e.value_score) if e.value_score is not None else None
                     ),
                     "market_state": e.market_state,
+                    # Phase 11 新列
+                    "composite_z": (
+                        float(e.composite_z)
+                        if getattr(e, "composite_z", None) is not None
+                        else None
+                    ),
+                    "composite_pct_in_market": (
+                        float(e.composite_pct_in_market)
+                        if getattr(e, "composite_pct_in_market", None) is not None
+                        else None
+                    ),
+                    "weights_source": getattr(e, "weights_source", None),
+                    "score_breakdown": getattr(e, "score_breakdown_raw", None),
                 }
                 for e in pool_entries
             ]
@@ -366,6 +525,14 @@ class SignalService:
         universe_cfg = await self._cfg.get_universe_params()
         risk_limits = await self._cfg.get_risk_limits()
 
+        # ── Phase 11 §5.2：持仓信号状态（短期 z 降幅 / 中期 ICIR 翻转）预计算 ────
+        # 旧 candidate_pool 无 factor_orthogonal / factor_ic_window_state 数据时，
+        # 本函数返回空 dict —— SignalGenerator 自然降级，不影响 hard_stop_loss 等其它条件。
+        holding_signal_states = await self._compute_holding_signal_states(
+            holdings=positions,
+            trade_date=trade_date,
+        )
+
         # ── Engine 层链路 ──────────────────────────────────────────────────────
         generator = SignalGenerator(signal_cfg=signal_cfg, universe_cfg=universe_cfg)
         trade_signals = generator.generate(
@@ -374,6 +541,7 @@ class SignalService:
             market_state=market_state,
             snapshot_quotes=snapshot,
             trade_date=trade_date,
+            holding_signal_states=holding_signal_states,
         )
 
         # PositionConfig.min_cash_pct 保留默认（RiskLimitsConfig 未含该字段）

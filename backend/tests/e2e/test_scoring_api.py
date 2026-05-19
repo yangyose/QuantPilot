@@ -34,6 +34,14 @@ def _mock_pool_record(
     r.in_pool = in_pool
     r.is_holding = is_holding
     r.market_state = market_state
+    # Phase 11 §9.1：候选池新列在 mock 场景显式 None（spec=CandidatePool 已支持这些属性，
+    # 默认 MagicMock 会让 pydantic 校验失败）
+    r.composite_z = None
+    r.composite_pct_in_market = None
+    r.weights_source = None
+    r.hysteresis_status = None
+    r.score_breakdown_raw = None
+    r.score_breakdown_residual = None
     return r
 
 

@@ -272,6 +272,7 @@ async def test_int_cfg_04_strategy_weights_drives_composite_score(
     class _CapturingScoringService:
         def __init__(
             self, *, repo, universe_filter, strategies, scorer, pool_manager, calendar,
+            factor_monitor=None,
         ) -> None:
             captured["scorer"] = scorer
 
@@ -364,14 +365,14 @@ async def test_int_cfg_04_strategy_weights_drives_composite_score(
                 ts_code="000001.SZ", raw_factors={}, score=40.0, reason="v")],
         }
         # OSCILLATION 权重 trend=1.0 → composite == trend_score == 80
-        composite_osc = captured_scorer.aggregate(MarketStateEnum.OSCILLATION, fake_scores)
+        composite_osc = captured_scorer.aggregate_legacy(MarketStateEnum.OSCILLATION, fake_scores)
         assert len(composite_osc) == 1
         assert composite_osc[0].composite_score == pytest.approx(80.0)
         # DOWNTREND 权重 momentum=1.0 → composite == momentum_score == 20
-        composite_dn = captured_scorer.aggregate(MarketStateEnum.DOWNTREND, fake_scores)
+        composite_dn = captured_scorer.aggregate_legacy(MarketStateEnum.DOWNTREND, fake_scores)
         assert composite_dn[0].composite_score == pytest.approx(20.0)
         # UPTREND 权重 value=1.0 → composite == value_score == 40
-        composite_up = captured_scorer.aggregate(MarketStateEnum.UPTREND, fake_scores)
+        composite_up = captured_scorer.aggregate_legacy(MarketStateEnum.UPTREND, fake_scores)
         assert composite_up[0].composite_score == pytest.approx(40.0)
 
     finally:

@@ -1344,6 +1344,8 @@ curl http://localhost:8000/health
 
 采用**分阶段文档模式**：每阶段开始前创建 `docs/design/phases/phaseN_name.md`，包含该阶段的接口定义、数据结构、测试用例细节。
 
+> **2026-05-14 V1.0 定位调整**：2026-05-13 5y 真机验收发现核心评分公式存在根本缺陷（rank-pct 跨期不可比 + 4 策略横截面反相关锁死 + 绝对阈值 80 失效 → 5y 历史信号表 0 行）→ V1.0 重新定位为"**所有阻断用户达成核心目标的问题修复完成才能发布**"。原 Phase 1~10 完成的工作不变，新增 Phase 11~15 作为 V1.0 收尾批次。详见 §9 末注释 + `docs/design/v1_5_roadmap.md`（v2.0 重构后承担 V1.0 发布后路线）。
+
 | 阶段 | 名称 | 主要交付物 | 详细设计文档 |
 |------|------|-----------|------------|
 | **Phase 1** | 基础设施 | Docker 环境、完整 DB schema（含所有新增表）、JWT 认证框架、CI 基础、项目骨架 | phase1_infrastructure.md |
@@ -1356,14 +1358,22 @@ curl http://localhost:8000/health
 | **Phase 8** | 绩效归因 + 回测引擎 | **BacktestEngine**（共用 Engine 层 + 交易成本）、PerformanceService（SDD §12）、行为分析、全链路集成测试、**`/performance/*` API**（4端点）、**`/backtest/*` API**（3端点）；**【设计待定：启动前须在设计文档中明确以下一项】** ①`backtest_task` / `backtest_result` 表定义——任务 ID 生成方式、状态字段（PENDING/RUNNING/SUCCESS/FAILED）、结果持久化（daily_nav / daily_positions / performance） | phase8_backtest.md |
 | **Phase 9** | 前端 | Vue 3 仪表盘、信号列表、持仓管理、因子监控面板、报告中心、回测入口、设置页（含配置历史） | phase9_frontend.md |
 | **Phase 10** | 配置消费 + 通知 + 部署收尾 | **ConfigService**（Redis 缓存 + 12 类 config_key 落地 + 部分覆盖合并 + PUT 失效 + `get_all_for_snapshot()`）、**Scorer/RiskChecker/SignalGenerator/UniverseFilter/CandidatePoolManager/BacktestEngine/FactorMonitorService 接入 UserConfig**（SDD §14, 附录 B）、pipeline_run.config_snapshot **启动时一次性写入**（Pipeline 内后续 CP 从快照读）、**NotificationChannel ABC** + **WxPusherAdapter**（`notification/` 独立目录）+ NotificationService（3次重试 + 站内信降级 + 三级日志 WARN/ERROR）、**5 类通知触发**（市场状态变化/新信号/止损预警/Pipeline 失败/因子告警）、**止损预警 Job**（APScheduler CronTrigger）、**in_app_notification 表 + 5 端点**、**Settings 前端三级折叠 + OnboardingWizard 4 步 + YAML 导出**、**WatchlistTab + NotificationTab**、**生产 Docker Compose + Nginx/SSL 模板**、**RotatingFileHandler + JSON 日志**、全链路收尾冒烟测试（API-74~84） | phase10_deployment.md |
+| **Phase 11** | **评分公式工业化（V1.0 收尾，~12-18 pd）** | 横截面 Winsorize 百分位 1%/99% + 行业（强制）+ 市值（默认开）+ Beta（默认关）中性化 + Z-score 标准化 + Gram-Schmidt 因子正交化（含残差再标准化 + Hysteresis 防月度跳跃）+ 三层输出（z / pct / 0-100）+ ICIR 滚动加权（252 日窗口 / lag 20 / 最小样本 60 / WARMUP 272）+ 分位阈值（top 5% BUY / top 1% STRONG / bottom 30% SELL）+ 双重失效止损（1.5σ + ICIR 月度转负）；吸收 SDD-EXT-01 / FIN-MED-11 / FIN-MED-12 / S1-GAP-02 + V1.5-C "因子监控自动降权"（→ ICIR 自动加权）；**前置依据**：SDD v1.4（§7-10 已于 2026-05-14 合入，来源 `docs/design/sdd_7_10_revision_draft_2026-05-14.md` v1.3 锁定草案）| phase11_scoring_industrialization.md ✅ |
+| **Phase 12** | **信号可解释性 / 因子级溯源（V1.0 收尾，~6-10 pd）** | LineageService 重构（返回因子层 raw_factors / 中性化前/后值 / 正交化前/后值）+ SignalCard / SignalLineageView 分层视图（L1 业务可解释 / L2 含 ICIR + 中性化 / L3 含正交化残差 + 审计）+ 多因子回归归因（OLS 收益拆解）；吸收 V1.5-B 全部（S1-GAP-01 + D1-GAP-02）+ V1.5-E 多因子回归 | phase12_factor_lineage.md（待创建）|
+| **Phase 13** | **生产可观测 + 部署评审并入（V1.0 收尾，~8-12 pd）** | Prometheus / OpenTelemetry 指标埋点 + 调度器健康端点 + 日志 SecretFilter + DataValidator 错误持久化（DataQualityMetric 表）+ 因子衰减监控（ICIR 持续追踪 + 异常告警）+ Pipeline / DB / 数据延迟告警通过 WxPusher + Grafana 监控 stack；吸收 V1.5-H 全部 5 P2（S5-GAP-01/02/03 + S2-GAP-01 + D4-GAP-03）+ Phase 10 评审 G-1（WS 前端消费）+ G-2（AKShare 自动降级）| phase13_production_observability.md（待创建）|
+| **Phase 14** | **账户资金链 + 5y candidate_pool 回填 + ICIR 历史回算 + BacktestEngine 真 5 步（V1.0 收尾，~3-5 pd）** | (1) **RM-13 deposit 幂等**（idempotency_key 机制）；(2) **5y candidate_pool 历史回填**——Phase 11 收尾时 `strategy_weights_history` 仍全为 `default_matrix`（手动跑过 `apply_monthly_rebalance(2026-04-30)` 写入 12 行验证 Job 路径通），原因是 ICIR 滚动累积需 ≥ 272 日（`ic_window_days=252 + icir_lag_days=20`）候选池历史，5y × 1210 trade_date 全量 pipeline 回填 + ICIR 历史回算 才能让 `weights_source` 切到 `icir`；(3) **BacktestEngine 真 5 步管线接入**——Phase 11 BacktestEngine 走 `aggregate_legacy` + 后处理派生 composite_z / composite_pct_in_market（避免单股 mock 场景被 5 步管线打死），不影响实盘 critical path，本阶段与 ICIR 历史回填同批改 `engine/backtest/engine.py` 走真 5 步管线；(4) **回测引擎 §2.1 ICIR 校准最小集**（IC 时序量级验证 / 多场景对比 / 滑点敏感性最小验证）| phase14_account_integrity.md（待创建）|
+| **Phase 15** | **V1.0 RC 验收 + 文档校核（V1.0 收尾，~6-8 pd）** | (1) **5y 真机端到端验收**（评分链路 candidate top ≥ 85 / 信号链路日均 BUY 5~15 / 因子溯源完整 / 监控链路告警 PASS / 账户幂等 PASS）；(2) **§10.4 跨制度回归 3 state × 10 trade_date = 30 日完整版**（Phase 11 收尾时只跑了 4 trade_date 抽样，理由是生产 5y 数据上每日 pipeline 130~1600s、30 日全跑 ~10 小时不适合 Phase 11 单次回归门槛——本阶段与 Phase 14 § 5y 全量 pipeline 回填同批一并跑出 30 日完整版）；(3) **STRONG 基线相对百分比化**（Phase 11 v1.4 5y 实测 STRONG count 18~23 vs 设计 §10.4 "≥ 30 只"——当前 V1.0 universe 过滤后 ~2400 只，top 1% ≈ 24，设计绝对数 30 假设全市场 3200，本阶段把 §10.4 基线改为相对百分比并校核 SDD §7-10 对应条款）；(4) **覆盖率门槛验证**（Phase 11 留的 Engine 层 ≥ 90% 覆盖率统计）；(5) **文档校核**（SDD §7-10 已在 v1.4 合入，本阶段仅做交叉一致性核对 + 残留 P2 收尾，例如 SDD §7.2.1 共线性附注 / CLAUDE.md Phase 9 行状态等遗留小项 + `v1_5_roadmap.md` 重命名 `v1_post_release_roadmap.md`）；(6) V1.0 RC 标签 + 生产 Docker 部署演练 | phase15_v1_rc_release.md（待创建）|
 
 > **注：**
 > - Phase 1 同时建立完整 DB schema（避免后续 schema 变更积累）和 JWT 认证骨架（后续所有 API 基于此鉴权）。
 > - Phase 3 实际交付仅限市场状态识别（MarketStateEngine）；UniverseFilter 和四大策略推入 Phase 4。
 > - Phase 7 须在 Phase 6 之后，是因为 DailyPipeline CP2/CP3 依赖 `account_service.get_all_positions()`（Phase 6 提供）。FactorMonitorEngine 本身只依赖因子评分快照（Phase 4）和价格收益率（Phase 2），与账户持仓无关。
 > - Phase 8 独立实现 BacktestEngine——须等 Phase 5 信号生成和 Phase 6 账户体系完整后才能端到端验证（SDD §7.7.1）。
-> - `engine/strategies/low_volatility.py` 和 `engine/strategies/plugin_runner.py` 属于 V1.5（SDD §7.3/§15.2），**V1.0 的 Phase 1–10 均不创建这两个文件**；V1.5 启动时另行规划。
-> - **V1.5 完整 scope（SDD §16 14 项产品功能 + V1.0 评审 P2/P3 25 项 + SDD 外部专家评审 8 项 + Phase 10 评审 3 项 = 50 项；含推迟原因、修复条件、估算与文档同步责任）见 `docs/design/v1_5_roadmap.md`**——所有推迟项不在 V1.0 Phase 范围内，启动 V1.5 时按该路线图 §6 主题（V1.5-A..J）打包。
+> - `engine/strategies/low_volatility.py` 和 `engine/strategies/plugin_runner.py` 属于 V1.5+（SDD §7.3/§15.2），**V1.0 的 Phase 1–15 均不创建这两个文件**；V1.5 启动（V1.0 RC 发布后）另行规划。
+> - **Phase 11~15 是 V1.0 收尾批次**（2026-05-14 新增）—— 2026-05-13 5y 真机验收发现核心评分公式根本缺陷（5y 历史信号表 0 行）→ 评分链路 / 因子级溯源 / 数据质量监控 / 部署评审 / 账户资金链等原 V1.5 范围项升级为 V1.0 必修。SDD §7-10 已于 2026-05-14（v1.4）合入工业化评分管线规范（来源 `docs/design/sdd_7_10_revision_draft_2026-05-14.md` v1.3 锁定草案），Phase 11 实施依据 SDD v1.4 正文。
+> - **Phase 11~15 估算合计 ~38-55 pd（8-11 周）**：Phase 11 ~12-18 pd（评分管线重构 + ICIR 工程化主体）+ Phase 12 ~6-10 pd（前端 L1/L2/L3 视图 + 多因子回归归因）+ Phase 13 ~8-12 pd（Prometheus/OTel/告警栈）+ Phase 14 ~3-5 pd（RM-13 + 回测 IC 验证最小集）+ Phase 15 ~6-8 pd（5y 真机 RC 验收 + 文档校核 + 生产部署演练）。pd 拆分依据见 `docs/design/v1_5_roadmap.md` v2.0 §★ 升级清单 + Phase 11 设计文档 §14（已交付 v1.1，2026-05-15）+ Phase 12~15 设计文档（待创建）。
+> - **Phase 11~15 设计文档由各 Phase 启动时创建**（当前 `phase11_scoring_industrialization.md` 已交付 2026-05-15；`phase12_~phase15_*.md` 仍未交付），CLAUDE.md §5 启动核查规则强制要求设计文档存在方可进入实施。
+> - **V1.0 发布后 V1.5+ 完整 scope（SDD §16 11 项产品功能 + V1.0 评审 P2/P3 15 项剩余 + SDD 外部专家评审 7 项剩余 + Phase 10 评审 1 项剩余 = 34 项；含已升级 V1.0 清单、推迟原因、修复条件、估算）见 `docs/design/v1_5_roadmap.md`（v2.0 重构后）**——所有推迟项不在 V1.0 Phase 范围内，V1.5 启动（V1.0 RC 后）按该路线图 §6 主题（V1.5-A..J）打包。
 
 ---
 

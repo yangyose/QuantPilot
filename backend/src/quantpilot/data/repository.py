@@ -300,6 +300,54 @@ class MarketDataRepository:
         df = pd.DataFrame(rows, columns=cols)
         return df.set_index("ts_code")
 
+    async def get_market_cap_pit(
+        self, ts_codes: list[str], trade_date: date
+    ) -> pd.Series:
+        """Phase 11 §3.0 P0-3：返回 trade_date PIT 切片的 float_mkt_cap（流通市值）。
+
+        优先取 trade_date 当日；若当日缺失则取 trade_date 前最近一日（最多回看 7 个
+        交易日）。返回 Series：index=ts_code，values=float_mkt_cap（元，pandas float64）。
+        FactorPipeline.neutralize 在管线内取 ``np.log`` 入回归。
+        """
+        if not ts_codes:
+            return pd.Series(dtype=float)
+        # 先尝试当日精确切片
+        result = await self._session.execute(
+            select(DailyQuote.ts_code, DailyQuote.float_mkt_cap)
+            .where(
+                DailyQuote.ts_code.in_(ts_codes),
+                DailyQuote.trade_date == trade_date,
+                DailyQuote.float_mkt_cap.isnot(None),
+            )
+        )
+        rows = result.all()
+        if rows:
+            df = pd.DataFrame(rows, columns=["ts_code", "float_mkt_cap"])
+            return df.set_index("ts_code")["float_mkt_cap"].astype(float)
+        # Fallback：trade_date 不在交易日（如周末），回看 7 个日历日内最近一行
+        from datetime import timedelta as _td
+        result = await self._session.execute(
+            select(
+                DailyQuote.ts_code,
+                DailyQuote.trade_date,
+                DailyQuote.float_mkt_cap,
+            )
+            .where(
+                DailyQuote.ts_code.in_(ts_codes),
+                DailyQuote.trade_date <= trade_date,
+                DailyQuote.trade_date >= trade_date - _td(days=7),
+                DailyQuote.float_mkt_cap.isnot(None),
+            )
+            .order_by(DailyQuote.ts_code, DailyQuote.trade_date.desc())
+        )
+        rows = result.all()
+        if not rows:
+            return pd.Series(dtype=float)
+        df = pd.DataFrame(rows, columns=["ts_code", "trade_date", "float_mkt_cap"])
+        # 每 ts_code 取最近一行
+        df = df.drop_duplicates(subset=["ts_code"], keep="first")
+        return df.set_index("ts_code")["float_mkt_cap"].astype(float)
+
     async def get_adj_prices_bulk(
         self, ts_codes: list[str], start_date: date, end_date: date
     ) -> pd.DataFrame:
@@ -682,22 +730,38 @@ class MarketDataRepository:
         await self._session.execute(stmt)
 
     async def upsert_candidate_pool_bulk(self, entries: list[dict]) -> None:
-        """批量 upsert candidate_pool 表（单次 SQL，事务原子写入，无部分写入风险）。"""
+        """批量 upsert candidate_pool 表（单次 SQL，事务原子写入，无部分写入风险）。
+
+        Phase 11 §3.4：自动识别条目中的 Phase 11 新列（composite_z /
+        composite_pct_in_market / weights_source / hysteresis_status /
+        score_breakdown_raw / score_breakdown_residual），存在时一并 upsert，
+        缺失时仅写旧 4 列（兼容旧调用方）。
+        """
         if not entries:
             return
         stmt = pg_insert(CandidatePool).values(entries)
+        set_clause = {
+            "composite_score": stmt.excluded.composite_score,
+            "trend_score": stmt.excluded.trend_score,
+            "momentum_score": stmt.excluded.momentum_score,
+            "reversion_score": stmt.excluded.reversion_score,
+            "value_score": stmt.excluded.value_score,
+            "market_state": stmt.excluded.market_state,
+            "in_pool": stmt.excluded.in_pool,
+            "is_holding": stmt.excluded.is_holding,
+        }
+        # Phase 11 新列：仅在任一条目带新键时纳入 SET（避免旧调用方误覆盖为 NULL）
+        phase11_cols = [
+            "composite_z", "composite_pct_in_market", "weights_source",
+            "hysteresis_status", "score_breakdown_raw", "score_breakdown_residual",
+        ]
+        has_phase11 = any(col in entries[0] for col in phase11_cols)
+        if has_phase11:
+            for col in phase11_cols:
+                set_clause[col] = stmt.excluded[col]
         stmt = stmt.on_conflict_do_update(
             constraint="uq_candidate_pool_code_date",
-            set_={
-                "composite_score": stmt.excluded.composite_score,
-                "trend_score": stmt.excluded.trend_score,
-                "momentum_score": stmt.excluded.momentum_score,
-                "reversion_score": stmt.excluded.reversion_score,
-                "value_score": stmt.excluded.value_score,
-                "market_state": stmt.excluded.market_state,
-                "in_pool": stmt.excluded.in_pool,
-                "is_holding": stmt.excluded.is_holding,
-            },
+            set_=set_clause,
         )
         await self._session.execute(stmt)
 
@@ -928,20 +992,27 @@ class MarketDataRepository:
         if not rows:
             return []
         stmt = pg_insert(Signal).values(rows)
+        set_clause = {
+            "score": stmt.excluded.score,
+            "suggested_pct": stmt.excluded.suggested_pct,
+            "suggested_price_low": stmt.excluded.suggested_price_low,
+            "suggested_price_high": stmt.excluded.suggested_price_high,
+            "stop_loss_price": stmt.excluded.stop_loss_price,
+            "signal_strength": stmt.excluded.signal_strength,
+            "liquidity_note": stmt.excluded.liquidity_note,
+            "t1_warning": stmt.excluded.t1_warning,
+            "reason": stmt.excluded.reason,
+            # status 不更新（C-03）：保留用户已操作的 VIEWED/ACTED 状态
+        }
+        # Phase 11 §5：新列存在时一并 upsert（旧调用方不传时仅写旧列，保持兼容）
+        phase11_cols = ["composite_z", "composite_pct_in_market", "trigger_reason"]
+        has_phase11 = any(col in rows[0] for col in phase11_cols)
+        if has_phase11:
+            for col in phase11_cols:
+                set_clause[col] = stmt.excluded[col]
         stmt = stmt.on_conflict_do_update(
             constraint="uq_signal_code_date_type",
-            set_={
-                "score": stmt.excluded.score,
-                "suggested_pct": stmt.excluded.suggested_pct,
-                "suggested_price_low": stmt.excluded.suggested_price_low,
-                "suggested_price_high": stmt.excluded.suggested_price_high,
-                "stop_loss_price": stmt.excluded.stop_loss_price,
-                "signal_strength": stmt.excluded.signal_strength,
-                "liquidity_note": stmt.excluded.liquidity_note,
-                "t1_warning": stmt.excluded.t1_warning,
-                "reason": stmt.excluded.reason,
-                # status 不更新（C-03）：保留用户已操作的 VIEWED/ACTED 状态
-            },
+            set_=set_clause,
         ).returning(Signal.id, Signal.ts_code, Signal.signal_type)
         result = await self._session.execute(stmt)
         returned = result.all()

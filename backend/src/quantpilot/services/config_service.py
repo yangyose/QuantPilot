@@ -28,6 +28,7 @@ from quantpilot.core.config_defaults import (
     DEFAULT_MOMENTUM_STRATEGY,
     DEFAULT_NOTIFICATION,
     DEFAULT_RISK_LIMITS,
+    DEFAULT_SCORING_PIPELINE,
     DEFAULT_SIGNAL_CONFIG,
     DEFAULT_STRATEGY_WEIGHTS,
     DEFAULT_TREND_STRATEGY,
@@ -40,6 +41,7 @@ from quantpilot.core.config_defaults import (
     MomentumStrategyConfig,
     NotificationConfig,
     RiskLimitsConfig,
+    ScoringPipelineConfig,
     SignalConfig,
     StrategyWeightsConfig,
     TrendStrategyConfig,
@@ -140,6 +142,12 @@ class ConfigService:
             "factor_monitor_params", FactorMonitorConfig, DEFAULT_FACTOR_MONITOR
         )
 
+    async def get_scoring_pipeline_params(self) -> ScoringPipelineConfig:
+        """Phase 11 §7.1：评分管线配置（FactorPipeline 5 步管线主开关）。"""
+        return await self._get_typed(
+            "scoring_pipeline_params", ScoringPipelineConfig, DEFAULT_SCORING_PIPELINE
+        )
+
     # ---------------- 快照（§4.3 / §4.4）----------------
 
     async def get_pipeline_snapshot(self) -> dict[str, Any]:
@@ -162,6 +170,8 @@ class ConfigService:
             "strategy_params_value": asdict(await self.get_strategy_params_value()),
             "notification_prefs": asdict(await self.get_notification_prefs()),
             "factor_monitor_params": asdict(await self.get_factor_monitor_params()),
+            # Phase 11 §7.2：评分管线开关进入快照，DailyPipeline CP2 派生 FactorPipelineConfig
+            "scoring_pipeline_params": asdict(await self.get_scoring_pipeline_params()),
             "_snapshot_at": datetime.now(timezone.utc).isoformat(),
         }
 

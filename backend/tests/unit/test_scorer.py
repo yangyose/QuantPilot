@@ -37,7 +37,7 @@ def four_strategy_scores() -> dict[str, list[StrategyScore]]:
 # ---------------------------------------------------------------------------
 class TestSCR01:
     def test_uptrend_weights_applied(self, scorer: Scorer, four_strategy_scores):
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         assert len(results) == 4
 
         by_code = {r.ts_code: r for r in results}
@@ -48,7 +48,7 @@ class TestSCR01:
         assert abs(by_code["A"].composite_score - expected_a) < 0.01
 
     def test_uptrend_market_state_field(self, scorer: Scorer, four_strategy_scores):
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         for r in results:
             assert r.market_state == MarketStateEnum.UPTREND
 
@@ -58,7 +58,7 @@ class TestSCR01:
 # ---------------------------------------------------------------------------
 class TestSCR02:
     def test_downtrend_weights_applied(self, scorer: Scorer, four_strategy_scores):
-        results = scorer.aggregate(MarketStateEnum.DOWNTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.DOWNTREND, four_strategy_scores)
         by_code = {r.ts_code: r for r in results}
 
         # DOWNTREND：trend=0.10, momentum=0.05, mean_reversion=0.15, value=0.70
@@ -74,7 +74,7 @@ class TestSCR02:
             "mean_reversion":_make_scores("mean_reversion",{"HIGH_VALUE": 20, "LOW_VALUE": 80}),
             "value":         _make_scores("value",        {"HIGH_VALUE": 90, "LOW_VALUE": 10}),
         }
-        results = scorer.aggregate(MarketStateEnum.DOWNTREND, scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.DOWNTREND, scores)
         by_code = {r.ts_code: r for r in results}
         assert by_code["HIGH_VALUE"].composite_score > by_code["LOW_VALUE"].composite_score
 
@@ -84,7 +84,7 @@ class TestSCR02:
 # ---------------------------------------------------------------------------
 class TestSCR03:
     def test_oscillation_weights_applied(self, scorer: Scorer, four_strategy_scores):
-        results = scorer.aggregate(MarketStateEnum.OSCILLATION, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.OSCILLATION, four_strategy_scores)
         by_code = {r.ts_code: r for r in results}
 
         # OSCILLATION：trend=0.15, momentum=0.15, mean_reversion=0.40, value=0.30
@@ -104,7 +104,7 @@ class TestSCR04:
             "trend": _make_scores("trend", {"A": 80, "B": 20}),
             "value": _make_scores("value", {"A": 20, "B": 80}),
         }
-        results = scorer.aggregate(MarketStateEnum.OSCILLATION, partial_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.OSCILLATION, partial_scores)
         assert len(results) == 2
         by_code = {r.ts_code: r for r in results}
 
@@ -122,7 +122,7 @@ class TestSCR04:
             "momentum": _make_scores("momentum", {"A": 50}),
             # mean_reversion 和 value 缺失
         }
-        results = scorer.aggregate(MarketStateEnum.UPTREND, partial_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, partial_scores)
         assert len(results) == 1
         breakdown = results[0].score_breakdown
         total_weight = sum(v["weight"] for v in breakdown.values())
@@ -130,7 +130,7 @@ class TestSCR04:
 
     def test_empty_strategy_scores_returns_empty(self, scorer: Scorer):
         """所有策略都缺失时返回空列表。"""
-        results = scorer.aggregate(MarketStateEnum.UPTREND, {})
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, {})
         assert results == []
 
 
@@ -139,7 +139,7 @@ class TestSCR04:
 # ---------------------------------------------------------------------------
 class TestSCR05:
     def test_score_breakdown_has_required_fields(self, scorer: Scorer, four_strategy_scores):
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         assert results
         for result in results:
             assert isinstance(result.score_breakdown, dict)
@@ -153,7 +153,7 @@ class TestSCR05:
     def test_score_breakdown_contribution_equals_score_times_weight(
         self, scorer: Scorer, four_strategy_scores
     ):
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         for result in results:
             for strategy_name, breakdown in result.score_breakdown.items():
                 expected_contrib = breakdown["score"] * breakdown["weight"]
@@ -163,14 +163,14 @@ class TestSCR05:
         self, scorer: Scorer, four_strategy_scores
     ):
         """composite_score == sum(contribution)（数学一致性检验）。"""
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         for result in results:
             total = sum(v["contribution"] for v in result.score_breakdown.values())
             assert abs(result.composite_score - total) < 0.01
 
     def test_individual_scores_in_breakdown(self, scorer: Scorer, four_strategy_scores):
         """score_breakdown 中的 score 与 per_strategy_scores 一致。"""
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         by_code = {r.ts_code: r for r in results}
 
         # A 的趋势分 = 80
@@ -179,7 +179,7 @@ class TestSCR05:
 
     def test_strategy_scores_stored_on_composite(self, scorer: Scorer, four_strategy_scores):
         """CompositeScore 上的四个独立 score 字段与 strategy_scores 输入一致。"""
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         by_code = {r.ts_code: r for r in results}
 
         assert abs(by_code["A"].trend_score - 80) < 0.01
@@ -189,7 +189,7 @@ class TestSCR05:
 
     def test_explanation_contains_reasons(self, scorer: Scorer, four_strategy_scores):
         """explanation 字段非空，来自各策略 StrategyScore.reason 的合并。"""
-        results = scorer.aggregate(MarketStateEnum.UPTREND, four_strategy_scores)
+        results = scorer.aggregate_legacy(MarketStateEnum.UPTREND, four_strategy_scores)
         for result in results:
             assert isinstance(result.explanation, str)
             assert len(result.explanation) > 0

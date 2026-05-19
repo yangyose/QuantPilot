@@ -147,3 +147,69 @@ async def test_fq_07_history_with_filters(client: AsyncClient) -> None:
         )
     finally:
         app.dependency_overrides.pop(get_factor_monitor_service, None)
+
+
+# ---------------------------------------------------------------------------
+# Phase 11 §9.2：GET /factor-quality/ic-history + /current-weights
+# ---------------------------------------------------------------------------
+
+
+async def test_fq_08_ic_history_no_auth(client: AsyncClient) -> None:
+    """GET /factor-quality/ic-history 无鉴权 → 401。"""
+    resp = await client.get("/api/v1/factor-quality/ic-history")
+    assert resp.status_code == 401
+
+
+async def test_fq_09_ic_history_empty_ok(client: AsyncClient) -> None:
+    """GET /factor-quality/ic-history 鉴权后返回 200 + items 数组（空 DB → 空列表）。"""
+    from quantpilot.core.database import get_db
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    app.dependency_overrides[get_db] = lambda: mock_session
+    try:
+        resp = await client.get("/api/v1/factor-quality/ic-history", headers=_auth())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        assert isinstance(body["data"]["items"], list)
+        assert body["data"]["total"] == len(body["data"]["items"])
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+async def test_fq_10_current_weights_no_auth(client: AsyncClient) -> None:
+    """GET /factor-quality/current-weights 无鉴权 → 401。"""
+    resp = await client.get("/api/v1/factor-quality/current-weights")
+    assert resp.status_code == 401
+
+
+async def test_fq_11_current_weights_cold_start(client: AsyncClient) -> None:
+    """冷启动（strategy_weights_history 空表）→ 200 + 12 行 default_matrix。"""
+    from quantpilot.core.database import get_db
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    app.dependency_overrides[get_db] = lambda: mock_session
+    try:
+        resp = await client.get("/api/v1/factor-quality/current-weights", headers=_auth())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        items = body["data"]["items"]
+        assert isinstance(items, list)
+        # 3 state × 4 strategy = 12 行（冷启动 fallback 保证 12）
+        assert len(items) == 12
+        # 全部 default_matrix（无历史）
+        sources = {it["weights_source"] for it in items}
+        assert sources == {"default_matrix"}
+        # 4 strategy 全部覆盖
+        strategies = {it["strategy"] for it in items}
+        assert strategies == {"trend", "momentum", "mean_reversion", "value"}
+        # 3 state 全部覆盖
+        states = {it["state"] for it in items}
+        assert states == {"UPTREND", "DOWNTREND", "OSCILLATION"}
+    finally:
+        app.dependency_overrides.pop(get_db, None)

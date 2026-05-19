@@ -93,6 +93,37 @@ class MonthlyScheduler:
                 await session.rollback()
                 logger.exception("factor_monitoring_failed: calc_month=%s", calc_month)
 
+    async def run_icir_rebalance(self, month_end: date) -> None:
+        """Phase 11 §6.1：每月末 ICIR rebalance Job。
+
+        - 调 FactorMonitorService.apply_monthly_rebalance(session, month_end)
+        - 写 factor_ic_window_state + strategy_weights_history
+        - 触发 Hysteresis 判定 + R1~R4 因子下线规则
+
+        与 run_factor_monitoring / run_monthly_report 并列，独立运行；
+        任一失败不阻塞其他 Job。
+        """
+        if self._session_factory is None or self._factor_monitor_engine is None:
+            logger.warning(
+                "run_icir_rebalance_skipped: missing session_factory or engine"
+            )
+            return
+
+        from quantpilot.services.factor_monitor_service import FactorMonitorService
+
+        async with self._session_factory() as session:
+            try:
+                service = FactorMonitorService(session, self._factor_monitor_engine)
+                result = await service.apply_monthly_rebalance(session, month_end)
+                await session.commit()
+                logger.info(
+                    "icir_rebalance_done: month_end=%s states=%d",
+                    month_end, len(result),
+                )
+            except Exception:
+                await session.rollback()
+                logger.exception("icir_rebalance_failed: month_end=%s", month_end)
+
     async def run_monthly_report(self, month_end: date) -> None:
         """月末生成月报（Phase 7）。
 
@@ -141,6 +172,11 @@ class MonthlyScheduler:
 
         await self.run_quarterly_financial_refresh(calc_month)
         await self.run_factor_monitoring(calc_month)
+        # Phase 11 §6.1：ICIR 月度 rebalance Job 在月报前执行（生效日 = calc_month+1）。
+        # 与 run_factor_monitoring 并列：前者写 factor_ic_history（Phase 7 旧表，readonly
+        # 保留作 baseline），后者写 factor_ic_window_state + strategy_weights_history（Phase 11
+        # 新表，月初生效用于 next-month scoring）。
+        await self.run_icir_rebalance(calc_month)
         await self.run_monthly_report(calc_month)
 
         logger.info("monthly_run_all_done: calc_month=%s", calc_month)

@@ -34,6 +34,12 @@ class PoolStockItem(BaseModel):
     value_score: float | None
     is_holding: bool
     is_watchlist: bool
+    # Phase 11 §9.1：分位主路径三层输出 + 审计字段
+    composite_z: float | None = None
+    composite_pct_in_market: float | None = None
+    weights_source: str | None = None
+    hysteresis_status: str | None = None
+    score_breakdown_raw: dict | None = None
 
 
 class PoolResponse(BaseModel):

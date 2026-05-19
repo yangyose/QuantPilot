@@ -1171,3 +1171,97 @@ def test_api_84_notifications_wx_status(
     _assert_ok(body)
     assert "wx_configured" in body["data"]
     assert isinstance(body["data"]["wx_configured"], bool)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 11 §11 冒烟测试 API-85~89
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_api_85_signals_no_auth_returns_401(client: httpx.Client) -> None:
+    """API-85: GET /signals?limit=5 无鉴权 → 401"""
+    r = client.get("/api/v1/signals", params={"limit": 5})
+    assert r.status_code == 401
+
+
+def test_api_86_signals_with_auth_returns_phase11_fields(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-86: GET /signals 带鉴权 → 200；响应 signals 任意一条须含 Phase 11 4 新字段
+    （composite_z / composite_pct_in_market / weights_source / trigger_reason），
+    实际值允许 null（当日可能无信号或字段未填充）。"""
+    r = client.get("/api/v1/signals", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    _assert_ok(body)
+    signals = body["data"].get("signals", [])
+    # 即使列表为空也通过；非空时校验首行 key 集合（pydantic 模型默认序列化所有字段）
+    if signals:
+        sample = signals[0]
+        for k in (
+            "composite_z", "composite_pct_in_market", "weights_source", "trigger_reason",
+        ):
+            assert k in sample, f"signal 行缺 Phase 11 字段: {k}"
+
+
+def test_api_87_signal_lineage_phase11_keys(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-87: GET /signals/{id}/lineage → 200；若 score_snapshot 存在须含 5 个因子级溯源 key
+    （score_breakdown_raw / score_breakdown_residual / factor_winsorized /
+    factor_neutralized / factor_orthogonal）。signal id 不存在时 404，但仍记入冒烟覆盖。"""
+    # 取最新一条 signal 的 id；若全表空则跳过断言
+    r0 = client.get("/api/v1/signals/history", headers=auth_headers, params={"limit": 1})
+    assert r0.status_code == 200
+    sigs = r0.json()["data"].get("signals", [])
+    if not sigs:
+        # 全表空：仅验证 404 路径
+        r = client.get("/api/v1/signals/99999999/lineage", headers=auth_headers)
+        assert r.status_code in (404, 200)
+        return
+    sid = sigs[0]["id"]
+    r = client.get(f"/api/v1/signals/{sid}/lineage", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    _assert_ok(body)
+    snap = body["data"].get("score_snapshot")
+    if snap is not None:
+        for k in (
+            "score_breakdown_raw", "score_breakdown_residual",
+            "factor_winsorized", "factor_neutralized", "factor_orthogonal",
+        ):
+            assert k in snap, f"lineage.score_snapshot 缺 Phase 11 字段: {k}"
+
+
+def test_api_88_factor_quality_ic_history(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-88: GET /factor-quality/ic-history → 200；响应 items 为 list（可空）。"""
+    r = client.get(
+        "/api/v1/factor-quality/ic-history",
+        headers=auth_headers,
+        params={"limit": 10},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    _assert_ok(body)
+    assert isinstance(body["data"]["items"], list)
+
+
+def test_api_89_factor_quality_current_weights(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-89: GET /factor-quality/current-weights → 200；含 3 state × 4 strategy = 12 行，
+    每行含 weight_used / weights_source / hysteresis_status。"""
+    r = client.get("/api/v1/factor-quality/current-weights", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    _assert_ok(body)
+    items = body["data"]["items"]
+    assert isinstance(items, list)
+    # 3 state × 4 strategy = 12 行（冷启动 fallback 后保证 12）
+    assert len(items) == 12, f"current-weights 应为 12 行，实际 {len(items)}"
+    for it in items:
+        assert "weight_used" in it
+        assert "weights_source" in it
+        assert "hysteresis_status" in it

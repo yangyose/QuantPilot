@@ -14,7 +14,13 @@ from dataclasses import dataclass, field
 # ---------------- 1. signal_params ----------------
 @dataclass(frozen=True)
 class SignalConfig:
-    """SignalGenerator 阈值（SDD §8.2）。"""
+    """SignalGenerator 阈值（SDD §8.2 + Phase 11 §7.1 分位扩展）。
+
+    旧 V1.0-r5 绝对阈值字段（buy_threshold / sell_threshold / strong_threshold）保留：
+    Phase 11 §5 分位主路径 fallback 时仍消费；并支持
+    ``enable_absolute_threshold_override=True`` 一键回退。
+    """
+    # V1.0-r5 绝对阈值（fallback / override 路径仍消费）
     buy_threshold: float = 80.0
     sell_threshold: float = 40.0
     strong_threshold: float = 90.0
@@ -22,6 +28,12 @@ class SignalConfig:
     add_cost_deviation_pct: float = 0.10
     price_low_mult: float = 0.99
     price_high_mult: float = 1.02
+    # Phase 11 §7.1 分位阈值主路径
+    buy_pct_threshold: float = 0.05
+    sell_pct_threshold: float = 0.70
+    strong_pct_threshold: float = 0.01
+    short_term_failure_sigma: float = 1.5
+    enable_absolute_threshold_override: bool = False
 
 
 DEFAULT_SIGNAL_CONFIG = SignalConfig()
@@ -59,10 +71,15 @@ DEFAULT_MARKET_STATE = MarketStateConfig()
 # ---------------- 4. universe_params ----------------
 @dataclass(frozen=True)
 class UniverseConfig:
-    """UniverseFilter + CandidatePoolManager（SDD §7.3）。"""
+    """UniverseFilter + CandidatePoolManager（SDD §7.3 / Phase 11 §10.4）。"""
     min_liquidity_amount: float = 5_000_000.0  # 元
     new_stock_days: int = 60
-    pool_capacity: int = 20
+    # Phase 11 v1.4：从 V1.0 老默认 20 提到 50，让 candidate_pool 能容纳
+    # 设计 §10.4 隐含基线（全 universe top 1% STRONG ≈ 32 只）。否则即使
+    # 全 universe STRONG 有 50 只，pool 截断到 20 → "STRONG ≥ 30" 验证假阴性。
+    # SignalGenerator 触发用 composite_pct_in_market（相对 universe）独立于
+    # pool 行数，所以这里只影响候选池持久化行数 + 前端展示宽度。
+    pool_capacity: int = 50
     signal_expiry_days: int = 3
 
 
@@ -172,13 +189,45 @@ DEFAULT_NOTIFICATION = NotificationConfig()
 # ---------------- 12. factor_monitor_params ----------------
 @dataclass(frozen=True)
 class FactorMonitorConfig:
-    """因子监控（v1.1 评审 G-3 新增；SDD 附录 B 列默认窗口但无配置入口）。"""
+    """因子监控（v1.1 评审 G-3 新增 + Phase 11 §4.1 滚动 ICIR 窗口扩展）。
+
+    旧 Phase 7~10 字段（ic_window / ic_alert_threshold / half_life_window）保留：
+    `FactorMonitorService.run_monthly` 旧路径仍消费；Phase 11 新方法
+    （rolling_icir_state / apply_monthly_rebalance）使用新字段。
+    """
+    # Phase 7~10 字段（保留兼容）
     ic_window: int = 20
     ic_alert_threshold: float = 0.02
     half_life_window: int = 60
+    # Phase 11 §4.1 新增（滚动 ICIR 窗口）
+    ic_window_days: int = 252
+    icir_lag_days: int = 20
+    icir_warmup_days: int = 272      # = ic_window_days + icir_lag_days
+    state_min_samples: int = 60
+    ic_bootstrap_iterations: int = 1000
+    half_life_window_days: int = 504
 
 
 DEFAULT_FACTOR_MONITOR = FactorMonitorConfig()
+
+
+# ---------------- 13. scoring_pipeline_params（Phase 11 §7.1 新增）----------------
+@dataclass(frozen=True)
+class ScoringPipelineConfig:
+    """Phase 11 §7.1 评分管线配置（FactorPipeline 5 步管线 + Hysteresis 主开关）。
+
+    Service 层负责派生 `engine.factor_pipeline.FactorPipelineConfig`（CLAUDE.md §6
+    Engine 层无 IO，不直接依赖 ConfigService）。
+    """
+    winsorize_lower_pct: float = 0.01
+    winsorize_upper_pct: float = 0.99
+    neutralize_industry: bool = True       # SDD §7.1 Step 2 强制开
+    neutralize_market_cap: bool = True     # Q2 锁定默认开
+    neutralize_beta: bool = False          # Q2 锁定默认关
+    hysteresis_enabled: bool = True
+
+
+DEFAULT_SCORING_PIPELINE = ScoringPipelineConfig()
 
 
 # ---------------- 辅助：risk_free_rate（Phase 6 已用纯标量，保持不变） ----------------
@@ -198,5 +247,6 @@ __all__ = [
     "BacktestDefaultsConfig", "DEFAULT_BACKTEST_DEFAULTS",
     "NotificationConfig", "DEFAULT_NOTIFICATION",
     "FactorMonitorConfig", "DEFAULT_FACTOR_MONITOR",
+    "ScoringPipelineConfig", "DEFAULT_SCORING_PIPELINE",
     "DEFAULT_RISK_FREE_RATE",
 ]

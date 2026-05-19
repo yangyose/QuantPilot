@@ -46,7 +46,7 @@ def _make_universe_filter(pass_all: bool = True) -> MagicMock:
 
 def _make_scorer() -> MagicMock:
     scorer = MagicMock()
-    scorer.aggregate.return_value = pd.DataFrame()
+    scorer.aggregate_legacy.return_value = pd.DataFrame()
     return scorer
 
 
@@ -171,7 +171,7 @@ def test_int_be_02_cost_reduces_nav() -> None:
         # scorer 返回非空 composite，signal_engine 才会被调用
         # 实际契约：Scorer.aggregate → list[CompositeScore]（engine.py 按 cs.ts_code 等字段读取）
         scorer = MagicMock()
-        scorer.aggregate.return_value = [
+        scorer.aggregate_legacy.return_value = [
             CompositeScore(
                 ts_code="0001.SZ", composite_score=85.0,
                 trend_score=85.0, momentum_score=None,
@@ -305,7 +305,7 @@ def _build_two_day_run(
     ]
 
     scorer = MagicMock()
-    scorer.aggregate.return_value = [
+    scorer.aggregate_legacy.return_value = [
         CompositeScore(
             ts_code=ts_code, composite_score=85.0,
             trend_score=85.0, momentum_score=None,
@@ -444,7 +444,7 @@ def test_int_be_07_risk_checker_blocks_concentration() -> None:
         StrategyScore(ts_code=ts_code, raw_factors={}, score=85.0, reason="mock")
     ]
     scorer = MagicMock()
-    scorer.aggregate.return_value = [
+    scorer.aggregate_legacy.return_value = [
         CompositeScore(
             ts_code=ts_code, composite_score=85.0,
             trend_score=85.0, momentum_score=None, reversion_score=None, value_score=None,

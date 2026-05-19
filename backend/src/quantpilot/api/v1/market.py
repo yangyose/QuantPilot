@@ -64,6 +64,8 @@ async def get_market_state_history(
 
 _ALLOWED_SORT_FIELDS = frozenset({
     "composite_score", "trend_score", "momentum_score", "reversion_score", "value_score",
+    # Phase 11 §9.1：支持按分位排序（rank ascending 等价于按 z desc）
+    "composite_z", "composite_pct_in_market",
 })
 
 
@@ -114,6 +116,20 @@ async def get_candidate_pool(
             value_score=float(r.value_score) if r.value_score is not None else None,
             is_holding=r.is_holding,
             is_watchlist=(r.ts_code in whitelist_codes),
+            # Phase 11 §9.1：分位主路径三层输出 + 审计字段
+            composite_z=(
+                float(r.composite_z)
+                if getattr(r, "composite_z", None) is not None
+                else None
+            ),
+            composite_pct_in_market=(
+                float(r.composite_pct_in_market)
+                if getattr(r, "composite_pct_in_market", None) is not None
+                else None
+            ),
+            weights_source=getattr(r, "weights_source", None),
+            hysteresis_status=getattr(r, "hysteresis_status", None),
+            score_breakdown_raw=getattr(r, "score_breakdown_raw", None),
         )
         for i, r in enumerate(sorted_records)
     ]

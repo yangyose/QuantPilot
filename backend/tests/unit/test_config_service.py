@@ -193,7 +193,10 @@ async def test_invalidate_deletes_cache() -> None:
 
 
 async def test_get_all_for_snapshot_structure() -> None:
-    """快照包含 12 个 config_key + _snapshot_at；每项是可 JSON 序列化 dict。"""
+    """快照包含 13 个 config_key + _snapshot_at；每项是可 JSON 序列化 dict。
+
+    Phase 11 §7.2：新增 ``scoring_pipeline_params``（评分管线开关）。
+    """
     session = FakeSession(rows={})
     svc = ConfigService(session)  # type: ignore[arg-type]
 
@@ -205,6 +208,7 @@ async def test_get_all_for_snapshot_structure() -> None:
         "strategy_params_trend", "strategy_params_momentum",
         "strategy_params_mean_reversion", "strategy_params_value",
         "backtest_defaults", "notification_prefs", "factor_monitor_params",
+        "scoring_pipeline_params",
         "_snapshot_at",
     }
     assert set(snap.keys()) == expected_keys
@@ -220,6 +224,82 @@ async def test_snapshot_can_reconstruct_dataclasses() -> None:
     reconstructed = SignalConfig(**snap["signal_params"])
 
     assert asdict(reconstructed) == asdict(DEFAULT_SIGNAL_CONFIG)
+
+
+# ---------------- Phase 11 §7：评分管线配置 + 分位字段透传 ----------------
+
+
+async def test_p11_get_scoring_pipeline_params_returns_default() -> None:
+    """ConfigService.get_scoring_pipeline_params() 在 DB 空时返回 DEFAULT_SCORING_PIPELINE。"""
+    from quantpilot.core.config_defaults import DEFAULT_SCORING_PIPELINE
+
+    session = FakeSession(rows={})
+    svc = ConfigService(session)  # type: ignore[arg-type]
+
+    cfg = await svc.get_scoring_pipeline_params()
+    assert asdict(cfg) == asdict(DEFAULT_SCORING_PIPELINE)
+    assert cfg.neutralize_industry is True   # SDD §7.1 Step 2 强制开
+    assert cfg.neutralize_market_cap is True  # Q2 默认开
+    assert cfg.neutralize_beta is False       # Q2 默认关
+    assert cfg.hysteresis_enabled is True
+
+
+async def test_p11_scoring_pipeline_params_partial_overlay() -> None:
+    """DB 仅写 neutralize_market_cap=False 时，其它字段保留默认。"""
+    session = FakeSession(rows={"scoring_pipeline_params": {"neutralize_market_cap": False}})
+    svc = ConfigService(session)  # type: ignore[arg-type]
+
+    cfg = await svc.get_scoring_pipeline_params()
+    assert cfg.neutralize_market_cap is False
+    assert cfg.neutralize_industry is True
+    assert cfg.winsorize_lower_pct == 0.01
+
+
+async def test_p11_signal_config_includes_pct_fields() -> None:
+    """SignalConfig 默认值已含 5 个 Phase 11 分位字段（合并 SignalPctConfig）。"""
+    cfg = DEFAULT_SIGNAL_CONFIG
+    assert cfg.buy_pct_threshold == 0.05
+    assert cfg.sell_pct_threshold == 0.70
+    assert cfg.strong_pct_threshold == 0.01
+    assert cfg.short_term_failure_sigma == 1.5
+    assert cfg.enable_absolute_threshold_override is False
+
+
+async def test_p11_factor_monitor_config_extended() -> None:
+    """FactorMonitorConfig 兼容旧字段同时含 Phase 11 滚动 ICIR 窗口字段。"""
+    from quantpilot.core.config_defaults import DEFAULT_FACTOR_MONITOR
+
+    cfg = DEFAULT_FACTOR_MONITOR
+    # 旧字段保留
+    assert cfg.ic_window == 20
+    # Phase 11 新增
+    assert cfg.ic_window_days == 252
+    assert cfg.icir_lag_days == 20
+    assert cfg.icir_warmup_days == 272
+    assert cfg.state_min_samples == 60
+    assert cfg.ic_bootstrap_iterations == 1000
+    assert cfg.half_life_window_days == 504
+
+
+async def test_p11_signal_generator_passes_pct_fields_to_risk_params() -> None:
+    """SignalGenerator._default_risk_params 透传 Phase 11 分位字段。"""
+    from quantpilot.core.config_defaults import SignalConfig as _SC
+    from quantpilot.engine.signal import SignalGenerator
+
+    custom = _SC(
+        buy_pct_threshold=0.03,
+        sell_pct_threshold=0.65,
+        strong_pct_threshold=0.005,
+        short_term_failure_sigma=2.0,
+        enable_absolute_threshold_override=True,
+    )
+    gen = SignalGenerator(signal_cfg=custom)
+    rp = gen._default_risk_params()
+    assert rp.buy_pct_threshold == 0.03
+    assert rp.sell_pct_threshold == 0.65
+    assert rp.strong_pct_threshold == 0.005
+    assert rp.short_term_failure_sigma == 2.0
+    assert rp.enable_absolute_threshold_override is True
 
 
 # ---------------- 5. 无 Redis 时的降级行为 ----------------

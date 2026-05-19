@@ -39,6 +39,12 @@ def _mock_signal(
     s.reason = "综合评分 88.5"
     s.status = status
     s.created_at = datetime(2026, 4, 8, 9, 30, 0)
+    # Phase 11 §9.1：Signal 表新列在 mock 场景显式 None（spec=Signal 已含这些属性，
+    # 默认 MagicMock 会让 pydantic 校验失败）
+    s.composite_z = None
+    s.composite_pct_in_market = None
+    s.weights_source = None
+    s.trigger_reason = None
     return s
 
 

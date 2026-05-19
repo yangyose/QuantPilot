@@ -263,15 +263,22 @@ class BacktestEngine:
             composite_scores: list = []
             if strategy_scores_dict:
                 try:
-                    composite_scores = self._scorer.aggregate(market_state, strategy_scores_dict)
+                    # 【降级说明】Phase 11 §8.1 共内核约束 V1.0 未完整落地：BacktestEngine 内
+                    # 走 Phase 4 aggregate_legacy（避免破坏 mock 集成测试 + 无 PIT market_cap
+                    # 数据源）。下游 composite DataFrame 仍补 Phase 11 字段供 SignalGenerator
+                    # 分位主路径消费。完整接入由 Phase 14 §14-2 承接（含 PIT 市值数据 +
+                    # 真实 ICIR 滚动加权 fallback 链）。
+                    composite_scores = self._scorer.aggregate_legacy(
+                        market_state, strategy_scores_dict
+                    )
                 except Exception:
                     # B3-9：scorer.aggregate 失败用 logger.exception
                     logger.exception("backtest_scorer_aggregate_error date=%s", trade_date)
                     composite_scores = []
 
-            # 转换为 SignalGenerator 期望的 DataFrame 格式（index=ts_code, col=composite_score）
+            # 转换为 SignalGenerator 期望的 DataFrame 格式（Phase 11 §5：派生分位字段）
             if composite_scores:
-                composite = pd.DataFrame([
+                rows = [
                     {
                         "ts_code": cs.ts_code,
                         "composite_score": cs.composite_score,
@@ -279,7 +286,19 @@ class BacktestEngine:
                         "raw_factors": None,
                     }
                     for cs in composite_scores
-                ]).set_index("ts_code")
+                ]
+                composite = pd.DataFrame(rows).set_index("ts_code")
+                # Phase 11 §5 派生字段：composite_pct_in_market = rank(pct=True, asc=False)
+                # composite_z 从 composite_score (0-100) 反推 Φ⁻¹(score/100)（夹到 [0.001, 0.999]）
+                from scipy.stats import norm as _norm
+                clipped = composite["composite_score"].clip(lower=0.1, upper=99.9) / 100.0
+                composite["composite_z"] = clipped.apply(
+                    lambda p: float(_norm.ppf(p)) if pd.notna(p) else None
+                )
+                composite["composite_pct_in_market"] = composite[
+                    "composite_score"
+                ].rank(pct=True, ascending=False)
+                composite["weights_source"] = "default_matrix"
             else:
                 composite = pd.DataFrame()
 

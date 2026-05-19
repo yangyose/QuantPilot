@@ -180,6 +180,6 @@ def get_scoring_service(
         universe_filter=UniverseFilter(),
         strategies=[TrendStrategy(), MomentumStrategy(), MeanReversionStrategy(), ValueStrategy()],
         scorer=Scorer(),
-        pool_manager=CandidatePoolManager(pool_capacity=20),
+        pool_manager=CandidatePoolManager(),  # 用 DEFAULT_UNIVERSE.pool_capacity（V1.0 → 50）
         calendar=calendar,
     )

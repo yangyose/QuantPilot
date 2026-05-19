@@ -23,6 +23,11 @@ class SignalResponse(BaseModel):
     reason: str | None
     status: str
     created_at: datetime | None
+    # Phase 11 §9.1：分位主路径三层输出 + trigger_reason 细分
+    composite_z: float | None = None
+    composite_pct_in_market: float | None = None
+    weights_source: str | None = None
+    trigger_reason: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -40,6 +45,12 @@ class SignalSnapshotResponse(BaseModel):
     market_state: str | None
     score_breakdown: dict | None
     raw_factors: dict | None
+    # Phase 11 §9.1：因子级溯源 5 字段（前端分层视图 Phase 12 渲染）
+    score_breakdown_raw: dict | None = None
+    score_breakdown_residual: dict | None = None
+    factor_winsorized: dict | None = None
+    factor_neutralized: dict | None = None
+    factor_orthogonal: dict | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
