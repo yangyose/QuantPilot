@@ -995,9 +995,18 @@ R = 平均盈利 / 平均亏损（盈亏比）
 - 按触发信号的主要策略分组，统计该策略驱动的交易的累计收益、胜率、盈亏比
 - 识别哪些策略在近期贡献正收益，哪些拖累
 
-### 12.3 因子归因（V1.5+）
+### 12.3 因子归因（V1.0 Phase 12 已合入；完整风险因子归因 V1.5+）
 
-使用多因子回归分析拆解组合收益来源：
+**V1.0 Phase 12 已合入**：4 策略归因（trend / momentum / mean_reversion / value
+的合成后 strategy_z 作 OLS exposures，对 forward_returns 20 交易日做横截面 panel
+回归），月末批写 `attribution_history`，REST 端点 `GET /attribution/{history,summary}`。
+前端 SignalLineageView L2 折叠内嵌 AttributionPanel 显示最近 calc_date 的 4 因子 β
++ R² + sample_size。详见 `docs/design/phases/phase12_factor_lineage.md` §3.2。
+
+**V1.5+ 留存**：完整 4 风险因子归因（Size / Value / Momentum / Beta 暴露）+ 行业
+归因。需 strategy_factors → 真因子映射 + 5y 持仓时序回填后实施。
+
+V1.5+ 完整归因目标公式：
 
 ```
 Rp = α + β_market × Rm + β_size × Size + β_value × Value + β_momentum × Momentum + ε
@@ -1234,7 +1243,7 @@ Rp = α + β_market × Rm + β_size × Size + β_value × Value + β_momentum ×
 | 要求 | 说明 |
 |------|------|
 | 运行日志 | 每日批处理全链路日志，包含各环节耗时、处理标的数、信号数 |
-| 数据血缘 | 可追溯任一信号的完整计算路径（哪些数据→哪些因子→什么分数→什么权重→最终信号）；**数据血缘是独立的子系统**，需持久化存储每次计算的输入数据版本号、因子快照与信号关联关系，实现成本不可低估。V1.0 范围：Phase 7 实现最小可行版本（信号与当日评分快照绑定）+ Phase 12（V1.0 收尾批次）实现完整因子级溯源（raw_factors / 中性化前后 / 正交化前后 + L1/L2/L3 分层视图）。原推迟 V1.5 计划已于 2026-05-14 升级 V1.0 |
+| 数据血缘 | 可追溯任一信号的完整计算路径（哪些数据→哪些因子→什么分数→什么权重→最终信号）；**数据血缘是独立的子系统**，需持久化存储每次计算的输入数据版本号、因子快照与信号关联关系，实现成本不可低估。V1.0 范围：Phase 7 实现最小可行版本（信号与当日评分快照绑定）+ Phase 12（V1.0 收尾批次，**已完成 2026-05-20**）实现完整因子级溯源（raw_factors / 中性化前后 / 正交化前后 + L1/L2/L3 分层视图 + 多因子回归归因）；REST：`GET /signals/{id}/lineage`（19 字段三层 schema）+ `GET /attribution/{history,summary}`。原推迟 V1.5 计划已于 2026-05-14 升级 V1.0 |
 | 异常告警 | 数据缺失、处理异常、流水线超时等情况自动告警 |
 
 ### 15.7 技术选型约束条件
@@ -1272,13 +1281,13 @@ Rp = α + β_market × Rm + β_size × Size + β_value × Value + β_momentum ×
 | 提醒推送 | 系统内通知（兜底）+ 微信推送（服务号审核通过后启用） |
 | 用户设置 | L1 默认配置 + L2 基本参数调整 |
 | 回测引擎 | 最小可行版本：与实盘共享计算内核，支持策略独立回测 |
-| 数据血缘 | Phase 7：信号与当日评分快照绑定（最小可行）；Phase 12（V1.0 收尾）：完整因子级溯源 + L1/L2/L3 分层视图 |
+| 数据血缘 | Phase 7：信号与当日评分快照绑定（最小可行）；Phase 12（V1.0 收尾，**完成 2026-05-20**）：完整因子级溯源 + L1/L2/L3 分层视图 + 多因子回归归因 |
 | 因子监控 | Phase 7：IC/IR（Rank IC）计算 + 监控面板展示 + 因子衰减告警；Phase 11（V1.0 收尾）：**ICIR 滚动自动加权 + Hysteresis 防月度跳跃 + 因子自动下线**（见 §7.4 V1.0 行为） |
 
 > **V1.0 收尾 Phase 11~15 升级（2026-05-14 新增）**：2026-05-13 5y 真机验收发现核心评分公式存在根本缺陷（rank-pct 跨期不可比 + 4 策略横截面反相关锁死 + 绝对阈值 80 失效 → 5y 历史信号表 0 行）→ V1.0 重新定位为"**所有阻断用户达成核心目标的问题修复完成才能发布**"。Phase 11~15 在原 Phase 1~10 基础上追加以下升级，**这些升级合入 V1.0 范围**：
 >
 > - **评分引擎工业化**（Phase 11，吸收 SDD-EXT-01 / FIN-MED-11/12 / S1-GAP-02 + V1.5 因子监控自动降权）：横截面 Winsorize + 行业/市值/Beta 中性化 + Z-score 标准化 + Gram-Schmidt 因子正交化 + ICIR 滚动加权 + 分位阈值（top 5% BUY）+ 双重失效止损；**SDD §7-10 已于 2026-05-14 合入 v1.4**（来源 `docs/design/sdd_7_10_revision_draft_2026-05-14.md` v1.3 锁定草案）。
-> - **完整因子级溯源**（Phase 12，从 V1.5 升级）：LineageService 重构 + SignalCard 分层视图 + 多因子回归归因。
+> - **完整因子级溯源**（Phase 12，从 V1.5 升级，**完成 2026-05-20**）：LineageService 重构（19 字段 SignalLineageResponse + candidate_pool join）+ SignalCard L1 业务可解释入口 + SignalLineageView L1/L2/L3 三层折叠 + AttributionService OLS 多因子回归归因（月末批写 attribution_history，端点 `/attribution/{history,summary}`）。
 > - **生产可观测 + 数据质量监控**（Phase 13，从 V1.5 升级）：Prometheus / OpenTelemetry / 调度器健康端点 / 日志 SecretFilter / DataQualityMetric / WS 前端消费 / AKShare 自动降级。
 > - **账户资金链准确性**（Phase 14）：RM-13 deposit 幂等 + 回测深化关键项。
 > - **V1.0 RC 验收 + 文档同步**（Phase 15）。
@@ -1292,7 +1301,7 @@ Rp = α + β_market × Rm + β_size × Size + β_value × Value + β_momentum ×
 | 策略引擎 | 资金动向策略；低波动策略；策略插件沙箱（L3 用户自定义策略） |
 | 仓位管理 | 分数凯利模型 + 移动止损 + 时间止损 |
 | 风险监控 | 市值风格监控 + 滑点敏感性分析 |
-| 绩效分析 | 行业归因（多因子回归已合入 V1.0 Phase 12）|
+| 绩效分析 | 行业归因（多因子回归已合入 V1.0 Phase 12 ✓ 2026-05-20）；完整 4 风险因子归因 Size/Value/Momentum/Beta 暴露 |
 | 提醒推送 | 邮件渠道 |
 | 用户设置 | L3 权重自定义 UI + 配置版本管理 |
 

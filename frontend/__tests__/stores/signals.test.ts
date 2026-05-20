@@ -29,6 +29,10 @@ const mockSignal: Signal = {
   liquidity_note: null,
   reason: null,
   created_at: null,
+  // Phase 11 §9.1：分位主路径三层输出 + trigger_reason
+  composite_z: null,
+  composite_pct_in_market: null,
+  trigger_reason: null,
 }
 
 describe('useSignalStore', () => {
@@ -77,8 +81,34 @@ describe('useSignalStore', () => {
     const mockLineage: SignalLineage = {
       signal_id: 1,
       trade_date: '2026-04-15',
-      score_snapshot: { composite: 85 },
-      pipeline_run: { id: 42 },
+      score_snapshot: {
+        ts_code: '000001.SZ',
+        composite_score: 85,
+        composite_z: null,
+        composite_pct_in_market: null,
+        market_state: 'UPTREND',
+        trigger_reason: null,
+        trend_score: null,
+        momentum_score: null,
+        reversion_score: null,
+        value_score: null,
+        weights_source: null,
+        hysteresis_status: null,
+        score_breakdown: null,
+        factor_winsorized: null,
+        factor_neutralized: null,
+        raw_factors: null,
+        factor_orthogonal: null,
+        score_breakdown_raw: null,
+        score_breakdown_residual: null,
+      },
+      pipeline_run: {
+        trade_date: '2026-04-15',
+        cp1_at: null,
+        cp2_at: null,
+        cp3_at: null,
+        data_snapshot_version: null,
+      },
     }
     vi.mocked(signalApi.getSignalLineage).mockResolvedValue(mockLineage)
     const store = useSignalStore()

@@ -1,4 +1,4 @@
-"""Pydantic schemas for signals API（Phase 5）。"""
+"""Pydantic schemas for signals API（Phase 5 / Phase 12 三层 lineage 扩展）。"""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -36,25 +36,77 @@ class SignalStatusUpdate(BaseModel):
     status: str  # VIEWED / ACTED（API 层校验，仅允许这两个值）
 
 
-class SignalSnapshotResponse(BaseModel):
-    trade_date: date
-    composite_score: float | None
-    trend_score: float | None
-    reversion_score: float | None
-    momentum_score: float | None
-    value_score: float | None
-    market_state: str | None
-    score_breakdown: dict | None
-    raw_factors: dict | None
-    # Phase 11 §9.1：因子级溯源 5 字段（前端分层视图 Phase 12 渲染）
-    score_breakdown_raw: dict | None = None
-    score_breakdown_residual: dict | None = None
+# ---------------------------------------------------------------------------
+# Phase 12 §3.1.3：信号血缘三层 schema
+# ---------------------------------------------------------------------------
+
+
+class ScoreSnapshotLineage(BaseModel):
+    """信号评分快照 L1+L2+L3 完整字段（共 19 项）。
+
+    分层依据：phase12_factor_lineage.md §3.1.3
+    - 标识 1：ts_code
+    - L1 业务可解释 5：composite_score / composite_z / composite_pct_in_market /
+      market_state / trigger_reason
+    - L2 ICIR + 中性化 9：trend_score / momentum_score / reversion_score /
+      value_score / weights_source / hysteresis_status / score_breakdown /
+      factor_winsorized / factor_neutralized
+    - L3 正交化 + 审计 4：raw_factors / factor_orthogonal /
+      score_breakdown_raw / score_breakdown_residual
+
+    字段名与 ORM 对齐说明：策略 key 为 mean_reversion，但 ORM
+    `CandidatePool.reversion_score` / `SignalScoreSnapshot.reversion_score` 列名
+    不带 mean_，故 schema 字段名也为 reversion_score（v1.1 评审 P1-2 修订）。
+    """
+
+    # 标识
+    ts_code: str
+    # L1 业务可解释（5）
+    composite_score: float | None = None
+    composite_z: float | None = None
+    composite_pct_in_market: float | None = None
+    market_state: str | None = None
+    trigger_reason: str | None = None
+    # L2 ICIR + 中性化（9）
+    trend_score: float | None = None
+    momentum_score: float | None = None
+    reversion_score: float | None = None
+    value_score: float | None = None
+    weights_source: str | None = None
+    hysteresis_status: str | None = None
+    score_breakdown: dict | None = None
     factor_winsorized: dict | None = None
     factor_neutralized: dict | None = None
+    # L3 正交化 + 审计（4）
+    raw_factors: dict | None = None
     factor_orthogonal: dict | None = None
+    score_breakdown_raw: dict | None = None
+    score_breakdown_residual: dict | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PipelineRunLineage(BaseModel):
+    """流水线运行摘要（CP1/CP2/CP3 时间戳 + 数据快照版本）。"""
+
+    trade_date: str
+    cp1_at: str | None = None
+    cp2_at: str | None = None
+    cp3_at: str | None = None
+    data_snapshot_version: str | None = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
 class SignalLineageResponse(BaseModel):
-    signal: SignalResponse
-    snapshot: SignalSnapshotResponse | None
+    """GET /signals/{id}/lineage 响应（Phase 12 §3.1.3 三层 schema）。
+
+    评审 P1-1 修订：端点响应 schema 升级，含 19 字段 ScoreSnapshotLineage。
+    score_snapshot=None 表示"无快照"（手动信号 / Phase 7 之前历史信号），
+    与"快照存在但字段为 NULL"（v1.1 commit 之前 5 步管线产物未落库）严格区分。
+    """
+
+    signal_id: int
+    trade_date: str
+    score_snapshot: ScoreSnapshotLineage | None = None
+    pipeline_run: PipelineRunLineage | None = None

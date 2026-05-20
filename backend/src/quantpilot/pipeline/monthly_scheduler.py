@@ -124,6 +124,39 @@ class MonthlyScheduler:
                 await session.rollback()
                 logger.exception("icir_rebalance_failed: month_end=%s", month_end)
 
+    async def run_attribution(self, month_end: date) -> None:
+        """Phase 12 §3.2.2：月末多因子归因 OLS Job。
+
+        - 调 AttributionService.run_monthly(month_end)
+        - 读近 12 月 candidate_pool.score_breakdown_raw → 4 strategy_z exposures
+        - forward_returns 20 交易日 → 横截面 panel OLS
+        - 写 attribution_history（每月 4 行：trend/momentum/mean_reversion/value）
+
+        与 run_factor_monitoring / run_icir_rebalance / run_monthly_report 并列无
+        依赖（评审 P2-5）；本 Job 只读 candidate_pool（CP2 已写入），best-effort
+        失败不阻塞下一 Job。
+        """
+        if self._session_factory is None:
+            logger.warning("run_attribution_skipped: missing session_factory")
+            return
+
+        from quantpilot.data.attribution_repository import AttributionRepository
+        from quantpilot.services.attribution_service import AttributionService
+
+        async with self._session_factory() as session:
+            try:
+                repo = AttributionRepository()
+                service = AttributionService(session, repo)
+                written = await service.run_monthly(month_end)
+                await session.commit()
+                logger.info(
+                    "attribution_done: month_end=%s written=%d",
+                    month_end, len(written),
+                )
+            except Exception:
+                await session.rollback()
+                logger.exception("attribution_failed: month_end=%s", month_end)
+
     async def run_monthly_report(self, month_end: date) -> None:
         """月末生成月报（Phase 7）。
 
@@ -177,6 +210,9 @@ class MonthlyScheduler:
         # 保留作 baseline），后者写 factor_ic_window_state + strategy_weights_history（Phase 11
         # 新表，月初生效用于 next-month scoring）。
         await self.run_icir_rebalance(calc_month)
+        # Phase 12 §3.2.2：多因子归因 Job（与 icir_rebalance / monthly_report 并列，
+        # 无依赖；只读 candidate_pool；best-effort 失败不阻塞 monthly_report）。
+        await self.run_attribution(calc_month)
         await self.run_monthly_report(calc_month)
 
         logger.info("monthly_run_all_done: calc_month=%s", calc_month)

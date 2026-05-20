@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from quantpilot.api.v1 import (
     account,
+    attribution,
     auth,
     backtest,
     data,
@@ -153,6 +154,7 @@ app.include_router(performance.router, prefix="/api/v1/performance", tags=["绩�
 app.include_router(backtest.router, prefix="/api/v1/backtest", tags=["回测引擎"])
 app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["通知"])
 app.include_router(setup.router, prefix="/api/v1/setup", tags=["向导"])
+app.include_router(attribution.router, prefix="/api/v1/attribution", tags=["多因子归因"])
 # WebSocket 路由（/ws/backtest/{task_id}/progress）复用 backtest.router 中的 ws 端点
 # 实际路径：/api/v1/backtest/{task_id}/progress（WebSocket）
 

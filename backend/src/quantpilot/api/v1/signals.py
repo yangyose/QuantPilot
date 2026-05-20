@@ -11,6 +11,7 @@ from quantpilot.api.deps import get_current_user, get_lineage_service, get_repo,
 from quantpilot.core.exceptions import SignalNotFoundError
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.schemas.signals import (
+    SignalLineageResponse,
     SignalResponse,
     SignalStatusUpdate,
 )
@@ -136,11 +137,14 @@ async def get_signal_lineage(
     _: str = Depends(get_current_user),
     lineage_service: LineageService = Depends(get_lineage_service),
 ):
-    """GET /api/v1/signals/{id}/lineage — 信号数据血缘（含评分快照与流水线信息）。
+    """GET /api/v1/signals/{id}/lineage — 信号数据血缘（三层 schema，Phase 12 P12-A）。
 
-    Phase 7：改由 LineageService 提供，返回 signal_id/trade_date/score_snapshot/pipeline_run。
+    返回 `SignalLineageResponse`（19 字段 score_snapshot + pipeline_run），
+    详见 phase12_factor_lineage.md §3.1.3。响应 data 字段经
+    `SignalLineageResponse` 校验后序列化，确保字段名、可空性与文档一致。
     """
     result = await lineage_service.get_signal_lineage(signal_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Signal {signal_id} not found")
-    return {"code": 0, "data": result, "msg": "ok"}
+    validated = SignalLineageResponse.model_validate(result)
+    return {"code": 0, "data": validated.model_dump(), "msg": "ok"}

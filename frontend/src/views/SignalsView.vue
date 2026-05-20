@@ -323,26 +323,38 @@ const historyColumns = [
           style="margin-top: 12px"
         />
 
-        <!-- 血缘信息 -->
+        <!-- 血缘信息（Phase 12 精简：仅展示关键 L1 概览 + 跳转完整三层视图） -->
         <template v-if="signalStore.currentLineage">
           <a-divider>信号血缘</a-divider>
           <a-descriptions :column="1" size="small">
-            <a-descriptions-item label="Pipeline 运行">
-              {{ fmtDate((signalStore.currentLineage.pipeline_run?.['started_at'] ?? null) as string | null) }}
+            <a-descriptions-item label="CP1 数据就绪">
+              {{ fmtDate(signalStore.currentLineage.pipeline_run?.cp1_at ?? null) }}
+            </a-descriptions-item>
+            <a-descriptions-item label="CP3 信号生成">
+              {{ fmtDate(signalStore.currentLineage.pipeline_run?.cp3_at ?? null) }}
             </a-descriptions-item>
           </a-descriptions>
           <template v-if="signalStore.currentLineage.score_snapshot">
-            <div style="margin-top: 8px; font-size: 13px; color: rgba(0,0,0,.45)">评分构成</div>
-            <a-descriptions :column="1" size="small" style="margin-top: 4px">
-              <a-descriptions-item
-                v-for="(val, key) in signalStore.currentLineage.score_snapshot"
-                :key="key"
-                :label="String(key)"
-              >
-                {{ typeof val === 'number' ? (val as number).toFixed(2) : String(val) }}
+            <a-descriptions :column="1" size="small" style="margin-top: 8px">
+              <a-descriptions-item label="综合评分">
+                {{ signalStore.currentLineage.score_snapshot.composite_score?.toFixed(2) ?? '—' }}
+              </a-descriptions-item>
+              <a-descriptions-item label="市场状态">
+                {{ signalStore.currentLineage.score_snapshot.market_state ?? '—' }}
+              </a-descriptions-item>
+              <a-descriptions-item label="触发原因">
+                {{ signalStore.currentLineage.score_snapshot.trigger_reason ?? '—' }}
               </a-descriptions-item>
             </a-descriptions>
           </template>
+          <a-button
+            type="link"
+            size="small"
+            style="margin-top: 4px; padding: 0"
+            @click="$router.push(`/signals/${selectedSignal.id}/lineage`)"
+          >
+            查看完整三层评分溯源 →
+          </a-button>
         </template>
 
         <!-- K 线图 -->

@@ -40,7 +40,7 @@ export type SignalType = 'BUY' | 'SELL'
 export type SignalStatus = 'NEW' | 'VIEWED' | 'ACTED' | 'EXPIRED' | 'SUPERSEDED'
 export type SignalStrength = 'STRONG' | 'MODERATE'
 
-/** 与后端 SignalResponse schema 字段对齐 */
+/** 与后端 SignalResponse schema 字段对齐（Phase 11 §9.1 新增三层输出 + trigger_reason） */
 export interface Signal {
   id: number
   ts_code: string
@@ -58,14 +58,85 @@ export interface Signal {
   liquidity_note: string | null
   reason: string | null
   created_at: string | null
+  // Phase 11 §9.1：分位主路径三层输出 + trigger_reason 细分
+  composite_z: number | null
+  composite_pct_in_market: number | null
+  trigger_reason: string | null
+}
+
+// ── Phase 12 §3.1.3：信号血缘三层 schema（19 字段 score_snapshot + 5 字段 pipeline_run）
+
+/** ScoreSnapshotLineage：score_snapshot 19 字段（标识 1 + L1 5 + L2 9 + L3 4） */
+export interface ScoreSnapshotLineage {
+  // 标识
+  ts_code: string
+  // L1 业务可解释（5）
+  composite_score: number | null
+  composite_z: number | null
+  composite_pct_in_market: number | null
+  market_state: string | null
+  trigger_reason: string | null
+  // L2 ICIR + 中性化（9）
+  trend_score: number | null
+  momentum_score: number | null
+  reversion_score: number | null
+  value_score: number | null
+  weights_source: string | null
+  hysteresis_status: string | null
+  score_breakdown: Record<string, unknown> | null
+  factor_winsorized: Record<string, unknown> | null
+  factor_neutralized: Record<string, unknown> | null
+  // L3 正交化 + 审计（4）
+  raw_factors: Record<string, unknown> | null
+  factor_orthogonal: Record<string, unknown> | null
+  score_breakdown_raw: Record<string, unknown> | null
+  score_breakdown_residual: Record<string, unknown> | null
+}
+
+export interface PipelineRunLineage {
+  trade_date: string
+  cp1_at: string | null
+  cp2_at: string | null
+  cp3_at: string | null
+  data_snapshot_version: string | null
 }
 
 /** GET /signals/{id}/lineage 响应 data 字段 */
 export interface SignalLineage {
   signal_id: number
   trade_date: string
-  score_snapshot: Record<string, unknown> | null
-  pipeline_run: Record<string, unknown> | null
+  score_snapshot: ScoreSnapshotLineage | null
+  pipeline_run: PipelineRunLineage | null
+}
+
+// ── Phase 12 §4.2：多因子归因 API ─────────────────────────────────────
+export interface AttributionHistoryItem {
+  calc_date: string
+  factor: string
+  beta: number
+  t_stat: number | null
+  residual_std: number | null
+  r_squared: number | null
+  sample_size: number
+  window_days: number
+  created_at: string | null
+}
+
+export interface AttributionHistoryData {
+  items: AttributionHistoryItem[]
+  total: number
+  start_date: string
+  end_date: string
+  factor: string | null
+}
+
+export interface AttributionSummaryData {
+  start_date: string
+  end_date: string
+  cum_beta: Record<string, number>
+  avg_r_squared: number | null
+  total_sample: number
+  months: number
 }
 
 // ── 账户与持仓 ───────────────────────────────────────────────────────

@@ -32,6 +32,13 @@ const router = createRouter({
           component: () => import('@/views/SignalsView.vue'),
         },
         {
+          // Phase 12 §3.3.2：信号血缘三层折叠详情页
+          path: 'signals/:id/lineage',
+          name: 'signal-lineage',
+          component: () => import('@/views/SignalLineageView.vue'),
+          props: true,
+        },
+        {
           path: 'positions',
           name: 'positions',
           component: () => import('@/views/PositionsView.vue'),

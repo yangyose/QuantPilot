@@ -5,11 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from quantpilot.core.database import get_db
 from quantpilot.core.exceptions import AuthError
 from quantpilot.core.security import decode_token
+from quantpilot.data.attribution_repository import AttributionRepository
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.data.validators import DataValidator
 from quantpilot.engine.factor_monitor import FactorMonitorEngine
 from quantpilot.engine.market_state import MarketStateEngine
 from quantpilot.services.account_service import AccountService
+from quantpilot.services.attribution_service import AttributionService
 from quantpilot.services.backtest_service import BacktestService
 from quantpilot.services.config_service import ConfigService
 from quantpilot.services.data_service import DataService
@@ -137,6 +139,13 @@ def get_report_service(session: AsyncSession = Depends(get_db)) -> ReportService
 def get_lineage_service(session: AsyncSession = Depends(get_db)) -> LineageService:
     """按请求构造 LineageService。"""
     return LineageService(session)
+
+
+def get_attribution_service(
+    session: AsyncSession = Depends(get_db),
+) -> AttributionService:
+    """按请求构造 AttributionService（Phase 12 §3.2.2）。"""
+    return AttributionService(session, AttributionRepository())
 
 
 def get_performance_service(session: AsyncSession = Depends(get_db)) -> PerformanceService:

@@ -186,6 +186,97 @@ async def test_sapi_05_get_lineage(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# E2E-P12-A-01: GET /signals/{id}/lineage 返回三层 19 字段（Phase 12 §6.3）
+# ---------------------------------------------------------------------------
+async def test_e2e_p12_a_01_lineage_full_19_fields(client: AsyncClient) -> None:
+    """E2E-P12-A-01: SignalLineageResponse 19 字段齐全（含 L3 factor_orthogonal）。"""
+    lineage_data = {
+        "signal_id": 12345,
+        "trade_date": "2026-05-12",
+        "score_snapshot": {
+            "ts_code": "600519.SH",
+            "composite_score": 99.87,
+            "composite_z": 3.85,
+            "composite_pct_in_market": 0.0005,
+            "market_state": "UPTREND",
+            "trigger_reason": "pct_below_buy",
+            "trend_score": 1.85,
+            "momentum_score": 0.94,
+            "reversion_score": -0.21,
+            "value_score": 1.12,
+            "weights_source": "default_matrix",
+            "hysteresis_status": "active",
+            "score_breakdown": {"trend": {"score": 1.85}},
+            "factor_winsorized": {"trend": {"ma_diff": 0.85}},
+            "factor_neutralized": {"trend": {"ma_diff": 0.72}},
+            "raw_factors": {"ma_diff": 0.92},
+            "factor_orthogonal": {"trend": {"ma_diff_normalized": 0.65}},
+            "score_breakdown_raw": {"trend": {"z_raw": 1.85}},
+            "score_breakdown_residual": {"trend": {"z_orthogonal_normalized": 0.65}},
+        },
+        "pipeline_run": {
+            "trade_date": "2026-05-12",
+            "cp1_at": "2026-05-12T15:30:00+08:00",
+            "cp2_at": "2026-05-12T15:35:12+08:00",
+            "cp3_at": "2026-05-12T15:37:48+08:00",
+            "data_snapshot_version": "abc12345",
+        },
+    }
+    mock_lineage = AsyncMock()
+    mock_lineage.get_signal_lineage = AsyncMock(return_value=lineage_data)
+
+    app.dependency_overrides[get_lineage_service] = lambda: mock_lineage
+    try:
+        resp = await client.get("/api/v1/signals/12345/lineage", headers=_auth_header())
+    finally:
+        app.dependency_overrides.pop(get_lineage_service, None)
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    snap = data["score_snapshot"]
+    # 19 字段齐全（设计文档 §3.1.3：标识 1 + L1 5 + L2 9 + L3 4）
+    expected_fields = {
+        "ts_code",
+        "composite_score", "composite_z", "composite_pct_in_market",
+        "market_state", "trigger_reason",
+        "trend_score", "momentum_score", "reversion_score", "value_score",
+        "weights_source", "hysteresis_status",
+        "score_breakdown", "factor_winsorized", "factor_neutralized",
+        "raw_factors", "factor_orthogonal",
+        "score_breakdown_raw", "score_breakdown_residual",
+    }
+    assert set(snap.keys()) == expected_fields
+    assert snap["factor_orthogonal"] == {"trend": {"ma_diff_normalized": 0.65}}
+    assert data["pipeline_run"]["data_snapshot_version"] == "abc12345"
+
+
+# ---------------------------------------------------------------------------
+# E2E-P12-A-02: GET /signals/{id}/lineage 信号不存在 → 404
+# ---------------------------------------------------------------------------
+async def test_e2e_p12_a_02_lineage_not_found(client: AsyncClient) -> None:
+    """E2E-P12-A-02: 信号 ID 不存在 → 404。"""
+    mock_lineage = AsyncMock()
+    mock_lineage.get_signal_lineage = AsyncMock(return_value=None)
+
+    app.dependency_overrides[get_lineage_service] = lambda: mock_lineage
+    try:
+        resp = await client.get("/api/v1/signals/999999/lineage", headers=_auth_header())
+    finally:
+        app.dependency_overrides.pop(get_lineage_service, None)
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# E2E-P12-A-03: GET /signals/{id}/lineage 非法 ID → 422
+# ---------------------------------------------------------------------------
+async def test_e2e_p12_a_03_lineage_invalid_id(client: AsyncClient) -> None:
+    """E2E-P12-A-03: signal_id 非整型 → 422（FastAPI 路径参数校验）。"""
+    resp = await client.get("/api/v1/signals/abc/lineage", headers=_auth_header())
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # SAPI-06: GET /signals/history，带 ts_code 过滤
 # ---------------------------------------------------------------------------
 async def test_sapi_06_signal_history_with_filter(client: AsyncClient) -> None:

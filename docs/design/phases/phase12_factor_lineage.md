@@ -1,7 +1,7 @@
 # Phase 12：信号可解释性 / 因子级溯源（V1.0 收尾批次）
 
-> **版本：** v1.1
-> **日期：** 2026-05-19
+> **版本：** v1.2
+> **日期：** 2026-05-20
 > **依据文档：** QuantPilot_SDD.md v1.4 §12.3（因子归因）/ §15.6（数据血缘）/ §16（V1.5+ 路线图：完整因子级溯源 + 多因子回归归因已升级 V1.0 Phase 12）；system_design.md §9 Phase 12 行；docs/design/phases/phase11_scoring_industrialization.md v1.4（P1-7 lineage 后端字段扩展已落地 / 前端分层视图归 Phase 12）；docs/design/phases/phase12_factor_lineage.md v1.0 评审报告 `docs/reviews/phase12_design_review_2026-05-19.md`（4 P1 + 5 P2 + R12-P2 9 项动作）；docs/design/v1_5_roadmap.md §1.x 升级清单（V1.5-B S1-GAP-01 + D1-GAP-02 + V1.5-E 多因子回归 → Phase 12）
 
 ---
@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| **v1.2** | **2026-05-20** | **P12-B 实施期措辞修正**：§2.2 数据流第 1 步原写"读 candidate_pool.factor_neutralized → 4 strategy_z"，但 factor_neutralized 是 Scorer Step 2 输出（{strategy: {factor_name: float}}），输入/输出形状不匹配，要得到 4 strategy_z 还须重做 Step 3（列向 mean + 横截面 standardize + clip ±3.5σ）。Phase 11 P11-补已把 Step 3 输出 z_raw 落库到 candidate_pool.score_breakdown_raw[strategy]["z_raw"]，AttributionService 直接读此字段数值等价且避免与 Scorer 漂移。本次修订只修措辞与字段引用，不改数据源表（仍是 candidate_pool）、不改算法、不影响 OLS 结果。V1.0 简化注本身明示"合成后 strategy_z"即 Step 3 输出，本路径与简化注一致。AttributionService 实施期发现并就地修正——非降级，是设计字面与实施路径的去歧义 |
 | **v1.1** | **2026-05-19** | **v1.0 设计评审 + Phase 11 实施补丁同 commit 合并落地**（依据 `docs/reviews/phase12_design_review_2026-05-19.md`）：(1) **§1.1 + §10 P12-D 编号统一**——§1.1 P12-D 改为"测试/冒烟/文档同步"，API 端点改挂 P12-A / P12-B；(2) **§3.1.3 字段名**：`mean_reversion_score` → `reversion_score`（与 ORM `CandidatePool/SignalScoreSnapshot.reversion_score` + 既有 `SignalSnapshotResponse` 对齐）；(3) **§2.2 / §3.2.2 AttributionService 数据源**：`candidate_pool.factor_neutralized`（**alembic 0010 给 candidate_pool 补 3 个 JSONB 列**：factor_winsorized / factor_neutralized / factor_orthogonal；Phase 11 5y 真机数据上这 3 列保持 NULL，Phase 12 起 Scorer/ScoringService.write_candidate_pool 真写入；候选池覆盖 ~50 只样本更全）；(4) **§1.1 增 P12-A0 前置子任务"补 Scorer 输出 5 步管线产物 + SignalService 写入 signal_score_snapshot 3 列"**——Phase 11 实施缺陷（Scorer.aggregate 内部 5 步管线已跑但未塞 CompositeScore.factor_*；P12 评审 P1-4 抓到）已在 v1.1 commit 内同步修复，**与文档落地同 commit**；(5) **§7.1 验收基线**：保持"factor_winsorized/neutralized/orthogonal 均非 null"，明确"对 Phase 12 v1.1 commit 后新生成的信号"；字段数从 17 改为 19；(6) **§3.1.4 加兼容性核实段**：P12-C 启动前 `grep -rn 'score_snapshot\|SignalLineage' frontend/src/` 确认；(7) **§3.2.2 加 MonthlyScheduler Job 依赖说明**：attribution Job 与 icir_rebalance Job 并列无依赖，月末调度顺序明确；(8) **§6.1 UT-P12-B-03 容差**：n=5000 + ±0.005 + `np.random.default_rng(42)`；(9) **§1.4 R12-P2-* 编号改用"评审 §X.X 第 N 项"引用形式**（CLAUDE.md §10 治理规则合规）。**Phase 11 实施补丁（评审 R12-P2-1/2/3/6 4 项）同 commit 落地**：scorer 全 NaN 跳过 logger.info / 删 SignalResponse.weights_source / 补 test_neutralize_industry_disabled 单测 + 注释 / _DEFAULT_ORDER 改 default_matrix 权重降序 |
 | v1.0 | 2026-05-19 | Phase 12 设计文档初版。基于 system_design §9 Phase 12 行 + SDD §12.3/§15.6/§16 + v1_5_roadmap V1.5-B/V1.5-E 升级清单展开模块/数据流/API/DoD/测试用例 |
 
@@ -42,7 +43,7 @@
 | 模块 | 路径 | 说明 |
 |------|------|------|
 | OLS 归因纯函数 | `engine/attribution/regression.py`（新增）| 纯函数：输入 `factor_exposures: pd.DataFrame[date, ts_code → factor_z]` + `forward_returns: pd.Series[(date, ts_code)]` → 输出 `AttributionResult`（含 4 因子收益 / 残差 / R² / t-stat / IC）。Engine 层严格无 IO，statsmodels OLS 调用 |
-| AttributionService | `services/attribution_service.py`（新增）| 编排：装载 SignalScoreSnapshot.factor_neutralized + forward_returns + 调用 OLS engine + 写 `attribution_history` 表 |
+| AttributionService | `services/attribution_service.py`（新增）| 编排：装载 candidate_pool.score_breakdown_raw[strategy]["z_raw"]（v1.2 修正：原写 SignalScoreSnapshot.factor_neutralized，详见 §2.2 第 1 步说明）+ forward_returns + 调用 OLS engine + 写 `attribution_history` 表 |
 | AttributionRepository | `data/attribution_repository.py`（新增）| `upsert_attribution(records)` / `get_attribution_by_date_range(start, end)` |
 | AttributionHistory ORM | `models/business.py` | 新表 `attribution_history`（日级或周级，按 calc_date / factor 复合主键）|
 | Alembic 0011 | `alembic/versions/0011_phase12_attribution_history.py` | 创建 `attribution_history` 表 + 索引（**v1.1 改 0011**：0010 已用于 P12-A0 candidate_pool 扩列）|
@@ -155,10 +156,15 @@ MonthlyScheduler 月末 Job (24:00 of month_end)
   ↓
 AttributionService.run_monthly(month_end_date)
   ↓
-1. 取近 N 个月 candidate_pool.factor_neutralized (alembic 0010 新增 JSONB 列；
-   每行 {strategy: {factor_name: float}}) → DataFrame[(date, ts_code) × 4 strategy_z]
-   （v1.1 评审 P1-3 修订：原写 candidate_pool 但列在 signal_score_snapshot；
-    alembic 0010 给 candidate_pool 加 3 列对齐，候选池 ~50 只比信号股 ~10-50 只样本更全）
+1. 取近 N 个月 candidate_pool.score_breakdown_raw[strategy]["z_raw"]
+   → DataFrame[(date, ts_code) × 4 strategy_z]
+   （**v1.2 实施路径修正**：v1.1 原写 factor_neutralized，但该字段是 Scorer Step 2
+    输出 {strategy: {factor_name: float}}，要得到 4 strategy_z 还需重做 Step 3
+    （列向 mean + 横截面 standardize + clip ±3.5σ）；直接读 Step 3 已落库的产物
+    score_breakdown_raw[strategy]["z_raw"] 数值等价且避免与 Scorer 漂移。
+    factor_neutralized 列仍在 candidate_pool 上保留，留给 V1.5+ 风险因子层归因
+    切换；v1.1 评审 P1-3 修订理由——"candidate_pool 覆盖 ~50 只 vs signal_score_snapshot
+    ~10-50 只 样本更全"——仍成立，本次只修措辞不改数据源表）
   ↓
 2. 取对应 forward_returns
      window = 20 交易日（与 ICIR 一致）
@@ -460,8 +466,8 @@ class AttributionService:
         """月末计算近 N 月归因（N=ic_window_days/21≈12 月）。
 
         步骤：
-        1. 拉近 N 月 candidate_pool.factor_neutralized（alembic 0010 新增 JSONB；
-           评审 P1-3 修订）→ exposures
+        1. 拉近 N 月 candidate_pool.score_breakdown_raw[strategy]["z_raw"]
+           → exposures（v1.2 措辞修正：原写 factor_neutralized，详见 §2.2 第 1 步）
         2. 拉对应 forward_returns（window=20 交易日）
         3. 调 engine.run_ols → AttributionResult
         4. upsert attribution_history（calc_date=month_end, factor=*, beta/t_stat/...）
@@ -917,7 +923,9 @@ P12-B AttributionService（与 P12-A 并行）
     ├── P12-B2 alembic 0011 attribution_history 表 + ORM
     │         （注：alembic 0010 已用于 P12-A0 candidate_pool 扩列）
     ├── P12-B3 AttributionRepository + AttributionService.run_monthly + 集成测试 INT-P12-B-01~03
-    │         数据源：candidate_pool.factor_neutralized（P12-A0 已落地，评审 P1-3 修订）
+    │         数据源：candidate_pool.score_breakdown_raw[strategy]["z_raw"]
+    │         （v1.2 措辞修正：v1.1 原写 factor_neutralized，
+    │          实施时发现 §2.2 输入/输出形状不匹配；详见 v1.2 修订历史 + §2.2 第 1 步）
     ├── P12-B4 MonthlyScheduler.add_attribution_job + dispatch
     │         （依赖顺序：run_factor_monitoring → run_icir_rebalance → run_attribution → run_monthly_report；
     │          attribution 与 icir_rebalance 无依赖，best-effort 不阻塞下一个；评审 P2-5 修订）

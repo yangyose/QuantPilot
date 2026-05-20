@@ -270,6 +270,45 @@ class StrategyWeightsHistory(Base):
     )
 
 
+class AttributionHistory(Base):
+    """Phase 12 多因子回归归因历史（月末批写入；SDD §12.3 + phase12 §3.2.3）。
+
+    V1.0 简化：归因因子 = 4 策略 strategy_z（trend / momentum / mean_reversion /
+    value），不是 SDD §12.3 原描述的"风险因子归因"（Size/Value/Momentum/Beta）。
+    完整 4 风险因子归因留 V1.5+ strategy_factors → 真因子映射后扩展。
+
+    与 FactorICWindowState 区分：
+    - factor_ic_window_state = 单因子 IC 时序（Phase 11 ICIR 滚动监控）
+    - attribution_history     = 多因子收益拆解（Phase 12 OLS 归因）
+    """
+
+    __tablename__ = "attribution_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    calc_date: Mapped[date] = mapped_column(Date, nullable=False)
+    factor: Mapped[str] = mapped_column(String(32), nullable=False)
+    beta: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False)
+    t_stat: Mapped[float | None] = mapped_column(Numeric(8, 4))
+    residual_std: Mapped[float | None] = mapped_column(Numeric(10, 6))
+    r_squared: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="NOW()", nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "calc_date", "factor", name="uq_attribution_date_factor",
+        ),
+        Index(
+            "idx_attribution_date_desc",
+            "calc_date",
+            postgresql_ops={"calc_date": "DESC"},
+        ),
+    )
+
+
 class Report(Base):
     """报告存储（周报/月报/自定义，SDD §12.5）。"""
 

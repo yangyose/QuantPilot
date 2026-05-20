@@ -1265,3 +1265,109 @@ def test_api_89_factor_quality_current_weights(
         assert "weight_used" in it
         assert "weights_source" in it
         assert "hysteresis_status" in it
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 12 §6.4 冒烟测试 API-90~95
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Phase 12 §3.1.3 lineage score_snapshot 19 字段（标识 1 + L1 5 + L2 9 + L3 4）
+_LINEAGE_SNAPSHOT_KEYS = {
+    "ts_code",
+    "composite_score", "composite_z", "composite_pct_in_market",
+    "market_state", "trigger_reason",
+    "trend_score", "momentum_score", "reversion_score", "value_score",
+    "weights_source", "hysteresis_status",
+    "score_breakdown", "factor_winsorized", "factor_neutralized",
+    "raw_factors", "factor_orthogonal",
+    "score_breakdown_raw", "score_breakdown_residual",
+}
+
+
+def test_api_90_signal_lineage_19_fields(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-90: GET /signals/{id}/lineage → 200；score_snapshot 19 字段齐全（Phase 12 §3.1.3）。
+
+    取最新一条 signal id，验证 SignalLineageResponse 三层 schema 序列化字段完整。
+    若全表空则跳过（仅做 404 路径冒烟）。
+    """
+    r0 = client.get("/api/v1/signals/history", headers=auth_headers, params={"limit": 1})
+    assert r0.status_code == 200
+    sigs = r0.json()["data"].get("signals", [])
+    if not sigs:
+        pytest.skip("空 signal 表，跳过 19 字段断言")
+    sid = sigs[0]["id"]
+    r = client.get(f"/api/v1/signals/{sid}/lineage", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    _assert_ok(body)
+    snap = body["data"].get("score_snapshot")
+    if snap is not None:
+        assert set(snap.keys()) == _LINEAGE_SNAPSHOT_KEYS, (
+            f"score_snapshot 字段集与设计 §3.1.3 不一致："
+            f"缺 {_LINEAGE_SNAPSHOT_KEYS - set(snap.keys())} "
+            f"多 {set(snap.keys()) - _LINEAGE_SNAPSHOT_KEYS}"
+        )
+
+
+def test_api_91_signal_lineage_no_auth(client: httpx.Client) -> None:
+    """API-91: GET /signals/{id}/lineage 无鉴权 → 401。"""
+    r = client.get("/api/v1/signals/1/lineage")
+    assert r.status_code == 401
+
+
+def test_api_92_signal_lineage_not_found(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-92: GET /signals/{不存在 id}/lineage → 404。"""
+    r = client.get("/api/v1/signals/999999999/lineage", headers=auth_headers)
+    assert r.status_code == 404
+
+
+def test_api_93_attribution_history(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-93: GET /attribution/history → 200；items 为 list（可空）。"""
+    r = client.get(
+        "/api/v1/attribution/history",
+        headers=auth_headers,
+        params={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    _assert_ok(body)
+    data = body["data"]
+    assert isinstance(data["items"], list)
+    assert "total" in data
+    assert "start_date" in data
+    assert "end_date" in data
+
+
+def test_api_94_attribution_summary(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-94: GET /attribution/summary → 200；含 4 因子 cum_beta + months + total_sample。"""
+    r = client.get(
+        "/api/v1/attribution/summary",
+        headers=auth_headers,
+        params={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    _assert_ok(body)
+    data = body["data"]
+    assert set(data["cum_beta"].keys()) == {"trend", "momentum", "mean_reversion", "value"}
+    assert "months" in data
+    assert "total_sample" in data
+    assert "avg_r_squared" in data
+
+
+def test_api_95_attribution_no_auth(client: httpx.Client) -> None:
+    """API-95: GET /attribution/* 全部端点无鉴权 → 401。"""
+    for path in (
+        "/api/v1/attribution/history",
+        "/api/v1/attribution/summary",
+    ):
+        r = client.get(path, params={"start_date": "2026-01-01", "end_date": "2026-12-31"})
+        assert r.status_code == 401, f"{path} 应 401，实际 {r.status_code}"
