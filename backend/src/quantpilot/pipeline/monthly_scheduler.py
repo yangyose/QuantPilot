@@ -146,7 +146,8 @@ class MonthlyScheduler:
         async with self._session_factory() as session:
             try:
                 repo = AttributionRepository()
-                service = AttributionService(session, repo)
+                # Phase 13 P1-4：注入 calendar 让 lookback 走严格交易日
+                service = AttributionService(session, repo, calendar=self._calendar)
                 written = await service.run_monthly(month_end)
                 await session.commit()
                 logger.info(

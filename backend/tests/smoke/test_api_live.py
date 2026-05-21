@@ -1152,10 +1152,16 @@ def test_api_82_settings_import_dry_run(
 def test_api_83_settings_import_invalid_yaml(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
-    """API-83: POST /settings/import 非法 YAML → 422"""
+    """API-83: POST /settings/import 非法 YAML → 422
+
+    Phase 13 启动核查修复：原 "::::invalid::::\\n  - bad" 实际被 yaml.safe_load
+    解析为合法 dict ({':::invalid:::': ['bad']})，按 SDD §10.3 best-effort
+    skip 未知 key 返回 200；改用与 e2e CFG-IMP-04 一致的解析失败 YAML（unclosed
+    bracket）确保走 yaml.YAMLError → 422 路径。
+    """
     r = client.post(
         "/api/v1/settings/import",
-        json={"yaml_content": "::::invalid::::\n  - bad", "dry_run": True},
+        json={"yaml_content": ":::\ninvalid: [unclosed", "dry_run": True},
         headers=auth_headers,
     )
     assert r.status_code == 422

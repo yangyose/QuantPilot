@@ -24,6 +24,7 @@ from quantpilot.data.attribution_repository import (
     AttributionRepository,
     AttributionRow,
 )
+from quantpilot.data.calendar import TradingCalendar
 from quantpilot.engine.attribution import run_ols
 from quantpilot.models.business import AttributionHistory, CandidatePool
 from quantpilot.models.market import DailyQuote
@@ -54,11 +55,13 @@ class AttributionService:
         repo: AttributionRepository,
         window_days: int = 20,
         lookback_months: int = 12,
+        calendar: TradingCalendar | None = None,
     ) -> None:
         self._session = session
         self._repo = repo
         self._window_days = window_days
         self._lookback_months = lookback_months
+        self._calendar = calendar
 
     # ─── 月末批写入 ────────────────────────────────────────────────────────
 
@@ -76,12 +79,25 @@ class AttributionService:
         样本不足 / OLS 奇异 → 返回空 list（best-effort 不阻塞 MonthlyScheduler）。
         """
         # 1. 取候选池行
-        # 【已知偏差】lookback_months × 30.5 是日历天近似（12 月 = 366 天，与
-        # relativedelta(months=12) ≈ 365 天差 ~1 天）。Phase 12 影响极小（lookback=12
-        # 月样本量已巨大，多 1 天可忽略）。Phase 14 §14-2 与 ICIR 窗口同源 timedelta
-        # 近似一并改用 TradingCalendar.get_prev_trade_date 严格交易日（Phase 11 实施
-        # 评审 §6.3 第 8 项 + Phase 12 实施评审 P1-2）。
-        start = month_end - timedelta(days=int(self._lookback_months * 30.5))
+        # Phase 13 启动核查阶段修复（评审 P1-4 + Phase 12 实施评审 P1-2）：
+        # lookback_months 改用 TradingCalendar.get_prev_trade_date 严格交易日（
+        # 20 交易日 × lookback_months ≈ 月内 20 个交易日）；calendar 未注入时
+        # 保留 timedelta(days=30.5 × n) 日历天近似 fallback（单测路径无 calendar）。
+        if self._calendar is not None:
+            try:
+                start = self._calendar.get_prev_trade_date(
+                    month_end, n=20 * self._lookback_months,
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "attribution_lookback_calendar_insufficient: %s, fallback to "
+                    "calendar-days approximation", exc,
+                )
+                start = month_end - timedelta(days=int(self._lookback_months * 30.5))
+        else:
+            # 【降级说明】calendar 未注入（单元/集成测试路径）→ 用日历天近似，
+            # 精度差异 ~1~2 个交易日，对 lookback=12 月 OLS 影响极小。
+            start = month_end - timedelta(days=int(self._lookback_months * 30.5))
         stmt = (
             select(
                 CandidatePool.trade_date,

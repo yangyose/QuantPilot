@@ -142,10 +142,16 @@ def get_lineage_service(session: AsyncSession = Depends(get_db)) -> LineageServi
 
 
 def get_attribution_service(
+    request: Request,
     session: AsyncSession = Depends(get_db),
 ) -> AttributionService:
-    """按请求构造 AttributionService（Phase 12 §3.2.2）。"""
-    return AttributionService(session, AttributionRepository())
+    """按请求构造 AttributionService（Phase 12 §3.2.2）。
+
+    Phase 13 P1-4 修订：注入 app.state.calendar 让 run_monthly 走严格交易日
+    lookback（calendar 未初始化时 AttributionService 内 fallback 到日历天近似）。
+    """
+    calendar = getattr(request.app.state, "calendar", None)
+    return AttributionService(session, AttributionRepository(), calendar=calendar)
 
 
 def get_performance_service(session: AsyncSession = Depends(get_db)) -> PerformanceService:

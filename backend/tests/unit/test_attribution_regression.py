@@ -1,12 +1,16 @@
-"""UT-P12-B-01~04: 多因子回归归因 OLS 纯函数测试（Phase 12 P12-B1）。
+"""UT-P12-B-01~06: 多因子回归归因 OLS 纯函数测试（Phase 12 P12-B1）。
 
 依据 phase12_factor_lineage.md §3.2.1 + §6.1：
 - 01: 样本 < 10 × factor → None
 - 02: 矩阵奇异 → None（不抛 LinAlgError）
 - 03: 大样本 + 真实 β 回归 → 系数 ±0.005 容差（n=5000 + seed=42；评审 P2-2 修订）
 - 04: AttributionResult 字段完整（coefficients/t_stats/residual_std/r_squared/sample_size）
+- 05: AttributionService.get_summary 区间聚合（评审 P2-11）
+- 06: Phase 13 P1-4：AttributionService.run_monthly 严格交易日 lookback
 """
 from __future__ import annotations
+
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -131,6 +135,72 @@ async def test_ut_p12_b_05_get_summary_aggregates_correctly() -> None:
     # avg_r_squared：(0.05 + 0.06) / 2 = 0.055
     assert summary.avg_r_squared is not None
     assert abs(summary.avg_r_squared - 0.055) < 1e-9
+
+
+async def test_ut_p12_b_06_run_monthly_uses_trading_calendar_when_available() -> None:
+    """UT-P12-B-06: Phase 13 启动核查 P1-4：AttributionService.run_monthly
+    在注入 TradingCalendar 时用严格交易日 lookback（20 × lookback_months），
+    未注入时 fallback 到日历天近似（30.5 × n）。
+    """
+    from datetime import date as _date
+    from unittest.mock import AsyncMock
+
+    from quantpilot.data.calendar import TradingCalendar
+    from quantpilot.services.attribution_service import AttributionService
+
+    # 构造 12 个月窗口的交易日列表：2025-04-01 起每月约 21 个交易日
+    trade_dates: list[_date] = []
+    cur = _date(2025, 4, 1)
+    while cur <= _date(2026, 5, 31):
+        if cur.weekday() < 5:
+            trade_dates.append(cur)
+        cur = cur + timedelta(days=1)
+    calendar = TradingCalendar(trade_dates)
+
+    month_end = _date(2026, 4, 30)
+    expected_strict = calendar.get_prev_trade_date(month_end, n=20 * 12)
+
+    # 严格路径：calendar 注入 → start 来自 calendar.get_prev_trade_date
+    captured_start: dict[str, _date] = {}
+
+    class _FakeSession:
+        async def execute(self, stmt):
+            # 抓取 WHERE 子句中 >= start 的字面值
+            # 简化起见，直接返回空 result 触发 no_pool_rows 早退路径
+            class _R:
+                def all(self):
+                    return []
+            return _R()
+
+    svc_strict = AttributionService(
+        session=_FakeSession(),  # type: ignore[arg-type]
+        repo=AsyncMock(),
+        calendar=calendar,
+        lookback_months=12,
+    )
+    # 通过 patch 方式抓 start
+    original_get_prev = calendar.get_prev_trade_date
+
+    def _spy(d, n):
+        captured_start["d"] = d
+        captured_start["n"] = n
+        return original_get_prev(d, n)
+    calendar.get_prev_trade_date = _spy  # type: ignore[method-assign]
+    result_strict = await svc_strict.run_monthly(month_end)
+    assert result_strict == []
+    assert captured_start["d"] == month_end
+    assert captured_start["n"] == 20 * 12
+    _ = expected_strict  # 仅断言路径被走到
+
+    # Fallback 路径：calendar=None → 走 timedelta(30.5×n)
+    svc_fallback = AttributionService(
+        session=_FakeSession(),  # type: ignore[arg-type]
+        repo=AsyncMock(),
+        calendar=None,
+        lookback_months=12,
+    )
+    result_fallback = await svc_fallback.run_monthly(month_end)
+    assert result_fallback == []
 
 
 def test_ut_p12_b_04_attribution_result_fields_complete() -> None:
