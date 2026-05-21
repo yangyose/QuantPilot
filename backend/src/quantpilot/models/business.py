@@ -309,6 +309,47 @@ class AttributionHistory(Base):
     )
 
 
+class DataQualityMetric(Base):
+    """Phase 13 §3.4 数据质量监控指标（S2-GAP-01：DataValidator 错误持久化）。
+
+    DataService.ingest_daily 调 DataValidator 后按 (metric_date, data_type,
+    metric_key) upsert；/health/data 端点近 30 日聚合查询。
+
+    metric_value 用 Numeric(20, 6) 同时兼容整数（*_count）和浮点（*_ratio）；
+    详见 design §5.1 metric_key 示例。
+    """
+
+    __tablename__ = "data_quality_metric"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    metric_date: Mapped[date] = mapped_column(Date, nullable=False)
+    data_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # daily_quote / financial_data / index_history / namechange
+    metric_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 整数 metric_key 示例：errors_count / invalid_rows_count /
+    #   completeness_violation_count / price_invalid_count /
+    #   pit_violation_count / adj_factor_jump_count
+    # 浮点 metric_key 示例：data_completeness_ratio (0.0~1.0) /
+    #   nan_ratio_* / avg_pct_chg_abs
+    metric_value: Mapped[float] = mapped_column(Numeric(20, 6), nullable=False)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="NOW()", nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "metric_date", "data_type", "metric_key",
+            name="uq_data_quality_date_type_key",
+        ),
+        Index(
+            "idx_data_quality_date_desc",
+            "metric_date",
+            postgresql_ops={"metric_date": "DESC"},
+        ),
+    )
+
+
 class Report(Base):
     """报告存储（周报/月报/自定义，SDD §12.5）。"""
 

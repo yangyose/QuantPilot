@@ -482,6 +482,10 @@ class FactorMonitorService:
         ci_low = float(np.percentile(boot_means, 2.5))
         ci_high = float(np.percentile(boot_means, 97.5))
 
+        # Phase 13 §3.1.2 埋点：FACTOR_ICIR Gauge
+        from quantpilot.core.metrics import FACTOR_ICIR
+        FACTOR_ICIR.labels(strategy=strategy, factor=factor, state=state).set(icir)
+
         return ICIRSnapshot(
             strategy=strategy,
             factor=factor,
@@ -495,6 +499,62 @@ class FactorMonitorService:
             ic_ci_high=ci_high,
             t_stat=t_stat,
         )
+
+    # ============================================================
+    # Phase 13 §3.5：因子衰减持续告警（连续 N 月 ICIR < 阈值）
+    # ============================================================
+
+    PERSISTENT_DECAY_THRESHOLD = 0.05
+    PERSISTENT_DECAY_MONTHS = 3
+
+    async def check_persistent_decay(
+        self,
+        session: AsyncSession,
+        strategy: str,
+        factor: str,
+        state: str,
+        icir_now: float | None,
+        notifier=None,  # type: ignore[no-untyped-def]
+        as_of: date | None = None,
+    ) -> bool:
+        """连续 ``PERSISTENT_DECAY_MONTHS`` (默认 3) 月末 icir < ``PERSISTENT_DECAY_THRESHOLD``
+        (默认 0.05) → 触发 ``notify_factor_alert("factor_decayed_persistent")``。
+
+        与 Phase 11 ``_maybe_alert`` 单月告警独立：本方法看 ``factor_ic_window_state``
+        近 N 行聚合行（``get_recent_aggregates``）；触发阈值同 V1.0 _maybe_alert 使用
+        固定常量（P3-1 推迟到 ConfigService）。
+        """
+        if icir_now is None or icir_now >= self.PERSISTENT_DECAY_THRESHOLD:
+            return False
+        as_of = as_of or date.today()
+        history = await self._repo.get_recent_aggregates(
+            session,
+            strategy=strategy,
+            factor=factor,
+            state=state,
+            as_of=as_of,
+            limit=self.PERSISTENT_DECAY_MONTHS,
+        )
+        if len(history) < self.PERSISTENT_DECAY_MONTHS:
+            return False
+        all_below = all(
+            h.icir is not None and float(h.icir) < self.PERSISTENT_DECAY_THRESHOLD
+            for h in history
+        )
+        if not all_below:
+            return False
+        if notifier is not None:
+            try:
+                await notifier.notify_factor_alert(
+                    "factor_decayed_persistent",
+                    strategy, factor, ic_mean=icir_now,
+                )
+            except Exception:
+                logger.exception(
+                    "persistent_decay_notify_failed: strategy=%s factor=%s state=%s",
+                    strategy, factor, state,
+                )
+        return True
 
     # ============================================================
     # Phase 11 §4.4：check_factor_offline_rules

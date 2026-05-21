@@ -78,6 +78,58 @@ class DataService:
         self._repo = repo
         self._calendar = calendar
 
+    @staticmethod
+    async def _record_validation(
+        repo: MarketDataRepository,
+        trade_date: date,
+        data_type: str,
+        errors: list[str],
+        invalid_count: int,
+        warnings: list[str],
+    ) -> None:
+        """Phase 13 §3.4.1 + §3.1.2：DataValidator 错误持久化 + VALIDATOR_ERRORS Counter。
+
+        - 写 data_quality_metric 表（按 (trade_date, data_type, metric_key) upsert）
+        - 同步增 prometheus VALIDATOR_ERRORS Counter（标签 data_type + error_type）
+        - errors 为空时仍写 1 行 metric_value=0（占位，便于近 30 日 0-violation 追踪）
+        """
+        from quantpilot.core.metrics import VALIDATOR_ERRORS
+        from quantpilot.data.data_quality_repository import DataQualityRepository
+
+        session = repo._session  # Repository 公开 session 访问受限，使用内部属性
+        try:
+            await DataQualityRepository.upsert_metric(
+                session,
+                metric_date=trade_date,
+                data_type=data_type,
+                metric_key="errors_count",
+                metric_value=float(len(errors)),
+                details={"errors": errors, "invalid_count": invalid_count,
+                         "warnings": warnings} if errors or warnings else None,
+            )
+            await DataQualityRepository.upsert_metric(
+                session,
+                metric_date=trade_date,
+                data_type=data_type,
+                metric_key="invalid_rows_count",
+                metric_value=float(invalid_count),
+                details=None,
+            )
+        except Exception:
+            logger.exception(
+                "data_quality_metric_write_failed: data_type=%s trade_date=%s",
+                data_type, trade_date,
+            )
+        # Counter 即使持久化失败也要计（运维要看到趋势）
+        if errors:
+            VALIDATOR_ERRORS.labels(
+                data_type=data_type, error_type="validation_failed",
+            ).inc(len(errors))
+        if invalid_count > 0:
+            VALIDATOR_ERRORS.labels(
+                data_type=data_type, error_type="invalid_rows",
+            ).inc(invalid_count)
+
     async def ingest_daily(
         self,
         trade_date: date,
@@ -121,6 +173,11 @@ class DataService:
             # 是空 DB。
             prev_count = await repo.get_active_stock_codes_as_of(trade_date)
             vr = self._validator.validate_daily_quotes(quote_df, len(prev_count))
+            # Phase 13 §3.4.1 + §3.1.2 埋点：DataValidator 错误持久化 + Counter
+            await self._record_validation(
+                repo, trade_date, "daily_quote",
+                vr.errors, len(vr.invalid_rows), vr.warnings,
+            )
             if not vr.is_valid:
                 errors.extend(vr.errors)
                 logger.error(
@@ -142,6 +199,11 @@ class DataService:
         try:
             fin_df = await self._adapter.fetch_financial_data(as_of_date=trade_date)
             vr_fin = self._validator.validate_financial_data(fin_df, as_of_date=trade_date)
+            # Phase 13 §3.4.1 + §3.1.2 埋点
+            await self._record_validation(
+                repo, trade_date, "financial_data",
+                vr_fin.errors, len(vr_fin.invalid_rows), [],
+            )
             if vr_fin.errors:
                 errors.extend(vr_fin.errors)
                 logger.error(

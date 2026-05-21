@@ -45,6 +45,11 @@ _TYPE_PREF_MAP: dict[str, str] = {
     "STOP_LOSS_WARN": "notify_stop_loss_warn",
     "RISK_WARN": "notify_risk_warn",
     "FACTOR_ALERT": "notify_factor_alert",
+    # Phase 13 §3.4.1：HEALTH_ALERT 类型（Pipeline 失败 / 数据延迟 / DB
+    # 不可达 / DataValidator is_valid=False），暂无偏好开关——默认始终启用，
+    # 走 NotificationConfig.notify_risk_warn 作为父开关复用（运维告警与
+    # 风险告警同重要性）
+    "HEALTH_ALERT": "notify_risk_warn",
 }
 
 
@@ -175,6 +180,27 @@ class NotificationService:
         return await self.notify(
             "FACTOR_ALERT", title, body,
             {"strategy": strategy, "factor": factor, "alert_type": alert_type},
+        )
+
+    async def notify_health_alert(
+        self, alert_type: str, message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> InAppNotification | None:
+        """Phase 13 §3.4.1：4 类运维告警统一入口。
+
+        ``alert_type`` 取值：
+        - ``pipeline_failed``: DailyPipeline 跑挂
+        - ``db_unreachable``: 数据库连接失败（V1.0 通常 lifespan 已处理）
+        - ``data_latency_high``: 数据延迟超 2 个交易日
+        - ``data_validation_failed``: DataValidator is_valid=False
+        - ``data_source_unavailable``: Tushare + AKShare 双源均失败
+        - ``tushare_failed_no_fallback``: AKShare 接口未实现降级路径
+        """
+        title = f"[健康告警] {alert_type}"
+        body = message
+        return await self.notify(
+            "HEALTH_ALERT", title, body,
+            {"alert_type": alert_type, **(payload or {})},
         )
 
     # ───────────────────── 查询/标记（Phase 10 §5.4 REST） ─────────────────────
