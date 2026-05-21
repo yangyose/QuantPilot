@@ -107,6 +107,18 @@ class NotificationService:
                 notify_type, title,
             )
             raise
+
+        # Phase 13 §3.1.2 埋点：wx_pushed=True → wxpusher 成功；False → in_app 兜底
+        from quantpilot.core.metrics import NOTIFICATIONS_SENT
+        if notif.wx_pushed:
+            NOTIFICATIONS_SENT.labels(
+                notify_type=notify_type, channel="wxpusher", status="success",
+            ).inc()
+        else:
+            NOTIFICATIONS_SENT.labels(
+                notify_type=notify_type, channel="in_app", status="success",
+            ).inc()
+
         return notif
 
     # ───────────────────── 5 类便捷方法 ─────────────────────

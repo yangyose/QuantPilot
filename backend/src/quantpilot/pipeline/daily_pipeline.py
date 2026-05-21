@@ -90,10 +90,16 @@ class DailyPipeline:
 
             run = await self._update_run_status(run.id, "SUCCESS")
             logger.info("pipeline_completed: trade_date=%s", trade_date)
+            # Phase 13 §3.1.2 埋点
+            from quantpilot.core.metrics import PIPELINE_RUNS
+            PIPELINE_RUNS.labels(status="success").inc()
 
         except Exception as exc:
             logger.exception("pipeline_failed: trade_date=%s", trade_date)
             run = await self._update_run_status(run.id, "FAILED")
+            # Phase 13 §3.1.2 埋点
+            from quantpilot.core.metrics import PIPELINE_RUNS
+            PIPELINE_RUNS.labels(status="failed").inc()
             # Phase 10 §7.2：Pipeline 失败告警（best-effort）
             await self._notify_pipeline_failure(
                 run.id, trade_date, exc, run.config_snapshot,

@@ -610,4 +610,13 @@ class SignalService:
             "generate_for_date_done: trade_date=%s raw=%d saved=%d warnings=%d",
             trade_date, len(trade_signals), len(saved), len(warnings),
         )
+
+        # Phase 13 §3.1.2 埋点：按 signal_type 聚合计数
+        from quantpilot.core.metrics import SIGNALS_GENERATED
+        type_counts: dict[str, int] = {}
+        for s in saved:
+            type_counts[s.signal_type] = type_counts.get(s.signal_type, 0) + 1
+        for stype, cnt in type_counts.items():
+            SIGNALS_GENERATED.labels(type=stype).inc(cnt)
+
         return saved
