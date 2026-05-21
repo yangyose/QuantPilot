@@ -15,7 +15,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pandas as pd
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.data.calendar import TradingCalendar
@@ -183,7 +182,6 @@ def _make_service(
 # ============================================================
 # INT-P11-SC-01：冷启动 — factor_monitor=None → default_matrix
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_sc_01_cold_start_default_matrix(db_session: AsyncSession) -> None:
     repo = MarketDataRepository(db_session)
     await _setup_base(repo)
@@ -209,7 +207,6 @@ async def test_int_p11_sc_01_cold_start_default_matrix(db_session: AsyncSession)
 # ============================================================
 # INT-P11-SC-02：ICIR 加权路径 — 注入 FactorMonitorService（含 strategy_weights_history）
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_sc_02_icir_weighted_path(db_session: AsyncSession) -> None:
     repo = MarketDataRepository(db_session)
     await _setup_base(repo)
@@ -254,7 +251,6 @@ async def test_int_p11_sc_02_icir_weighted_path(db_session: AsyncSession) -> Non
 # ============================================================
 # INT-P11-SC-03：write_candidate_pool 写入 Phase 11 新 6 列
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_sc_03_write_candidate_pool_new_columns(
     db_session: AsyncSession,
 ) -> None:
@@ -289,7 +285,6 @@ async def test_int_p11_sc_03_write_candidate_pool_new_columns(
 # ============================================================
 # INT-P11-SC-04：market_cap PIT + industry 中性化贯通（Step 2 不抛异常）
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_sc_04_market_cap_pit_and_industry_neutralize(
     db_session: AsyncSession,
 ) -> None:
@@ -324,7 +319,6 @@ async def test_int_p11_sc_04_market_cap_pit_and_industry_neutralize(
 # ============================================================
 # INT-P11-SC-05：_run_phase11_pipeline PIT 选 trade_date 当日 state（修 #155）
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_sc_05_phase11_pipeline_uses_pit_market_state(
     db_session: AsyncSession,
 ) -> None:

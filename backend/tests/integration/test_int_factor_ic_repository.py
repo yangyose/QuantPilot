@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.data.factor_ic_repository import (
@@ -34,7 +33,6 @@ _STATE = "UPTREND"
 # ============================================================
 # INT-P11-IC-01：upsert + 窗口查询往返
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_ic_01_upsert_daily_and_query_window(
     db_session: AsyncSession,
 ) -> None:
@@ -71,7 +69,6 @@ async def test_int_p11_ic_01_upsert_daily_and_query_window(
 # ============================================================
 # INT-P11-IC-02：聚合行 upsert + 最新一行查询
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_ic_02_upsert_aggregate_and_get_latest(
     db_session: AsyncSession,
 ) -> None:
@@ -112,7 +109,6 @@ async def test_int_p11_ic_02_upsert_aggregate_and_get_latest(
 # ============================================================
 # INT-P11-IC-03：rolling_icir_state 端到端
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_ic_03_rolling_icir_state_end_to_end(
     db_session: AsyncSession,
 ) -> None:
@@ -163,7 +159,6 @@ async def test_int_p11_ic_03_rolling_icir_state_end_to_end(
 # ============================================================
 # INT-P11-IC-04：state 子集隔离
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_ic_04_state_isolation(db_session: AsyncSession) -> None:
     """UPTREND 写 100 条（有方差）+ DOWNTREND 写 50 条；rolling_icir_state(UPTREND)
     应只看到 UPTREND 的 100 条（不混入 DOWNTREND），且 ic_mean 接近 UPTREND 的均值。
@@ -217,7 +212,6 @@ async def test_int_p11_ic_04_state_isolation(db_session: AsyncSession) -> None:
 # ============================================================
 # INT-P11-IC-05：strategy_weights upsert + DISTINCT ON
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_ic_05_strategy_weights_upsert_and_distinct(
     db_session: AsyncSession,
 ) -> None:

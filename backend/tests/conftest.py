@@ -68,20 +68,17 @@ def _ensure_schema() -> Generator[None, None, None]:
 async def db_engine(_ensure_schema: None) -> AsyncGenerator[AsyncEngine, None]:
     """每个测试独立 async engine，绑定到当前测试的 event loop。
 
-    禁止用 scope=session：anyio 默认每个测试一个 loop，session 级 async engine
-    会出现 "Future attached to a different loop" 错误（CI 上比 Windows 严格）。
+    禁止 scope=session：每个测试一个新 loop，session 级 async engine 会出现
+    "Future attached to a different loop" 错误。
 
-    Teardown 用 sync_engine.dispose()（同步）而非 await engine.dispose()：
-    NullPool 模式下无 connection 持留，dispose 仅清理 engine 元数据；但
-    `await engine.dispose()` 内部仍会触发 asyncpg connection finalizer 的
-    future 操作，跨 anyio runner loop 时抛 RuntimeError（CI ubuntu 必现，
-    Windows 偶发；2026-05-21 CI 17 个 teardown errors 根因）。
+    依赖 pyproject.toml `asyncio_mode = "auto"` 让 pytest-asyncio 统一接管
+    所有 async test + fixture——禁用 @pytest.mark.anyio 标记（fixture 跑在
+    pytest-asyncio loop A，test body 跑在 anyio runner loop B，session 跨
+    loop 必抛；2026-05-21 CI ubuntu 17 个 teardown errors 根因，已统一移除）。
     """
     engine = create_async_engine(settings.database_url, echo=False, poolclass=NullPool)
-    try:
-        yield engine
-    finally:
-        engine.sync_engine.dispose()
+    yield engine
+    await engine.dispose()
 
 
 @pytest.fixture

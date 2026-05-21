@@ -13,7 +13,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import numpy as np
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.data.factor_ic_repository import (
@@ -31,7 +30,6 @@ _STRATEGIES = ("trend", "momentum", "mean_reversion", "value")
 # ============================================================
 # INT-P11-RB-01：冷启动 fallback
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_rb_01_cold_start_falls_back_to_default(
     db_session: AsyncSession,
 ) -> None:
@@ -60,7 +58,6 @@ async def test_int_p11_rb_01_cold_start_falls_back_to_default(
 # ============================================================
 # INT-P11-RB-02：ICIR 加权（有数据）
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_rb_02_icir_weighted_when_data_available(
     db_session: AsyncSession,
 ) -> None:
@@ -106,7 +103,6 @@ async def test_int_p11_rb_02_icir_weighted_when_data_available(
 # ============================================================
 # INT-P11-RB-03：check_factor_offline_rules R1 (ICIR<0 持续 6 月)
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_rb_03_check_r1_offline(db_session: AsyncSession) -> None:
     """构造 6 行连续 ICIR<0 的聚合行 → check_factor_offline_rules 返回 R1 offline。"""
     repo = FactorICRepository()
@@ -137,7 +133,6 @@ async def test_int_p11_rb_03_check_r1_offline(db_session: AsyncSession) -> None:
 # ============================================================
 # INT-P11-RB-04：check_factor_offline_rules R3 (half_life<5)
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_rb_04_check_r3_halve(db_session: AsyncSession) -> None:
     """最新一行 half_life=3 < 5 → R3 halve。"""
     repo = FactorICRepository()
@@ -167,7 +162,6 @@ async def test_int_p11_rb_04_check_r3_halve(db_session: AsyncSession) -> None:
 # ============================================================
 # INT-P11-RB-05：check_factor_offline_rules R4 (sample<60 连续 3 月)
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_rb_05_check_r4_warn(db_session: AsyncSession) -> None:
     repo = FactorICRepository()
     today = date(2025, 12, 31)
@@ -199,7 +193,6 @@ async def test_int_p11_rb_05_check_r4_warn(db_session: AsyncSession) -> None:
 # ============================================================
 # INT-P11-RB-06：get_active_weights 三种路径
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_rb_06_get_active_weights(db_session: AsyncSession) -> None:
     """
     Path A：无任何历史 → default_matrix
@@ -251,7 +244,6 @@ async def test_int_p11_rb_06_get_active_weights(db_session: AsyncSession) -> Non
 # ============================================================
 # INT-P11-RB-07：apply_monthly_rebalance 含 R1 因子下线时权重置 0
 # ============================================================
-@pytest.mark.anyio
 async def test_int_p11_rb_07_offline_factor_zeroed_in_rebalance(
     db_session: AsyncSession,
 ) -> None:

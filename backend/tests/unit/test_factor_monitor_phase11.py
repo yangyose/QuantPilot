@@ -14,7 +14,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import numpy as np
-import pytest
 
 from quantpilot.engine.factor_monitor import FactorMonitorEngine
 from quantpilot.services.factor_monitor_service import (
@@ -27,7 +26,6 @@ def _mk_rows(ic_values: list[float | None]) -> list[SimpleNamespace]:
     return [SimpleNamespace(ic_value=v) for v in ic_values]
 
 
-@pytest.mark.anyio
 async def test_returns_none_when_sample_size_below_60() -> None:
     """sample_size = 59 → None（触发冷启动）。"""
     service = FactorMonitorService(session=AsyncMock(), engine=FactorMonitorEngine())
@@ -44,7 +42,6 @@ async def test_returns_none_when_sample_size_below_60() -> None:
     assert snapshot is None
 
 
-@pytest.mark.anyio
 async def test_returns_snapshot_when_sample_size_at_60() -> None:
     """sample_size = 60 → 返回非 None Snapshot。"""
     rng = np.random.default_rng(123)
@@ -72,7 +69,6 @@ async def test_returns_snapshot_when_sample_size_at_60() -> None:
     assert abs(snapshot.t_stat - snapshot.icir * math.sqrt(60)) < 1e-9
 
 
-@pytest.mark.anyio
 async def test_filters_null_ic_values() -> None:
     """ic_value=None 的行被过滤；剩余 < 60 → 返回 None。"""
     # 70 行总，含 15 个 None → 有效 55 < 60
@@ -91,7 +87,6 @@ async def test_filters_null_ic_values() -> None:
     assert snapshot is None
 
 
-@pytest.mark.anyio
 async def test_zero_std_returns_none() -> None:
     """全相同 IC 值 → std=0 → 返回 None（避免除零）。"""
     service = FactorMonitorService(session=AsyncMock(), engine=FactorMonitorEngine())
@@ -108,7 +103,6 @@ async def test_zero_std_returns_none() -> None:
     assert snapshot is None
 
 
-@pytest.mark.anyio
 async def test_ci_reproducibility() -> None:
     """bootstrap CI 用固定 seed → 同输入两次调用应得相同 CI。"""
     rng = np.random.default_rng(42)
@@ -141,7 +135,6 @@ async def test_ci_reproducibility() -> None:
     assert abs(snap_a.ic_ci_high - snap_b.ic_ci_high) < 1e-12
 
 
-@pytest.mark.anyio
 async def test_ci_brackets_ic_mean() -> None:
     """CI 应该包含 ic_mean（除非数据极度偏态，本测试构造正态）。"""
     rng = np.random.default_rng(7)
@@ -161,7 +154,6 @@ async def test_ci_brackets_ic_mean() -> None:
     assert snapshot.ic_ci_low < snapshot.ic_mean < snapshot.ic_ci_high
 
 
-@pytest.mark.anyio
 async def test_window_dates_passed_to_repo() -> None:
     """验证 trade_date=t 时 repo 收到 start=t-272, end=t-20。"""
     captured: dict = {}
