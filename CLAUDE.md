@@ -220,6 +220,7 @@ created_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 - 测试路由在 `client` fixture 内动态注册（`include_in_schema=False`），yield 后移除
 - 集成测试合成 trade_date 序列须跳过周末（`weekday() < 5`）
 - 集成测试断言须精确（如 `assert len(pool_codes) == 3`），不使用宽松上界（如 `<= 3+1`）——宽松断言掩盖超出预期的写入 bug
+- **禁用 `@pytest.mark.anyio` 装饰任何 test/fixture**：项目 `pyproject.toml` 配置 `asyncio_mode = "auto"`，pytest-asyncio 已自动接管所有 async test + fixture 跑在同一 function-scope event loop。`@pytest.mark.anyio` 装饰的测试会被 anyio runner 接管（独立 TestRunner loop B），fixture 仍归 pytest-asyncio（loop A）→ **asyncpg connection 的 waiter future 在 loop A 创建，test body 在 loop B 唤醒** → 抛 `RuntimeError: ... got Future <Future pending cb=[BaseProtocol._on_waiter_completed()]> attached to a different loop`。CI ubuntu 必现（17~55 个 teardown errors），Windows 偶发不报。**Regression 历史**：2026-05-02 commit `ebae343` 批量清 243 处 marker / 36 文件；2026-05-21 commit `b7f5361` 又清 24 处（Phase 11 期间新增 4 文件 regress）。**新写 async 测试一律纯 `async def test_xxx()`，不加任何 marker**——pytest-asyncio auto 会自动处理。
 
 ---
 
