@@ -108,8 +108,34 @@ class DataService:
             DATA_SOURCE_FALLBACK.labels(
                 from_source="tushare", to_source="akshare", status="trying",
             ).inc()
+            # R13-P0-2：AKShare 无全市场快照，必须显式 ts_codes。生产 ingest_daily
+            # 调本方法时 ts_codes=None（与 Tushare 全市场快照对齐），导致原实现
+            # 直接抛 NotImplementedError 让 fallback 等价无效。本批次改：fallback
+            # 前从 repo 取 PIT 活股列表（按 trade_date 当日上市未退市），截 1000
+            # 只内（AKShare 上限）；超出标 partial 警告但仍执行（V1.0 接受降级精
+            # 度损失，目标是不让 Tushare 故障期数据完全断采）。
+            fallback_ts_codes = ts_codes
+            if fallback_ts_codes is None:
+                try:
+                    pit_codes = await self._repo.get_active_stock_codes_as_of(trade_date)
+                except Exception:
+                    logger.exception(
+                        "akshare_fallback_get_active_codes_failed trade_date=%s",
+                        trade_date,
+                    )
+                    pit_codes = []
+                if len(pit_codes) > 1000:
+                    logger.warning(
+                        "akshare_fallback_partial total=%d limit=1000 trade_date=%s",
+                        len(pit_codes), trade_date,
+                    )
+                    fallback_ts_codes = pit_codes[:1000]
+                else:
+                    fallback_ts_codes = pit_codes
             try:
-                df = await self._fallback_adapter.fetch_daily_quotes(trade_date, ts_codes)
+                df = await self._fallback_adapter.fetch_daily_quotes(
+                    trade_date, fallback_ts_codes,
+                )
                 DATA_SOURCE_FALLBACK.labels(
                     from_source="tushare", to_source="akshare", status="success",
                 ).inc()

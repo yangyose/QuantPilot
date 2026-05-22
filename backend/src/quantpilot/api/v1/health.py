@@ -58,12 +58,15 @@ async def health_data(
         ("financial_data", FinancialData.publish_date),
         ("index_history", IndexHistory.trade_date),
     )
+    # R13-P1-1：同步刷新 DATA_LATENCY Gauge，保证 Prometheus pull 端能拿到最新值
+    from quantpilot.core.metrics import DATA_LATENCY
     for data_type, col in latency_specs:
         stmt = select(func.max(col))
         result = await session.execute(stmt)
         max_td = result.scalar_one_or_none()
         if max_td is not None:
             latency[data_type] = (today - max_td).days
+            DATA_LATENCY.labels(data_type=data_type).set(latency[data_type])
         else:
             latency[data_type] = -1  # 无数据
 

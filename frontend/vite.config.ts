@@ -14,6 +14,9 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        // R13-P1-4：必须开 ws:true，否则 PipelineProgressCard 在
+        // npm run dev 模式下永远连不上 /api/v1/pipeline/progress
+        ws: true,
       },
     },
   },

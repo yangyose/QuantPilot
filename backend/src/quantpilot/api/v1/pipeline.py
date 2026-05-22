@@ -119,11 +119,17 @@ async def trigger_pipeline(
         from quantpilot.data.validators import DataValidator
         from quantpilot.pipeline.daily_pipeline import DailyPipeline
 
+        # R13-P0-1：传入 redis + notification_channel —— 缺失 redis 会让所有
+        # 通过 /trigger 启动的流水线 _publish_progress 静默降级为 logger.debug，
+        # 导致前端 PipelineProgressCard 对手动触发场景完全无进度推送（仅
+        # scheduler cron 触发的流水线才能看到，但 17:00 cron 时段用户已下班）。
         pipeline = DailyPipeline(
             session_factory=AsyncSessionLocal,
             adapter=adapter,
             validator=DataValidator(),
             calendar=calendar,
+            redis=getattr(request.app.state, "redis", None),
+            notification_channel=getattr(request.app.state, "wxpusher", None),
         )
         background_tasks.add_task(pipeline.run, trade_date)
 

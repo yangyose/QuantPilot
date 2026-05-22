@@ -148,3 +148,70 @@ async def test_pl_06_trigger_ok(client: AsyncClient) -> None:
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.state.calendar = None
+
+
+async def test_pl_07_trigger_injects_redis_for_progress_publish(
+    client: AsyncClient, monkeypatch,
+) -> None:
+    """R13-P0-1 回归：POST /pipeline/trigger 构造 DailyPipeline 时必须把
+    app.state.redis 传入，否则 _publish_progress 永远走 logger.debug 降级
+    （前端 PipelineProgressCard 对手动触发场景无进度推送）。
+
+    本测试拦截 DailyPipeline 构造函数，断言 redis kwarg 被注入。
+    """
+    mock_calendar = MagicMock()
+    mock_calendar.is_trade_date = MagicMock(return_value=True)
+    app.state.calendar = mock_calendar
+
+    sentinel_redis = MagicMock(name="redis_sentinel")
+    sentinel_adapter = MagicMock(name="adapter_sentinel")
+    sentinel_wx = MagicMock(name="wxpusher_sentinel")
+    original_redis = getattr(app.state, "redis", None)
+    original_adapter = getattr(app.state, "adapter", None)
+    original_wx = getattr(app.state, "wxpusher", None)
+    app.state.redis = sentinel_redis
+    app.state.adapter = sentinel_adapter
+    app.state.wxpusher = sentinel_wx
+
+    captured = {}
+
+    class _FakePipeline:
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+
+        async def run(self, trade_date):
+            return None
+
+    monkeypatch.setattr(
+        "quantpilot.pipeline.daily_pipeline.DailyPipeline", _FakePipeline,
+    )
+
+    run = _mock_run(status="RUNNING")
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: run))
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.refresh = AsyncMock()
+
+    app.dependency_overrides[get_db] = lambda: mock_session
+    try:
+        resp = await client.post(
+            "/api/v1/pipeline/trigger",
+            json={"trade_date": "2026-04-10"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 200
+        # Background task 在 ASGITransport 内同步执行，captured["kwargs"] 必然有值
+        assert "kwargs" in captured, "DailyPipeline 构造函数未被调用"
+        assert captured["kwargs"].get("redis") is sentinel_redis, (
+            "POST /pipeline/trigger 必须把 app.state.redis 注入 DailyPipeline"
+        )
+        assert captured["kwargs"].get("notification_channel") is sentinel_wx, (
+            "POST /pipeline/trigger 必须把 app.state.wxpusher 注入 DailyPipeline"
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.state.calendar = None
+        app.state.redis = original_redis
+        app.state.adapter = original_adapter
+        app.state.wxpusher = original_wx

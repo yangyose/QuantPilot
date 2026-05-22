@@ -102,6 +102,10 @@ class BacktestService:
                 "BacktestService.run_task 需注入 BacktestEngine"
                 "（应由 _run_backtest_bg 根据 task.config_snapshot 构造）"
             )
+
+        # R13-P1-1：BACKTEST_QUEUE_DEPTH inc/dec —— 用 try/finally 保证异常分支也释放
+        from quantpilot.core.metrics import BACKTEST_QUEUE_DEPTH
+        BACKTEST_QUEUE_DEPTH.inc()
         try:
             # ② 预加载历史数据
             data = await self._load_data_bundle(config)
@@ -134,6 +138,9 @@ class BacktestService:
                 error_msg=str(exc),
             )
             await self._session.commit()
+        finally:
+            # R13-P1-1：成功/失败/异常分支都释放 queue depth
+            BACKTEST_QUEUE_DEPTH.dec()
 
     async def _update_status(
         self,

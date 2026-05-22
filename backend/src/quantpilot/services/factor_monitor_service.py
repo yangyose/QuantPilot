@@ -697,6 +697,7 @@ class FactorMonitorService:
         self,
         session: AsyncSession,
         month_end_date: date,
+        notifier: object | None = None,
     ) -> dict[str, list[StrategyWeightsRow]]:
         """每月最后一个交易日收盘后调用：
 
@@ -744,10 +745,32 @@ class FactorMonitorService:
                     t_stat=snap.t_stat,
                     half_life=None,    # B2 暂不实现；FactorMonitorEngine.calc_half_life 在 A2 接入
                 ))
-
-            # 2. 写聚合行
+            # 2. 写聚合行（必须在 check_persistent_decay 之前 flush，
+            # 否则 get_recent_aggregates 看不到当月新行）
             if aggregate_rows:
                 await self._repo.upsert_ic_aggregate(session, aggregate_rows)
+                await session.flush()
+
+            # R13-P1-2：持续告警检查——对每个 (state, strategy) 当月 ICIR < 0.05
+            # 且历史连续 3 月都 < 0.05 → 触发 factor_decayed_persistent。
+            # 与单月 _maybe_alert 独立；二者 24h 内通过 _is_duplicate 按 payload
+            # 区分（alert_type=factor_decayed vs factor_decayed_persistent）。
+            # notifier=None 时 check_persistent_decay 内部不 await notifier（直接
+            # 返回 bool），不抛异常 → MonthlyScheduler 注入 NotificationService。
+            for strategy, snap in snapshots.items():
+                try:
+                    await self.check_persistent_decay(
+                        session=session,
+                        strategy=strategy, factor=strategy, state=state,
+                        icir_now=float(snap.icir),
+                        notifier=notifier,
+                        as_of=month_end_date,
+                    )
+                except Exception:
+                    logger.exception(
+                        "check_persistent_decay_failed state=%s strategy=%s",
+                        state, strategy,
+                    )
 
             # 3. Hysteresis 判定
             this_order = sorted(snapshots, key=lambda s: snapshots[s].icir, reverse=True)

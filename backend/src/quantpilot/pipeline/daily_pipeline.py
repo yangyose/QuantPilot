@@ -92,23 +92,37 @@ class DailyPipeline:
         if run.config_snapshot is None:
             await self._write_config_snapshot(run)
 
+        # R13-P1-1：PIPELINE_DURATION histogram 接入——每个 CP/Step 单独 observe
+        # + 总耗时 observe（step=pipeline_total），让 Grafana
+        # "Pipeline 单次耗时 p50/p95/p99" panel 在生产期实际有数据。
+        import time
+
+        from quantpilot.core.metrics import PIPELINE_DURATION
+
+        _t_pipeline = time.perf_counter()
         try:
             await self._publish_progress(trade_date, "pipeline", "started", 0)
 
             if not run.cp1_data_ready:
                 await self._publish_progress(trade_date, "CP1", "started", 5)
+                _t = time.perf_counter()
                 await self._cp1_ingest(run, trade_date)
+                PIPELINE_DURATION.labels(step="cp1").observe(time.perf_counter() - _t)
                 await self._publish_progress(trade_date, "CP1", "completed", 25)
 
             if not run.cp2_scoring_done:
                 await self._publish_progress(trade_date, "CP2", "started", 30)
+                _t = time.perf_counter()
                 await self._cp2_scoring(run, trade_date)
+                PIPELINE_DURATION.labels(step="cp2").observe(time.perf_counter() - _t)
                 await self._publish_progress(trade_date, "CP2", "completed", 50)
 
             new_signals: list[Signal] = []
             if not run.cp3_signals_done:
                 await self._publish_progress(trade_date, "CP3", "started", 55)
+                _t = time.perf_counter()
                 new_signals = await self._cp3_signals(run, trade_date)
+                PIPELINE_DURATION.labels(step="cp3").observe(time.perf_counter() - _t)
                 await self._publish_progress(trade_date, "CP3", "completed", 70)
 
             # Phase 10 §7.2：CP3 新生成信号推送（best-effort，失败不影响流水线）
@@ -117,14 +131,25 @@ class DailyPipeline:
 
             # Step4~6 best-effort（失败不回滚整个流水线）
             await self._publish_progress(trade_date, "Step4", "started", 75)
+            _t = time.perf_counter()
             await self._step4_mark_to_market(run, trade_date)
+            PIPELINE_DURATION.labels(step="step4").observe(time.perf_counter() - _t)
+
             await self._publish_progress(trade_date, "Step5", "started", 85)
+            _t = time.perf_counter()
             await self._step5_auto_dividends(run, trade_date)
+            PIPELINE_DURATION.labels(step="step5").observe(time.perf_counter() - _t)
+
             await self._publish_progress(trade_date, "Step6", "started", 95)
+            _t = time.perf_counter()
             await self._step6_expire_signals(run, trade_date)
+            PIPELINE_DURATION.labels(step="step6").observe(time.perf_counter() - _t)
 
             run = await self._update_run_status(run.id, "SUCCESS")
             await self._publish_progress(trade_date, "pipeline", "completed", 100)
+            PIPELINE_DURATION.labels(step="pipeline_total").observe(
+                time.perf_counter() - _t_pipeline,
+            )
             logger.info("pipeline_completed: trade_date=%s", trade_date)
             # Phase 13 §3.1.2 埋点
             from quantpilot.core.metrics import PIPELINE_RUNS
@@ -224,6 +249,15 @@ class DailyPipeline:
                 "cp1_ingest_done: quotes=%d financials=%d version=%s",
                 ingest_result.quote_count, ingest_result.financial_count, version,
             )
+            # R13-P1-1：CP1 入库成功后即时刷新 DATA_LATENCY Gauge
+            # （即时反馈，不等 /health/data 端点被调用才更新）
+            if ingest_result.quote_count > 0:
+                from quantpilot.core.metrics import DATA_LATENCY
+                today = datetime.now(tz=timezone.utc).date()
+                latency = max((today - trade_date).days, 0)
+                DATA_LATENCY.labels(data_type="daily_quote").set(latency)
+                if ingest_result.financial_count > 0:
+                    DATA_LATENCY.labels(data_type="financial_data").set(latency)
 
             # 市场状态识别（Phase 10 §5.4：注入 notifier，状态切换时推送 MARKET_STATE）
             # snapshot 模式 ConfigService：完全不查 DB/Redis，直接派生 dataclass
@@ -527,7 +561,14 @@ class DailyPipeline:
         exc: BaseException,
         config_snapshot: dict | None,
     ) -> None:
-        """Pipeline 失败告警（best-effort；`PIPELINE_FAILURE` 类型未登记偏好 → 默认放行）。
+        """Pipeline 失败告警（best-effort）。
+
+        R13-P1-3：notify("PIPELINE_FAILURE", ...) → notify_health_alert("pipeline_failed", ...)：
+        - 与 Phase 13 §3.4.1 "运维告警统一入口" 设计意图一致
+        - `notify_type` 列统一为 HEALTH_ALERT，让运维仪表盘"近 7 日健康告警数"
+          下钻能聚合 pipeline 失败（之前 PIPELINE_FAILURE 类型会漏掉这条最高频
+          的健康告警）
+        - 复用 notify_risk_warn 父开关（HEALTH_ALERT 已在 _TYPE_PREF_MAP 中注册）
 
         Phase 10 §4.3 评审 C-01：使用 snapshot 模式 ConfigService。
         """
@@ -538,10 +579,9 @@ class DailyPipeline:
             async with self._session_factory() as session:
                 cfg = ConfigService(session, self._redis, snapshot=config_snapshot)
                 notifier = NotificationService(session, cfg, self._notification_channel)
-                await notifier.notify(
-                    notify_type="PIPELINE_FAILURE",
-                    title="【QuantPilot】Pipeline 执行失败",
-                    body=f"交易日 {trade_date} 流水线异常：{exc!r}",
+                await notifier.notify_health_alert(
+                    "pipeline_failed",
+                    f"交易日 {trade_date} 流水线异常：{exc!r}",
                     payload={
                         "run_id": run_id,
                         "trade_date": str(trade_date),

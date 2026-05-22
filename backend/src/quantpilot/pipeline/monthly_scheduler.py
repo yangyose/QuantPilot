@@ -109,12 +109,21 @@ class MonthlyScheduler:
             )
             return
 
+        from quantpilot.services.config_service import ConfigService
         from quantpilot.services.factor_monitor_service import FactorMonitorService
+        from quantpilot.services.notification_service import NotificationService
 
         async with self._session_factory() as session:
             try:
                 service = FactorMonitorService(session, self._factor_monitor_engine)
-                result = await service.apply_monthly_rebalance(session, month_end)
+                # R13-P1-2：注入 NotificationService 让 apply_monthly_rebalance
+                # 内部的 check_persistent_decay 能触发 factor_decayed_persistent
+                # 告警（3 个月连续 ICIR < 0.05）。
+                cfg_svc = ConfigService(session)
+                notifier = NotificationService(session, cfg_svc)
+                result = await service.apply_monthly_rebalance(
+                    session, month_end, notifier=notifier,
+                )
                 await session.commit()
                 logger.info(
                     "icir_rebalance_done: month_end=%s states=%d",

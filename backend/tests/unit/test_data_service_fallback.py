@@ -31,15 +31,22 @@ def _fake_quote_df() -> pd.DataFrame:
     })
 
 
-def _new_service(tushare_side, akshare_side, notifier=None) -> DataService:
+def _new_service(
+    tushare_side, akshare_side, notifier=None, pit_codes=None,
+) -> DataService:
     tushare = SimpleNamespace()
     tushare.fetch_daily_quotes = AsyncMock(side_effect=tushare_side)
     akshare = SimpleNamespace()
     akshare.fetch_daily_quotes = AsyncMock(side_effect=akshare_side)
+    repo = SimpleNamespace()
+    # R13-P0-2: fallback 路径会调 repo.get_active_stock_codes_as_of
+    repo.get_active_stock_codes_as_of = AsyncMock(
+        return_value=pit_codes if pit_codes is not None else ["000001.SZ"],
+    )
     return DataService(
         adapter=tushare,
         validator=SimpleNamespace(),
-        repo=SimpleNamespace(),
+        repo=repo,
         calendar=SimpleNamespace(),
         fallback_adapter=akshare,
         notifier=notifier,
@@ -125,3 +132,52 @@ async def test_ut_p13_d_02e_no_fallback_adapter_propagates() -> None:
     )
     with pytest.raises(ConnectionError):
         await svc._fetch_daily_quotes_with_fallback(date(2026, 5, 22))
+
+
+async def test_ut_p13_d_02f_fallback_injects_pit_codes_when_universe_none() -> None:
+    """R13-P0-2: ts_codes=None 调用方 → fallback 前从 repo 取 PIT 活股传给 AKShare。"""
+    pit_codes = ["000001.SZ", "600000.SH", "300750.SZ"]
+    svc = _new_service(
+        tushare_side=ConnectionError("tushare 5xx"),
+        akshare_side=[_fake_quote_df()],
+        pit_codes=pit_codes,
+    )
+    df = await svc._fetch_daily_quotes_with_fallback(date(2026, 5, 22), ts_codes=None)
+    assert not df.empty
+    # 断言 AKShare 收到 PIT 活股列表（非 None）
+    call_args = svc._fallback_adapter.fetch_daily_quotes.await_args
+    passed_codes = call_args.args[1]
+    assert passed_codes == pit_codes, (
+        f"AKShare 应收到 PIT 活股列表，实际收到 {passed_codes}"
+    )
+
+
+async def test_ut_p13_d_02g_fallback_caps_universe_at_1000() -> None:
+    """R13-P0-2: PIT 活股 > 1000 时截取前 1000 + 打 partial 警告。"""
+    huge_pit = [f"{i:06d}.SZ" for i in range(1500)]
+    svc = _new_service(
+        tushare_side=ConnectionError("tushare 5xx"),
+        akshare_side=[_fake_quote_df()],
+        pit_codes=huge_pit,
+    )
+    df = await svc._fetch_daily_quotes_with_fallback(date(2026, 5, 22), ts_codes=None)
+    assert not df.empty
+    passed_codes = svc._fallback_adapter.fetch_daily_quotes.await_args.args[1]
+    assert len(passed_codes) == 1000, f"应截 1000 只，实际 {len(passed_codes)}"
+    assert passed_codes == huge_pit[:1000]
+
+
+async def test_ut_p13_d_02h_explicit_ts_codes_not_overridden_by_pit() -> None:
+    """R13-P0-2: 调用方显式传 ts_codes 时不查 repo，直接透传。"""
+    pit_codes = ["999999.SZ"]  # 不应被使用
+    svc = _new_service(
+        tushare_side=ConnectionError("tushare 5xx"),
+        akshare_side=[_fake_quote_df()],
+        pit_codes=pit_codes,
+    )
+    explicit = ["000001.SZ", "600000.SH"]
+    await svc._fetch_daily_quotes_with_fallback(date(2026, 5, 22), ts_codes=explicit)
+    passed_codes = svc._fallback_adapter.fetch_daily_quotes.await_args.args[1]
+    assert passed_codes == explicit
+    # repo 未被调用（显式 ts_codes 时跳过 PIT 查询）
+    svc._repo.get_active_stock_codes_as_of.assert_not_awaited()
