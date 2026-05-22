@@ -187,6 +187,24 @@ V1.5+ 主题划分（8 主题）见本文档 §6，估算合计 **~56-82 pd（V1
 
 ---
 
+## 4.5 Phase 13 实施评审 P3 推迟项（5 项）→ V1.5-A 监控增强子模块
+
+依据：`docs/reviews/phase13_implementation_review_2026-05-22.md` §8 修订追踪表 P3 行。
+本组 5 项是 Phase 13 实施评审定级 P3 的"建议性改进"，全部归 V1.5-A 监控增强批，
+启动 V1.5-A 时**必须把本节作为子模块 scope 纳入**。
+
+| 编号 | 描述 | 估算 | 所属主题 |
+|------|------|------|---------|
+| R13-P3-1 | 冒烟 API-101 改 Upgrade header 探测 WS 端点（区分"路由存在"vs"未注册"）| 0.1 pd | V1.5-A |
+| R13-P3-2 | `SecretFilter.filter` 扫描 `record.__dict__` 覆盖 structured logging extra 字段 | 0.2 pd | V1.5-A |
+| R13-P3-3 | `factor_monitor_params` config_key 收纳 `PERSISTENT_DECAY_THRESHOLD/MONTHS` | 0.3 pd | V1.5-A |
+| R13-P3-4 | `TushareAdapter._call` 内统一 TUSHARE_CALLS Counter 埋点（覆盖全部 13 个接口）| 0.3 pd | V1.5-A |
+| R13-P3-5 | Grafana Overview 补 3 panel（健康告警 alert_type / APScheduler 失败 job_id / DataQualityMetric trend）| 0.2 pd | V1.5-A |
+
+小计 ~1.1 pd（并入 V1.5-A 估算）。
+
+---
+
 ## 5. 推迟 V2.0 项（3 项）
 
 | 编号 | 描述 | 推迟原因 | 估算 |
@@ -205,7 +223,7 @@ V2.0 总计 ~9-13 pd。
 
 | 主题 | 包含项 | 优先级 | 估算（pd）| 时间窗口 |
 |------|-------|--------|----------|---------|
-| **V1.5-A 回测引擎深化** | §2.1（S6-GAP-02 + 滑点情景）+ §3 SDD-EXT-02s/03/07 | 🟡 高 | **5.5-9** | RC 后 M+1 |
+| **V1.5-A 回测引擎深化 + 监控增强** | §2.1（S6-GAP-02 + 滑点情景）+ §3 SDD-EXT-02s/03/07 + §4.5 Phase 13 评审 P3 5 项 | 🟡 高 | **6.5-10** | RC 后 M+1 |
 | **V1.5-C 策略扩展** | §1 资金动向 + 低波动 + 插件沙箱 + §3 SDD-EXT-04/08 | 🟡 高 | **9-13** | RC 后 M+2~M+3 |
 | **V1.5-D 仓位与风控扩展** | §1 分数凯利 + 移动止损 + 时间止损 + 市值风格 + §3 SDD-EXT-06s/09s | 🟢 中 | **6-9** | RC 后 M+2 |
 | **V1.5-E 绩效归因深化** | §1 行业归因（多因子回归已 Phase 12）| 🟢 中 | 2-3 | RC 后 M+3 |

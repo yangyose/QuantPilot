@@ -360,6 +360,19 @@ if app.state.redis is not None:
 
 P2 6 项归入 Phase 14 启动核查；P3 5 项归入 V1.5-A。
 
+### 8.2 推迟项前向引用位置（防丢失）
+
+为避免「评审报告归档后推迟项被遗忘」，本节列出每条 pending 项在其他权威文档中的对应位置——
+Phase 14 启动 / V1.5-A 启动时，从对应文档 grep 即可定位回本评审报告。
+
+| 推迟项 | 前向引用位置（必读） |
+|--------|---------------------|
+| P2-1 ~ P2-6（共 6 项）| `docs/design/system_design.md` §9 Phase 14 行第 (7) 子项「Phase 13 实施评审 P2 6 项」 |
+| P3-1 ~ P3-5（共 5 项）| `docs/design/v1_5_roadmap.md` §4.5「Phase 13 实施评审 P3 推迟项」+ §6 V1.5-A 行已含 §4.5 |
+
+启动 phase14_account_integrity.md 设计文档时，**§1.3 启动核查清单**必须 grep
+`R13-P2-` 验证 6 项全部进入 phase 14 scope；漏列即违反 CLAUDE.md §10 文档治理规则。
+
 ---
 
 ## 9. 评审决策
