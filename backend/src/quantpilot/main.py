@@ -59,8 +59,19 @@ async def lifespan(app: FastAPI):
     # CP1 内根据 `run.config_snapshot.market_state_params` 即时实例化。
     from quantpilot.engine.market_state import MarketStateEngine
     app.state.market_state_engine = MarketStateEngine()
-    # Phase 8：Redis 客户端（WS 进度推送）；未配置时返回 None
+    # Phase 8/13 §3.7：Redis 客户端（WS 进度推送 + pubsub）；
+    # 连接失败时降级 None，DailyPipeline._publish_progress 自动走 logger.debug
     app.state.redis = None
+    try:
+        from redis import asyncio as redis_asyncio
+        app.state.redis = redis_asyncio.from_url(
+            settings.redis_url, encoding="utf-8", decode_responses=True,
+        )
+        await app.state.redis.ping()
+        logger.info("redis_connected url=%s", settings.redis_url)
+    except Exception as exc:
+        logger.warning("redis_connect_failed url=%s reason=%s", settings.redis_url, exc)
+        app.state.redis = None
 
     # Phase 10：WxPusher 通知渠道（app_token/uid 未配置时实例化后自动降级为 no-op）
     from quantpilot.notification.wxpusher import WxPusherAdapter

@@ -1,10 +1,24 @@
-"""REST API：流水线管理 /pipeline（Phase 7）。"""
+"""REST API：流水线管理 /pipeline（Phase 7）。
+
+Phase 13 §3.7.1：新增 WS /pipeline/progress 端点，订阅 Redis pubsub
+quantpilot:pipeline:progress 频道，实时推送 DailyPipeline 各 CP 进度。
+"""
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +27,7 @@ from quantpilot.models.system import PipelineRun
 from quantpilot.schemas.pipeline import PipelineRunItem, PipelineTriggerRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _today_cn() -> date:
@@ -117,3 +132,47 @@ async def trigger_pipeline(
         "data": PipelineRunItem.model_validate(run).model_dump(),
         "msg": "ok",
     }
+
+
+@router.websocket("/progress")
+async def ws_pipeline_progress(websocket: WebSocket) -> None:
+    """WS /pipeline/progress — 订阅 DailyPipeline 实时进度（Phase 13 §3.7.1）。
+
+    消息格式：
+        {"trade_date": "2026-05-22", "step": "CP1", "status": "started",
+         "progress_pct": 5}
+
+    Redis 未配置时连接接受后立即发送 error 帧并关闭。
+    """
+    await websocket.accept()
+    redis = getattr(websocket.app.state, "redis", None)
+    if redis is None:
+        await websocket.send_json(
+            {"error": "Redis 未初始化，进度推送不可用"}
+        )
+        await websocket.close()
+        return
+    pubsub = redis.pubsub()
+    try:
+        await pubsub.subscribe("quantpilot:pipeline:progress")
+        async for message in pubsub.listen():
+            if message.get("type") != "message":
+                continue
+            data = message["data"]
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            await websocket.send_text(data)
+    except WebSocketDisconnect:
+        logger.debug("ws_pipeline_progress_client_disconnected")
+    except Exception as exc:
+        logger.debug("ws_pipeline_progress_closed reason=%s", exc)
+    finally:
+        try:
+            await pubsub.unsubscribe("quantpilot:pipeline:progress")
+            await pubsub.aclose()
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass

@@ -10,6 +10,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import TermLabel from '@/components/TermLabel.vue'
 import DisclaimerBanner from '@/components/DisclaimerBanner.vue'
+import PipelineProgressCard from '@/components/PipelineProgressCard.vue'
 import { fmtPct, fmtAmount } from '@/utils/format'
 import type { AccountSummary, PerformanceSummary, NavPoint, BenchmarkPoint } from '@/types/api'
 
@@ -93,6 +94,9 @@ const topSignals = computed(() => signalStore.signals.slice(0, 5))
       text="本系统为个人量化交易决策辅助工具，所有市场状态判断、信号、绩效与持仓展示均基于历史数据与算法模型，不构成任何投资建议、不接受委托、不构成投顾服务。投资决策与盈亏由用户自行承担。"
     />
     <a-spin :spinning="loading">
+      <!-- 日度流水线进度（WS 实时推送，Phase 13 §3.7.4）-->
+      <PipelineProgressCard />
+
       <!-- 市场状态 -->
       <a-row :gutter="16" style="margin-bottom: 16px">
         <a-col :span="24">

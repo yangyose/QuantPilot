@@ -54,6 +54,30 @@ class DailyPipeline:
         self._redis = redis
         self._notification_channel = notification_channel
 
+    # Phase 13 §3.7.2：12 个进度上报点
+    async def _publish_progress(
+        self, trade_date: date, step: str, status: str, progress_pct: int,
+    ) -> None:
+        """向 Redis pubsub 推送 pipeline 进度（best-effort）。
+
+        【降级说明】redis=None 时降级 logger.debug；推送异常吞掉
+        （进度上报是观测增强，不阻断流水线）。
+        """
+        import json
+        payload = json.dumps({
+            "trade_date": str(trade_date),
+            "step": step,
+            "status": status,
+            "progress_pct": progress_pct,
+        })
+        if self._redis is None:
+            logger.debug("pipeline_progress %s", payload)
+            return
+        try:
+            await self._redis.publish("quantpilot:pipeline:progress", payload)
+        except Exception:
+            logger.debug("pipeline_progress_publish_failed", exc_info=True)
+
     async def run(self, trade_date: date) -> PipelineRun:
         """运行完整流水线。返回更新后的 PipelineRun 记录。
 
@@ -69,26 +93,38 @@ class DailyPipeline:
             await self._write_config_snapshot(run)
 
         try:
+            await self._publish_progress(trade_date, "pipeline", "started", 0)
+
             if not run.cp1_data_ready:
+                await self._publish_progress(trade_date, "CP1", "started", 5)
                 await self._cp1_ingest(run, trade_date)
+                await self._publish_progress(trade_date, "CP1", "completed", 25)
 
             if not run.cp2_scoring_done:
+                await self._publish_progress(trade_date, "CP2", "started", 30)
                 await self._cp2_scoring(run, trade_date)
+                await self._publish_progress(trade_date, "CP2", "completed", 50)
 
             new_signals: list[Signal] = []
             if not run.cp3_signals_done:
+                await self._publish_progress(trade_date, "CP3", "started", 55)
                 new_signals = await self._cp3_signals(run, trade_date)
+                await self._publish_progress(trade_date, "CP3", "completed", 70)
 
             # Phase 10 §7.2：CP3 新生成信号推送（best-effort，失败不影响流水线）
             if new_signals:
                 await self._notify_new_signals(new_signals, trade_date, run.config_snapshot)
 
             # Step4~6 best-effort（失败不回滚整个流水线）
+            await self._publish_progress(trade_date, "Step4", "started", 75)
             await self._step4_mark_to_market(run, trade_date)
+            await self._publish_progress(trade_date, "Step5", "started", 85)
             await self._step5_auto_dividends(run, trade_date)
+            await self._publish_progress(trade_date, "Step6", "started", 95)
             await self._step6_expire_signals(run, trade_date)
 
             run = await self._update_run_status(run.id, "SUCCESS")
+            await self._publish_progress(trade_date, "pipeline", "completed", 100)
             logger.info("pipeline_completed: trade_date=%s", trade_date)
             # Phase 13 §3.1.2 埋点
             from quantpilot.core.metrics import PIPELINE_RUNS
@@ -97,6 +133,7 @@ class DailyPipeline:
         except Exception as exc:
             logger.exception("pipeline_failed: trade_date=%s", trade_date)
             run = await self._update_run_status(run.id, "FAILED")
+            await self._publish_progress(trade_date, "pipeline", "failed", 100)
             # Phase 13 §3.1.2 埋点
             from quantpilot.core.metrics import PIPELINE_RUNS
             PIPELINE_RUNS.labels(status="failed").inc()
