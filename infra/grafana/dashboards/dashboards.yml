@@ -1,0 +1,15 @@
+# Phase 13 §3.8.1 Grafana 仪表盘 provisioning
+# Grafana 启动时自动扫描 /etc/grafana/provisioning/dashboards/ 目录加载 JSON。
+apiVersion: 1
+
+providers:
+  - name: QuantPilot
+    orgId: 1
+    folder: QuantPilot
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true

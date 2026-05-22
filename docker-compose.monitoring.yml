@@ -1,0 +1,47 @@
+# Phase 13 §3.8.1 监控栈 Compose（Prometheus + Grafana）
+# 启动：
+#   docker compose -f docker-compose.prod.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+# 关停：
+#   docker compose -f docker-compose.monitoring.yml --profile monitoring down
+#
+# 设计要点：
+# - prometheus 通过 docker DNS 解析 backend:8000 抓取 /metrics（不经 nginx）
+# - grafana 暴露在 3001 端口（避免与前端 3000 冲突）
+# - profiles 限制：默认 up 不启动监控容器，仅 --profile monitoring 显式拉起
+# - 复用 docker-compose.prod.yml 的默认 network（同 stack 自动联通 backend）
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.49.0
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.retention.size=2GB"
+
+  grafana:
+    image: grafana/grafana-oss:10.4.0
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infra/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:

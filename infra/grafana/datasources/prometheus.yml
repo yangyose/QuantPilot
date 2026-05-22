@@ -1,0 +1,14 @@
+# Phase 13 §3.8.1 Grafana Prometheus 数据源（provisioning）
+# Grafana 启动时自动加载，无需手工添加。
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: GET
+      timeInterval: 15s

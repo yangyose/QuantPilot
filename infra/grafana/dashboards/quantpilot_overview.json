@@ -1,0 +1,81 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "title": "Pipeline 运行成功/失败计数",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "sum by (status) (quantpilot_pipeline_runs_total)", "legendFormat": "{{status}}"}
+      ]
+    },
+    {
+      "title": "Pipeline 单次耗时分布（p50/p95/p99）",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 0},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(quantpilot_pipeline_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, sum(rate(quantpilot_pipeline_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, sum(rate(quantpilot_pipeline_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "title": "信号生成量（按类型）",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "sum by (type) (increase(quantpilot_signals_generated_total[1h]))", "legendFormat": "{{type}}"}
+      ]
+    },
+    {
+      "title": "Tushare/AKShare 降级次数",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "sum by (status) (increase(quantpilot_data_source_fallback_total[1h]))", "legendFormat": "{{status}}"}
+      ]
+    },
+    {
+      "title": "因子 ICIR（按 strategy/factor/state）",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "quantpilot_factor_icir", "legendFormat": "{{strategy}}/{{factor}}/{{state}}"}
+      ]
+    },
+    {
+      "title": "数据延迟（天）",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 22},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "quantpilot_data_latency_days", "legendFormat": "{{data_type}}"}
+      ]
+    },
+    {
+      "title": "API p95 时延（按 endpoint）",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 22},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(quantpilot_api_request_duration_seconds_bucket[5m])) by (endpoint, le))", "legendFormat": "{{endpoint}}"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["quantpilot"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "QuantPilot Overview",
+  "uid": "quantpilot-overview",
+  "version": 1
+}

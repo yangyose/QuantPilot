@@ -429,14 +429,67 @@ docker compose -f docker-compose.prod.yml down -v
 
 ---
 
-## 13. 监控（V1.5 规划）
+## 13. 监控（Phase 13 已落地）
 
-V1.0 依赖：
-- Docker 健康检查（`HEALTHCHECK` 在 `Dockerfile.prod` 与 `docker-compose.prod.yml`）
-- `/health` 端点
+V1.0 Phase 13 已交付完整可观测栈，分两层：
+
+### 13.1 必备健康检查（默认即启）
+- Docker `HEALTHCHECK`（`Dockerfile.prod` + `docker-compose.prod.yml`）
+- `GET /health` 端点（无鉴权，nginx 直通）
 - 滚动日志 + WxPusher 错误推送（`notify_system_error` 模板）
+- `GET /api/v1/health/scheduler`（JWT）— APScheduler job 状态摘要
+- `GET /api/v1/health/data`（JWT）— 数据延迟 + 近 30 日 validator 错误
+- `GET /metrics`（仅内网放行，nginx `allow 127.0.0.1/172.16.0.0/12/10.0.0.0/8/192.168.0.0/16`）
+  暴露 Prometheus exposition：12 个 Counter/Gauge/Histogram，覆盖 pipeline_runs /
+  signals_generated / tushare_calls / validator_errors / data_source_fallback /
+  scheduler_jobs / notifications_sent / factor_icir / data_latency_days /
+  pipeline_duration / api_request_duration
 
-V1.5 计划接入 Prometheus + Grafana（参考 `docs/design/v1_5_roadmap.md`）。
+### 13.2 可选监控栈（Prometheus + Grafana）
+
+启用步骤：
+
+```bash
+# 1) 启动监控容器（profile 限定，默认 up 不会拉起）
+docker compose -f docker-compose.prod.yml -f docker-compose.monitoring.yml \
+  --env-file .env.prod --profile monitoring up -d
+
+# 2) Prometheus UI：http://<host>:9090（确认 quantpilot-backend target=UP）
+# 3) Grafana：http://<host>:3001
+#    默认账号 admin / ${GRAFANA_ADMIN_PASSWORD:-admin}（强烈建议 .env.prod 覆写）
+#    数据源 + Overview 仪表盘已 provisioning 自动加载
+```
+
+配置文件位置：
+
+| 路径 | 用途 |
+|------|------|
+| `docker-compose.monitoring.yml` | Prometheus + Grafana 容器定义（profile `monitoring`）|
+| `infra/prometheus/prometheus.yml` | 抓取目标 `backend:8000/metrics` + 默认 15s 间隔 |
+| `infra/grafana/datasources/prometheus.yml` | Grafana 数据源 provisioning |
+| `infra/grafana/dashboards/dashboards.yml` | Grafana 仪表盘 provider 配置 |
+| `infra/grafana/dashboards/quantpilot_overview.json` | Overview 仪表盘（7 panel：pipeline 计数/耗时分布/信号量/降级次数/ICIR/数据延迟/API p95）|
+
+关键告警阈值建议（在 Prometheus Alertmanager 或 Grafana 单独配置，Phase 13 不内置）：
+
+| 指标 | 阈值 | 严重度 |
+|------|------|--------|
+| `quantpilot_pipeline_runs_total{status="failed"}` 1h 增量 | ≥ 1 | warning |
+| `quantpilot_data_latency_days{data_type="daily_quote"}` | ≥ 2 | critical |
+| `quantpilot_data_source_fallback_total{status="failed"}` 1h 增量 | ≥ 1 | critical |
+| `histogram_quantile(0.95, ...api_request_duration_seconds_bucket)` | ≥ 2.5s | warning |
+| `quantpilot_factor_icir` 跨月 < 0.05 持续 3 月 | — | warning（系统内已自动推 `factor_decayed_persistent` 通知，Grafana 仅做 dashboard）|
+
+### 13.3 关停监控栈
+
+```bash
+docker compose -f docker-compose.monitoring.yml --profile monitoring down
+# 保留卷（prometheus_data / grafana_data）；如要彻底清理：
+docker volume rm $(docker volume ls -q | grep -E 'prometheus_data|grafana_data')
+```
+
+> **数据保留**：Prometheus 默认 retention 30 天 / 2GB（在 compose `command` 内配置）。
+> 长期归档建议接 remote_write 到 Mimir/Thanos；V1.0 单实例足够。
 
 ---
 

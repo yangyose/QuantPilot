@@ -1,0 +1,25 @@
+# Phase 13 §3.8.1 Prometheus 抓取配置
+# - QuantPilot backend 暴露 /metrics（prom-client 0.0.4 兼容文本格式）
+# - scrape_interval 15s 与 SDD §15.5 告警时延期望（≤30s）对齐
+# - 默认仅 1 个 target；外部 exporter（node/redis）按需在此追加 job
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: quantpilot
+    env: prod
+
+scrape_configs:
+  - job_name: quantpilot-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: quantpilot
+          component: backend
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
