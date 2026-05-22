@@ -72,11 +72,75 @@ class DataService:
         validator: DataValidator,
         repo: MarketDataRepository,
         calendar: TradingCalendar,
+        fallback_adapter: DataSourceAdapter | None = None,
+        notifier: object | None = None,
     ) -> None:
         self._adapter = adapter
         self._validator = validator
         self._repo = repo
         self._calendar = calendar
+        # Phase 13 §3.6：Tushare 失败时降级到 AKShareAdapter。
+        # notifier 暴露 notify_health_alert("data_source_unavailable", ...) 方法。
+        self._fallback_adapter = fallback_adapter
+        self._notifier = notifier
+
+    async def _fetch_daily_quotes_with_fallback(
+        self, trade_date: date, ts_codes: list[str] | None = None,
+    ):
+        """Phase 13 §3.6.2：Tushare → AKShare 自动降级 + 埋点。"""
+        from quantpilot.core.metrics import DATA_SOURCE_FALLBACK, TUSHARE_CALLS
+        try:
+            df = await self._adapter.fetch_daily_quotes(trade_date, ts_codes)
+            if df is None or len(df) == 0:
+                raise ValueError("tushare_empty_response")
+            TUSHARE_CALLS.labels(interface="daily_quote", status="success").inc()
+            return df
+        except Exception as exc:
+            TUSHARE_CALLS.labels(interface="daily_quote", status="error").inc()
+            if self._fallback_adapter is None:
+                logger.warning(
+                    "data_source_fallback_skipped reason=%s no_fallback_adapter", exc,
+                )
+                raise
+            logger.warning(
+                "data_source_fallback from=tushare to=akshare reason=%s", exc,
+            )
+            DATA_SOURCE_FALLBACK.labels(
+                from_source="tushare", to_source="akshare", status="trying",
+            ).inc()
+            try:
+                df = await self._fallback_adapter.fetch_daily_quotes(trade_date, ts_codes)
+                DATA_SOURCE_FALLBACK.labels(
+                    from_source="tushare", to_source="akshare", status="success",
+                ).inc()
+                return df
+            except NotImplementedError:
+                logger.error(
+                    "data_source_fallback_unavailable interface=daily_quote"
+                )
+                DATA_SOURCE_FALLBACK.labels(
+                    from_source="tushare", to_source="akshare", status="unavailable",
+                ).inc()
+                raise
+            except Exception as fallback_exc:
+                logger.exception(
+                    "data_source_fallback_failed reason=%s", fallback_exc,
+                )
+                DATA_SOURCE_FALLBACK.labels(
+                    from_source="tushare", to_source="akshare", status="failed",
+                ).inc()
+                if self._notifier is not None:
+                    try:
+                        await self._notifier.notify_health_alert(
+                            "data_source_unavailable",
+                            f"Tushare + AKShare 均失败：{fallback_exc}",
+                            payload={"trade_date": str(trade_date)},
+                        )
+                    except Exception:
+                        logger.exception(
+                            "data_source_unavailable_notify_failed"
+                        )
+                raise
 
     @staticmethod
     async def _record_validation(
@@ -162,7 +226,7 @@ class DataService:
 
         # ── 1. 日线行情 ──────────────────────────────────────────────────────
         try:
-            quote_df = await self._adapter.fetch_daily_quotes(trade_date)
+            quote_df = await self._fetch_daily_quotes_with_fallback(trade_date)
             # 历史回填时注入 namechange 缓存，按 PIT 还原 is_st（避免所有日期 is_st=False）
             if _st_codes is not None and "is_st" in quote_df.columns:
                 quote_df["is_st"] = quote_df["ts_code"].isin(_st_codes)

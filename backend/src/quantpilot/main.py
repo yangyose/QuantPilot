@@ -49,6 +49,10 @@ async def lifespan(app: FastAPI):
     app.state.adapter = None
     app.state.calendar = None
     app.state.scheduler = None
+    # Phase 13 §3.6：AKShareAdapter 始终实例化作 fallback（无需 token）；
+    # DataService 通过 get_data_service 注入，Tushare 失败时自动降级。
+    from quantpilot.data.adapters.akshare import AKShareAdapter
+    app.state.fallback_adapter = AKShareAdapter()
 
     # Phase 10 §4.3 评审 C-02：保留 MarketStateEngine 单例供非流水线
     # `/market/state/identify` API 路径使用；DailyPipeline 不再消费此单例，

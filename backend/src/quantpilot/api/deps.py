@@ -45,6 +45,9 @@ def get_data_service(
 ) -> DataService:
     """每请求构造 DataService：adapter/calendar 来自 app.state（长期），
     session/repo 每次请求新建（避免连接池泄漏和事务污染）。
+    Phase 13 §3.6：注入 AKShareAdapter 作 fallback + NotificationService 用于
+    "data_source_unavailable" 告警；fallback_adapter 在 app.state 缺失时降级为 None
+    （仍可用主 Tushare 路径，只是没有自动降级）。
     """
     adapter = getattr(request.app.state, "adapter", None)
     calendar = getattr(request.app.state, "calendar", None)
@@ -54,7 +57,13 @@ def get_data_service(
             detail="数据服务未初始化（TUSHARE_TOKEN 未配置）",
         )
     repo = MarketDataRepository(session)
-    return DataService(adapter, DataValidator(), repo, calendar)
+    fallback_adapter = getattr(request.app.state, "fallback_adapter", None)
+    config_service = ConfigService(session)
+    notifier = NotificationService(session, config_service=config_service)
+    return DataService(
+        adapter, DataValidator(), repo, calendar,
+        fallback_adapter=fallback_adapter, notifier=notifier,
+    )
 
 
 def get_market_state_service(
