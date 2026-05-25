@@ -124,6 +124,7 @@ async def deposit(
                 amount=body.amount,
                 trade_date=body.trade_date,
                 note=body.note,
+                idempotency_key=body.idempotency_key,
             )
         else:
             flow = await service.deposit(
@@ -131,6 +132,7 @@ async def deposit(
                 amount=body.amount,
                 trade_date=body.trade_date,
                 note=body.note,
+                idempotency_key=body.idempotency_key,
             )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

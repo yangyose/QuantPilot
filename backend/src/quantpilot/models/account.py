@@ -108,6 +108,7 @@ class FundFlow(Base):
         BigInteger, ForeignKey("trade_record.id")
     )
     note: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default="NOW()"
     )

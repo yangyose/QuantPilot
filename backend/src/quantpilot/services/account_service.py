@@ -12,6 +12,7 @@ import logging
 from datetime import date
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.models.account import Account, DailyPortfolioValue, FundFlow, Position, TradeRecord
@@ -293,13 +294,46 @@ class AccountService:
 
     # ------------------------------------------------------------------ 资金流水
 
+    async def find_fund_flow_by_idempotency(
+        self, account_id: int, idempotency_key: str,
+    ) -> FundFlow | None:
+        """Phase 14 §14-1：按 (account_id, idempotency_key) 查找已存在的 fund_flow。
+
+        命中 → 返回原 FundFlow；未命中 → None。用于 deposit/record_dividend
+        幂等保护（先查后写 + IntegrityError 兜底重查的两层防御）。
+        """
+        result = await self._session.execute(
+            select(FundFlow).where(
+                FundFlow.account_id == account_id,
+                FundFlow.idempotency_key == idempotency_key,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def deposit(
         self,
         account_id: int,
         amount: float,
         trade_date: date,
         note: str | None = None,
+        idempotency_key: str | None = None,
     ) -> FundFlow:
+        """入金。idempotency_key 非空时启用幂等保护（先查后写 + 竞态兜底重查）。
+
+        Phase 14 §14-1（RM-13）：客户端网络抖动 / 双击重试时，同 key 第二次调用
+        直接返回首次的 FundFlow，account.cash 不二次累加；NULL key 走旧路径（兼容）。
+        """
+        if idempotency_key is not None:
+            existing = await self.find_fund_flow_by_idempotency(
+                account_id, idempotency_key,
+            )
+            if existing is not None:
+                logger.info(
+                    "deposit_idempotent_hit account=%d key=%s flow_id=%d",
+                    account_id, idempotency_key, existing.id,
+                )
+                return existing
+
         account = await self.get_account(account_id)
         if account is None:
             raise ValueError(f"Account {account_id} not found")
@@ -311,9 +345,27 @@ class AccountService:
             amount=amount,
             trade_date=trade_date,
             note=note,
+            idempotency_key=idempotency_key,
         )
         self._session.add(flow)
-        await self._session.flush()
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            if idempotency_key is not None and (
+                "uq_fund_flow_account_idempotency" in str(exc)
+            ):
+                # 并发竞态：先查未命中 → 另一请求已 INSERT → 本请求撞 partial unique
+                await self._session.rollback()
+                existing = await self.find_fund_flow_by_idempotency(
+                    account_id, idempotency_key,
+                )
+                if existing is not None:
+                    logger.info(
+                        "deposit_idempotent_race_resolved account=%d key=%s",
+                        account_id, idempotency_key,
+                    )
+                    return existing
+            raise
         await self._session.refresh(flow)
         return flow
 
@@ -353,11 +405,15 @@ class AccountService:
         amount: float,
         trade_date: date,
         note: str | None = None,
+        idempotency_key: str | None = None,
     ) -> FundFlow:
         """手动录入分红：写入 DIVIDEND fund_flow + cash += amount + 调整 cost_price。
 
         若对应持仓存在，cost_price -= amount / shares（降低每股成本）。
         若已平仓（持仓不存在），仅写 fund_flow，不更新 cost_price。
+
+        Phase 14 §14-1（RM-13）：idempotency_key 非空时启用幂等保护，重复提交
+        直接返回首次的 FundFlow，cost_price 不二次调整 + cash 不二次累加。
 
         V1.0 整改 Batch 2 — B2-2 排查结论：cost_price 在 V1.0 仅用于：
         - AccountService.pnl_pct = (current_price - cost_price) / cost_price
@@ -369,6 +425,17 @@ class AccountService:
         未来若引入 cost_price 参与绩效或回测，必须先评估前/后复权双轨记录
         （详见 docs/reviews/v1_overall_review_2026-04-27.md §5.3 FIN-HIGH-08）。
         """
+        if idempotency_key is not None:
+            existing = await self.find_fund_flow_by_idempotency(
+                account_id, idempotency_key,
+            )
+            if existing is not None:
+                logger.info(
+                    "dividend_idempotent_hit account=%d key=%s flow_id=%d",
+                    account_id, idempotency_key, existing.id,
+                )
+                return existing
+
         account = await self.get_account(account_id)
         if account is None:
             raise ValueError(f"Account {account_id} not found")
@@ -393,9 +460,26 @@ class AccountService:
             trade_date=trade_date,
             ts_code=ts_code,
             note=note,
+            idempotency_key=idempotency_key,
         )
         self._session.add(flow)
-        await self._session.flush()
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            if idempotency_key is not None and (
+                "uq_fund_flow_account_idempotency" in str(exc)
+            ):
+                await self._session.rollback()
+                existing = await self.find_fund_flow_by_idempotency(
+                    account_id, idempotency_key,
+                )
+                if existing is not None:
+                    logger.info(
+                        "dividend_idempotent_race_resolved account=%d key=%s",
+                        account_id, idempotency_key,
+                    )
+                    return existing
+            raise
         await self._session.refresh(flow)
         return flow
 

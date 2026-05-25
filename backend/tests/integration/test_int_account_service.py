@@ -1,17 +1,29 @@
-"""INT-ACC-01~11: AccountService 集成测试（需真实 PostgreSQL）。
+"""INT-ACC-01~11 / INT-P14-1-01~06: AccountService 集成测试（需真实 PostgreSQL）。
 
 V1.0 整改 Batch 2 — B2-6 新增：
 - INT-ACC-10：已平仓股票分红仅写 fund_flow，不改 cost_price（S7-GAP-04 回归）
 - INT-ACC-11：get_current_drawdown 计算账户最大回撤（B2-1 配套）
+
+Phase 14 §14-1 RM-13 deposit 幂等：
+- INT-P14-1-01：find_fund_flow_by_idempotency 命中/未命中
+- INT-P14-1-02：deposit 同 key 重复 → 返回原 flow + cash 不变
+- INT-P14-1-03：record_dividend 同 key 重复 → 返回原 flow + cost_price 不二次扣
+- INT-P14-1-04：deposit 不传 key（旧路径）→ 多次调用产生多行（兼容回归）
+- INT-P14-1-05：真 DB partial unique 抛 IntegrityError + service 兜底重查
+- INT-P14-1-06：asyncio.gather 并发 2 个同 key → 两返回值同 flow_id + cash 仅加一次
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 
 import pytest
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from quantpilot.models.account import Account
+from quantpilot.core.database import AsyncSessionLocal
+from quantpilot.models.account import Account, FundFlow
 from quantpilot.models.market import DailyQuote
 from quantpilot.services.account_service import AccountService
 
@@ -360,3 +372,237 @@ async def test_int_acc_11_get_current_drawdown(db_session: AsyncSession) -> None
     ))
     await db_session.flush()
     assert await svc.get_current_drawdown(account2.id) is None
+
+
+# ---------------------------------------------------------------------------
+# INT-P14-1-01: find_fund_flow_by_idempotency 命中 / 未命中
+# ---------------------------------------------------------------------------
+async def test_int_p14_1_01_find_fund_flow_by_idempotency(
+    db_session: AsyncSession,
+) -> None:
+    """find 命中已存在 key；不存在的 key 返回 None；其他账户的 key 不串账。"""
+    account = await _make_account(db_session, cash=100000.0)
+    other = await _make_account(db_session, name="账户B", cash=100000.0)
+    svc = AccountService(db_session)
+
+    key = "deposit-key-abc-001"
+    flow = await svc.deposit(
+        account_id=account.id, amount=10000.0,
+        trade_date=_TRADE_DATE, idempotency_key=key,
+    )
+
+    hit = await svc.find_fund_flow_by_idempotency(account.id, key)
+    assert hit is not None
+    assert hit.id == flow.id
+
+    miss = await svc.find_fund_flow_by_idempotency(account.id, "non-existent-key")
+    assert miss is None
+
+    # 同 key 在不同 account 应不串账
+    other_miss = await svc.find_fund_flow_by_idempotency(other.id, key)
+    assert other_miss is None
+
+
+# ---------------------------------------------------------------------------
+# INT-P14-1-02: deposit 同 key 重复 → 返回原 flow + cash 不变
+# ---------------------------------------------------------------------------
+async def test_int_p14_1_02_deposit_same_key_returns_original(
+    db_session: AsyncSession,
+) -> None:
+    """同 idempotency_key 调 2 次 deposit → 返回同 flow_id；account.cash 仅加一次。"""
+    account = await _make_account(db_session, cash=100000.0)
+    svc = AccountService(db_session)
+
+    key = "deposit-idem-001"
+    flow1 = await svc.deposit(
+        account_id=account.id, amount=50000.0,
+        trade_date=_TRADE_DATE, idempotency_key=key,
+    )
+    cash_after_first = float((await svc.get_account(account.id)).cash)
+
+    flow2 = await svc.deposit(
+        account_id=account.id, amount=50000.0,
+        trade_date=_TRADE_DATE, idempotency_key=key,
+    )
+    cash_after_second = float((await svc.get_account(account.id)).cash)
+
+    assert flow1.id == flow2.id, "同 key 应返回同 flow_id"
+    assert cash_after_second == pytest.approx(cash_after_first), \
+        "幂等命中 cash 不应再次累加"
+    assert cash_after_first == pytest.approx(100000.0 + 50000.0)
+
+    flows, total = await svc.get_cashflow(account.id, flow_type="DEPOSIT")
+    assert total == 1, "幂等命中不应产生第二行 fund_flow"
+    assert flows[0].idempotency_key == key
+
+
+# ---------------------------------------------------------------------------
+# INT-P14-1-03: record_dividend 同 key 重复 → 返回原 flow + cost_price 不二次扣
+# ---------------------------------------------------------------------------
+async def test_int_p14_1_03_dividend_same_key_returns_original(
+    db_session: AsyncSession,
+) -> None:
+    """同 idempotency_key 调 2 次 record_dividend → 返回同 flow_id + cost_price 仅扣一次。"""
+    account = await _make_account(db_session, cash=100000.0)
+    svc = AccountService(db_session)
+
+    await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=10.0, shares=1000, commission=0.0,
+    )
+    cost_before = float((await svc.get_positions(account.id))[0].cost_price)
+
+    key = "dividend-idem-001"
+    flow1 = await svc.record_dividend(
+        account_id=account.id, ts_code=_TS_A,
+        amount=500.0, trade_date=_TRADE_DATE, idempotency_key=key,
+    )
+    cost_after_first = float((await svc.get_positions(account.id))[0].cost_price)
+    assert cost_after_first == pytest.approx(cost_before - 0.5)
+
+    flow2 = await svc.record_dividend(
+        account_id=account.id, ts_code=_TS_A,
+        amount=500.0, trade_date=_TRADE_DATE, idempotency_key=key,
+    )
+    cost_after_second = float((await svc.get_positions(account.id))[0].cost_price)
+
+    assert flow1.id == flow2.id
+    assert cost_after_second == pytest.approx(cost_after_first), \
+        "幂等命中 cost_price 不应再次调整"
+
+    flows, total = await svc.get_cashflow(account.id, flow_type="DIVIDEND")
+    assert total == 1
+    assert flows[0].idempotency_key == key
+
+
+# ---------------------------------------------------------------------------
+# INT-P14-1-04: deposit 不传 key（旧路径）→ 多次调用产生多行（兼容回归）
+# ---------------------------------------------------------------------------
+async def test_int_p14_1_04_deposit_no_key_creates_multiple_rows(
+    db_session: AsyncSession,
+) -> None:
+    """不传 idempotency_key（None）→ 走旧路径，多次调用产生多行，cash 累加。"""
+    account = await _make_account(db_session, cash=0.0)
+    svc = AccountService(db_session)
+
+    for _ in range(3):
+        await svc.deposit(
+            account_id=account.id, amount=10000.0,
+            trade_date=_TRADE_DATE,
+        )
+
+    cash = float((await svc.get_account(account.id)).cash)
+    assert cash == pytest.approx(30000.0), "不传 key 旧路径应累加 3 次"
+
+    flows, total = await svc.get_cashflow(account.id, flow_type="DEPOSIT")
+    assert total == 3
+    assert all(f.idempotency_key is None for f in flows)
+
+
+# ---------------------------------------------------------------------------
+# INT-P14-1-05a: 真 DB partial unique 索引拒绝同 (account_id, key) 重复
+# ---------------------------------------------------------------------------
+async def test_int_p14_1_05a_partial_unique_rejects_duplicate(
+    db_session: AsyncSession,
+) -> None:
+    """绕过 service 直接写两行同 (account_id, idempotency_key) → IntegrityError。
+
+    覆盖 alembic 0013 partial unique 索引在真 DB 层的兜底约束。
+    触发 IntegrityError 后 session 进入失败态，由 conftest fixture 末尾 rollback 收尾，
+    本测试不再做后续断言。"""
+    account = await _make_account(db_session, cash=100000.0)
+    key = "raw-insert-conflict-001"
+
+    db_session.add(FundFlow(
+        account_id=account.id, flow_type="DEPOSIT",
+        amount=1000.0, trade_date=_TRADE_DATE, idempotency_key=key,
+    ))
+    await db_session.flush()
+
+    db_session.add(FundFlow(
+        account_id=account.id, flow_type="DEPOSIT",
+        amount=2000.0, trade_date=_TRADE_DATE, idempotency_key=key,
+    ))
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+# ---------------------------------------------------------------------------
+# INT-P14-1-05b: partial unique 允许多个 NULL key 共存（兼容旧行）
+# ---------------------------------------------------------------------------
+async def test_int_p14_1_05b_partial_unique_allows_multiple_nulls(
+    db_session: AsyncSession,
+) -> None:
+    """同 account 多个 idempotency_key=NULL 行不抵触 partial unique（旧行兼容）。"""
+    account = await _make_account(db_session, cash=0.0)
+
+    db_session.add(FundFlow(
+        account_id=account.id, flow_type="DEPOSIT",
+        amount=100.0, trade_date=_TRADE_DATE, idempotency_key=None,
+    ))
+    db_session.add(FundFlow(
+        account_id=account.id, flow_type="DEPOSIT",
+        amount=200.0, trade_date=_TRADE_DATE, idempotency_key=None,
+    ))
+    await db_session.flush()  # 不应抛错（partial unique WHERE key IS NOT NULL）
+
+
+# ---------------------------------------------------------------------------
+# INT-P14-1-06: asyncio.gather 并发 2 个同 key deposit → 兜底重查返回同 flow
+# ---------------------------------------------------------------------------
+async def test_int_p14_1_06_concurrent_deposit_same_key(
+    db_session: AsyncSession,
+) -> None:
+    """两个独立 session 并发 deposit 同 key → 两返回 flow_id 相同 + cash 仅加一次。
+
+    用独立 AsyncSessionLocal 模拟真并发（commit）。db_session 仅用来 seed account
+    + 收尾清理；并发写入用 outer commit 写真 DB，测试末尾显式 DELETE 清理。
+    """
+    # seed account 并 commit 到真 DB（脱离 db_session 的 begin/rollback）
+    # 改走独立 session 创建账户
+    async with AsyncSessionLocal() as setup_sess:
+        acc = Account(name="并发测试账户", account_type="REAL",
+                       cash=0.0, total_assets=0.0)
+        setup_sess.add(acc)
+        await setup_sess.commit()
+        await setup_sess.refresh(acc)
+        account_id = acc.id
+
+    key = "concurrent-idem-001"
+
+    async def _one_deposit() -> FundFlow:
+        async with AsyncSessionLocal() as sess:
+            svc = AccountService(sess)
+            flow = await svc.deposit(
+                account_id=account_id, amount=10000.0,
+                trade_date=_TRADE_DATE, idempotency_key=key,
+            )
+            await sess.commit()
+            await sess.refresh(flow)
+            return flow
+
+    try:
+        flow_a, flow_b = await asyncio.gather(_one_deposit(), _one_deposit())
+
+        assert flow_a.id == flow_b.id, "并发同 key 必须返回同一个 flow_id"
+
+        async with AsyncSessionLocal() as check_sess:
+            check_svc = AccountService(check_sess)
+            cash = float((await check_svc.get_account(account_id)).cash)
+            assert cash == pytest.approx(10000.0), \
+                "并发命中 cash 必须只加一次"
+
+            flows, total = await check_svc.get_cashflow(
+                account_id, flow_type="DEPOSIT",
+            )
+            assert total == 1
+    finally:
+        # 清理：删 fund_flow + account（脱 db_session fixture 的 rollback 边界）
+        async with AsyncSessionLocal() as cleanup:
+            await cleanup.execute(
+                delete(FundFlow).where(FundFlow.account_id == account_id),
+            )
+            await cleanup.execute(
+                delete(Account).where(Account.id == account_id),
+            )
+            await cleanup.commit()

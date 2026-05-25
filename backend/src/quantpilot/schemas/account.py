@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AccountSummary(BaseModel):
@@ -84,6 +84,10 @@ class FundFlowCreate(BaseModel):
 
     deposit 路由：ts_code 有值 → DIVIDEND（分红），无值 → DEPOSIT（入金）。
     withdraw 路由：flow_type 固定为 WITHDRAW，ts_code 忽略。
+
+    Phase 14 §14-1：新增 idempotency_key 可选字段保护 deposit/dividend 重复提交
+    （客户端网络抖动 / 浏览器双击）。withdraw 路径默认忽略 idempotency_key
+    （出金本身已有现金余额二次校验）。
     """
 
     account_id: int
@@ -91,6 +95,9 @@ class FundFlowCreate(BaseModel):
     trade_date: date
     ts_code: str | None = None
     note: str | None = None
+    idempotency_key: str | None = Field(
+        None, max_length=36, pattern=r"^[A-Za-z0-9_\-]+$",
+    )
 
 
 class FundFlowItem(BaseModel):
@@ -104,6 +111,7 @@ class FundFlowItem(BaseModel):
     ts_code: str | None
     related_trade_id: int | None
     note: str | None
+    idempotency_key: str | None = None
     created_at: datetime | None
 
 

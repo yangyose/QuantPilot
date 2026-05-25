@@ -1,8 +1,12 @@
-"""unit/test_account_logic.py: WAC 成本价纯函数单元测试（无 IO）。"""
+"""unit/test_account_logic.py: WAC + FundFlowCreate idempotency_key 纯函数单元测试。"""
 from __future__ import annotations
 
-import pytest
+from datetime import date
 
+import pytest
+from pydantic import ValidationError
+
+from quantpilot.schemas.account import FundFlowCreate
 from quantpilot.services.account_service import compute_wac
 
 
@@ -84,3 +88,43 @@ class TestComputeWac:
         """边界情况不抛异常，返回合理值。"""
         result = compute_wac(old_shares, old_cost, new_shares, new_price)
         assert isinstance(result, float)
+
+
+class TestFundFlowCreateIdempotencyKey:
+    """Phase 14 §14-1 RM-13：idempotency_key 字段 pydantic 校验（pattern + length）。"""
+
+    def _base(self, **extra: object) -> dict:
+        return {
+            "account_id": 1, "amount": 10000.0,
+            "trade_date": date(2026, 4, 10),
+            **extra,
+        }
+
+    def test_idempotency_key_none_ok(self) -> None:
+        """idempotency_key 缺省 = None → 兼容旧客户端，校验通过。"""
+        m = FundFlowCreate(**self._base())
+        assert m.idempotency_key is None
+
+    def test_idempotency_key_uuid4_ok(self) -> None:
+        """标准 UUID4（36 字符 + `-`）通过校验。"""
+        m = FundFlowCreate(**self._base(
+            idempotency_key="a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+        ))
+        assert m.idempotency_key == "a1b2c3d4-e5f6-4789-abcd-ef0123456789"
+
+    def test_idempotency_key_short_alphanum_ok(self) -> None:
+        """短字母数字 + 下划线 + `-` 通过校验（前端可自定义短 key）。"""
+        m = FundFlowCreate(**self._base(idempotency_key="deposit_2026-04-10_1"))
+        assert m.idempotency_key == "deposit_2026-04-10_1"
+
+    def test_idempotency_key_over_36_chars_rejected(self) -> None:
+        """超过 36 字符 → 422。"""
+        too_long = "a" * 37
+        with pytest.raises(ValidationError):
+            FundFlowCreate(**self._base(idempotency_key=too_long))
+
+    def test_idempotency_key_invalid_pattern_rejected(self) -> None:
+        """含非法字符（@、空格等）→ 422，防止注入。"""
+        for bad in ("key with space", "key@host", "key/slash", "key.dot"):
+            with pytest.raises(ValidationError):
+                FundFlowCreate(**self._base(idempotency_key=bad))

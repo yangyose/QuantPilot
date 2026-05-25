@@ -22,6 +22,7 @@
     Phase 12 因子溯源   GET /api/v1/signals/{id}/lineage + /attribution/* (API-90~95)
     Phase 13 可观测     GET /metrics + /api/v1/health/scheduler + /health/data
                         + WS /api/v1/pipeline/progress (API-96~101)
+    Phase 14 §14-1     RM-13 deposit 幂等 (API-102~103)
 
 运行条件：
     1. 服务已启动（默认 http://localhost:8000，可用 API_BASE_URL 覆盖）
@@ -1453,4 +1454,70 @@ def test_api_101_ws_pipeline_progress_endpoint_registered(client: httpx.Client) 
     # 但 starlette 实测返回 404。改为多容忍但禁 200/500：
     assert r.status_code in (400, 404, 405, 426), (
         f"WS 端点对 HTTP GET 应返回 4xx upgrade-required，实际 {r.status_code}"
+    )
+
+
+# ── Phase 14 §14-1：RM-13 deposit 幂等冒烟（API-102/103）─────────────────────
+
+
+def test_api_102_deposit_invalid_idempotency_key_422(
+    client: httpx.Client, auth_headers: dict[str, str],
+) -> None:
+    """API-102: POST /account/deposit 含非法 idempotency_key → 422。
+
+    Phase 14 §14-1：pydantic FundFlowCreate.idempotency_key pattern + max_length 校验。
+    不实际写入数据库（422 在 schema 层即拒绝）。
+    """
+    r = client.post(
+        "/api/v1/account/deposit",
+        json={
+            "account_id": 1, "amount": 0.01,
+            "trade_date": "2026-04-10",
+            "idempotency_key": "a" * 37,  # 超 36 字符
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 422, f"超长 key 应 422，实际 {r.status_code}"
+    body = r.json()
+    assert body["code"] == 422
+    assert "errors" in body
+
+
+def test_api_103_deposit_idempotent_same_key(
+    client: httpx.Client, auth_headers: dict[str, str],
+) -> None:
+    """API-103: POST /account/deposit 同 idempotency_key 重复调用 → 同 flow_id + cash 仅加一次。
+
+    Phase 14 §14-1 RM-13 端到端幂等验证。冒烟仅写 0.01 元最小金额，避免污染账户。
+    """
+    import uuid
+
+    key = f"smoke-{uuid.uuid4()}"  # 36 字符 UUID，每次冒烟唯一
+
+    # 取一次基线 cash
+    r0 = client.get("/api/v1/account?account_id=1", headers=auth_headers)
+    if r0.status_code != 200:
+        pytest.skip(f"account_id=1 不存在或未就绪，跳过冒烟：{r0.status_code}")
+    cash_before = float(r0.json()["data"]["cash"] or 0)
+
+    payload = {
+        "account_id": 1, "amount": 0.01,
+        "trade_date": "2026-04-10",
+        "idempotency_key": key,
+        "note": "smoke-test-idempotency",
+    }
+    r1 = client.post("/api/v1/account/deposit", json=payload, headers=auth_headers)
+    r2 = client.post("/api/v1/account/deposit", json=payload, headers=auth_headers)
+
+    assert r1.status_code == 200, f"首次 deposit 应 200：{r1.status_code} {r1.text}"
+    assert r2.status_code == 200, f"重复 deposit 应 200：{r2.status_code} {r2.text}"
+    assert r1.json()["data"]["id"] == r2.json()["data"]["id"], "同 key 必须同 flow_id"
+    assert r1.json()["data"]["idempotency_key"] == key
+    assert r2.json()["data"]["idempotency_key"] == key
+
+    r3 = client.get("/api/v1/account?account_id=1", headers=auth_headers)
+    cash_after = float(r3.json()["data"]["cash"] or 0)
+    # cash 增量必须 = 0.01（重复调用不二次累加）
+    assert cash_after - cash_before == pytest.approx(0.01, abs=1e-6), (
+        f"幂等命中 cash 应仅加 0.01：before={cash_before} after={cash_after}"
     )

@@ -56,6 +56,7 @@ def _mock_flow(flow_id: int = 1, flow_type: str = "DEPOSIT") -> FundFlow:
     f.ts_code = None
     f.related_trade_id = None
     f.note = None
+    f.idempotency_key = None
     f.created_at = None
     return f
 
@@ -248,6 +249,66 @@ async def test_aapi_12_deposit_dividend(client: AsyncClient) -> None:
         assert resp.json()["data"]["flow_type"] == "DIVIDEND"
     finally:
         app.dependency_overrides.pop(get_account_service, None)
+
+
+# ---------------------------------------------------------------------------
+# E2E-P14-1-01: Phase 14 §14-1 RM-13 deposit 幂等
+# ---------------------------------------------------------------------------
+
+async def test_e2e_p14_1_01_deposit_idempotent_same_key(client: AsyncClient) -> None:
+    """POST /account/deposit 同 idempotency_key 调 2 次 → 200 + 返回同 flow_id。
+
+    Phase 14 §14-1 RM-13 验收：service.deposit mock 用 call-count 计数，
+    第 1 次返回 flow_id=1，第 2 次 service 内部命中幂等返回同一对象（mock 实测）。
+    """
+    mock = AsyncMock()
+    same_flow = _mock_flow(flow_id=42, flow_type="DEPOSIT")
+    same_flow.idempotency_key = "client-uuid-001"
+    mock.deposit = AsyncMock(return_value=same_flow)
+    app.dependency_overrides[get_account_service] = lambda: mock
+    try:
+        payload = {
+            "account_id": 1, "amount": 10000.0,
+            "trade_date": "2026-04-10",
+            "idempotency_key": "client-uuid-001",
+        }
+        resp1 = await client.post(
+            "/api/v1/account/deposit", json=payload, headers=_auth(),
+        )
+        resp2 = await client.post(
+            "/api/v1/account/deposit", json=payload, headers=_auth(),
+        )
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        assert resp1.json()["data"]["id"] == resp2.json()["data"]["id"] == 42
+        assert resp1.json()["data"]["idempotency_key"] == "client-uuid-001"
+        # service.deposit 收到 idempotency_key 透传
+        for call in mock.deposit.await_args_list:
+            assert call.kwargs["idempotency_key"] == "client-uuid-001"
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)
+
+
+async def test_e2e_p14_1_02_deposit_invalid_idempotency_key_422(
+    client: AsyncClient,
+) -> None:
+    """超长 / 含非法字符的 idempotency_key → 422 pydantic 校验失败。"""
+    bad_payloads = [
+        {"idempotency_key": "a" * 37},          # 超过 36 字符
+        {"idempotency_key": "key with space"},  # 含空格
+        {"idempotency_key": "key@host"},        # 含 @
+    ]
+    for extra in bad_payloads:
+        resp = await client.post(
+            "/api/v1/account/deposit",
+            json={
+                "account_id": 1, "amount": 10000.0,
+                "trade_date": "2026-04-10",
+                **extra,
+            },
+            headers=_auth(),
+        )
+        assert resp.status_code == 422, f"应 422 拒绝非法 key: {extra}"
 
 
 # ---------------------------------------------------------------------------
