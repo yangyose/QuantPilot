@@ -446,7 +446,9 @@ P3-1 ~ P3-6
 | **P2-11** | get_summary 缺单测 | ✅ 已修 2026-05-20 | `tests/unit/test_attribution_regression.py::test_ut_p12_b_05` 用合成 2 月 × 4 因子 = 8 行验 months_seen 去重 + cum_beta 累加 + avg_r_squared 单月计一次 |
 | **P1-2 严格交易日** | rolling_icir + lookback 改交易日 | ⏸ Phase 14 §14-2 | **充分理由**：与 R14-P2-4 同源，5y candidate_pool 回填同批改两处更经济 |
 | **P2-1 春节假期边界** | window_lo/hi 跨节假日小概率丢样本 | ⏸ Phase 14 §14-2 | **充分理由**：随严格交易日切换自动解决 |
-| **P2-2 ~ P2-7** | 字段名硬编码 / batch 分片预案 / 等冗余 | ⏸ Phase 14 / 14 实施期 | 同源（依赖 Phase 14 历史回算）|
+| **P2-3 batch 分片预案** | attribution_repository docstring 32767 注释 | ✅ 2026-05-26 Phase 14 §14-8 | `data/attribution_repository.py` 模块 docstring 顶部加 V1.0 ≤ 1200 行未达 32767 限制 + N × 4 ≥ 4000 行应启用 `_BATCH_SIZE=500` 循环防御 |
+| **P2-2 / P2-4 ~ P2-7** | 字段名硬编码 / 其余 | ⏸ V1.5+ | 评审定级"不阻塞 V1.0"，留 V1.5 重构期一并处理 |
+| **AttrBackfill** | AttributionService 日级历史回填脚本 | ✅ 2026-05-26 Phase 14 §14-8 | `scripts/backfill_attribution_history.py` + INT-P14-8-01/02 集成测试；`AttributionService.run_monthly` 月末批量调用支持 5y × ~60 month_end 回填 |
 | **P3-1 ~ P3-6** | 建议项不阻塞 | 已记录 | 按需穿插或 Phase 15 RC |
 
 ### 收口验证（2026-05-20 P1 + 高价值 P2 收口后）

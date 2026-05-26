@@ -645,6 +645,8 @@ else:
 
 ## 10. §14-8：AttrBackfill + asyncpg 32767 注释
 
+> **实施状态：✅ 完成 2026-05-26**（commit 待补；2 INT-P14-8 全 PASS；scripts/backfill_attribution_history.py 交付 + attribution_repository docstring 32767 防御注释；回归 unit+e2e 570 + integration 128 + ruff 0 error）
+
 > **注**：评审 R12-P1-2（AttributionService 严格交易日）已在 Phase 13 启动核查阶段交付，**不重列入本 phase scope**（见 §1.3 + §7.1 实证核查）。本节仅含 AttrBackfill + 32767 注释 2 项。
 
 依据：`docs/reviews/phase12_implementation_review_2026-05-20.md` §4 P2-2/P2-3。
