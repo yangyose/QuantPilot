@@ -174,7 +174,66 @@ async def test_window_dates_passed_to_repo() -> None:
         factor="ma_alignment",
         state="UPTREND",
     )
-    # 272 日历日 ≈ 9 个月；20 日历日 ≈ 3 周
+    # 旧路径（无 calendar 注入）：272 日历日 ≈ 9 个月；20 日历日 ≈ 3 周
+    # 【降级说明】Phase 14 §14-5：未注入 calendar 时回退到日历日窗口（兼容旧测试）；
+    # 生产路径全部通过构造器注入 TradingCalendar 走严格交易日窗口（见
+    # test_window_dates_use_strict_trade_days_when_calendar_set）。
     from datetime import timedelta
     assert captured["end"] == t - timedelta(days=20)
     assert captured["start"] == t - timedelta(days=272)
+
+
+# ============================================================
+# Phase 14 §14-5：rolling_icir_state 改严格交易日窗口
+# ============================================================
+
+
+async def test_p14_5_01_window_dates_use_strict_trade_days_when_calendar_set() -> None:
+    """UT-P14-5-01：注入 TradingCalendar → 窗口端点严格按交易日推算。
+
+    断言 service 调用 calendar.get_prev_trade_date(trade_date, n=20) 拿到 end，
+    再调用 calendar.get_prev_trade_date(end, n=252) 拿到 start，
+    且最终 repo.get_ic_daily_window 收到的 start/end 与 calendar 返回值一致。
+    """
+    captured: dict = {}
+
+    async def _capture(session, *, strategy, factor, state, start_date, end_date):
+        captured["start"] = start_date
+        captured["end"] = end_date
+        return _mk_rows([])
+
+    # mock TradingCalendar：仅捕获 get_prev_trade_date 调用顺序与参数
+    calls: list[tuple[date, int]] = []
+    fake_end = date(2026, 4, 15)        # mock: t - 20 trade days
+    fake_start = date(2025, 4, 11)      # mock: fake_end - 252 trade days
+
+    class _MockCalendar:
+        def get_prev_trade_date(self, d: date, n: int = 1) -> date:
+            calls.append((d, n))
+            if len(calls) == 1:
+                # 第一次：t - 20 → 返回 fake_end
+                return fake_end
+            # 第二次：fake_end - 252 → 返回 fake_start
+            return fake_start
+
+    service = FactorMonitorService(
+        session=AsyncMock(),
+        engine=FactorMonitorEngine(),
+        calendar=_MockCalendar(),
+    )
+    service._repo = SimpleNamespace(get_ic_daily_window=_capture)
+
+    t = date(2026, 5, 14)
+    await service.rolling_icir_state(
+        session=AsyncMock(),
+        trade_date=t,
+        strategy="trend",
+        factor="ma_alignment",
+        state="UPTREND",
+    )
+
+    # calendar 被调用 2 次：先 (t, 20) 拿 end，再 (end, 252) 拿 start
+    assert calls == [(t, 20), (fake_end, 252)]
+    # repo 收到的窗口与 calendar 返回值一致（严格交易日）
+    assert captured["end"] == fake_end
+    assert captured["start"] == fake_start

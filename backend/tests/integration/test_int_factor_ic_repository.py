@@ -15,6 +15,7 @@ from datetime import date, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import (
     FactorICRepository,
     ICAggregateRow,
@@ -255,3 +256,99 @@ async def test_int_p11_ic_05_strategy_weights_upsert_and_distinct(
     earlier_map = {r.strategy: r for r in earlier}
     assert earlier_map["trend"].trade_date == feb
     assert earlier_map["trend"].weights_source == "default_matrix"
+
+
+# ============================================================
+# INT-P14-5-01：rolling_icir_state 严格交易日窗口（跨周末校验）
+# ============================================================
+async def test_int_p14_5_01_strict_trade_day_window_skips_weekends(
+    db_session: AsyncSession,
+) -> None:
+    """Phase 14 §14-5：注入真 TradingCalendar 后，窗口端点严格按交易日推算
+    （跳过周末），与旧路径（日历日近似）的窗口边界不同。
+
+    构造：trade_date t = 2025-12-31（周三）；真 calendar = [t-380d, t+30d]
+    范围内的所有工作日（weekday < 5）作为交易日代理。
+
+    断言：
+    - 严格交易日：end = t - 20 trade days；start = end - 252 trade days
+    - 由于跳过周末，end 应早于 t - 20 calendar days（更早 ~8 天 = 4 周末×2）
+    - start 应早于 end - 252 calendar days（更早 ~100 天 = 50 周末×2）
+    - 在 [start, end] 窗口内写满 80 条 IC daily（每个交易日一条）→ snapshot 非 None
+    - 用旧路径（calendar=None）的窗口 [t-272d, t-20d] 严格更窄 → sample_size 不同
+    """
+    import numpy as np
+
+    repo = FactorICRepository()
+    t = date(2025, 12, 31)  # 周三
+
+    # 构造真 TradingCalendar：t-380 天到 t+30 天范围内的所有工作日
+    cal_start = t - timedelta(days=380)
+    cal_end = t + timedelta(days=30)
+    weekdays = [
+        cal_start + timedelta(days=i)
+        for i in range((cal_end - cal_start).days + 1)
+        if (cal_start + timedelta(days=i)).weekday() < 5
+    ]
+    calendar = TradingCalendar(weekdays)
+
+    # 验证窗口端点：严格交易日 vs 日历日近似
+    strict_end = calendar.get_prev_trade_date(t, n=20)
+    strict_start = calendar.get_prev_trade_date(strict_end, n=252)
+    legacy_end = t - timedelta(days=20)
+    legacy_start = t - timedelta(days=272)
+
+    # 严格 end ≤ 旧 end - 4天（4 周末×2 = 8 天提前，给点宽容）
+    assert strict_end < legacy_end
+    assert (legacy_end - strict_end).days >= 7
+    # 严格 start ≤ 旧 start - 80 天（50 周末×2 = 100 天提前，给点宽容）
+    assert strict_start < legacy_start
+    assert (legacy_start - strict_start).days >= 80
+
+    # 用独特前缀避免与其它测试冲突
+    strategy = "p14_5_strict_trend"
+    factor = "p14_5_strict_ma"
+    state = "UPTREND"
+
+    # 在严格窗口 [strict_start, strict_end] 内取前 80 条交易日（密集分布）
+    # 注意：strict_start 起点开始累计 80 条 → 落到严格窗口左半部分
+    # 旧路径窗口 [t-272d, t-20d] 起点偏右 → 拿到的样本数 < 80（验证窗口差异）
+    rng = np.random.default_rng(2026)
+    in_window_dates = [
+        d for d in weekdays if strict_start <= d <= strict_end
+    ][:80]
+    rows = [
+        ICDailyRow(
+            strategy=strategy, factor=factor, state=state,
+            trade_date=d,
+            ic_value=float(rng.normal(0.05, 0.02)),
+            sample_size=200,
+        )
+        for d in in_window_dates
+    ]
+    await repo.upsert_ic_daily(db_session, rows)
+    await db_session.flush()
+
+    # 严格路径（注入 calendar）
+    service_strict = FactorMonitorService(
+        session=db_session, engine=FactorMonitorEngine(), calendar=calendar,
+    )
+    snap_strict = await service_strict.rolling_icir_state(
+        session=db_session, trade_date=t,
+        strategy=strategy, factor=factor, state=state,
+    )
+    assert snap_strict is not None
+    assert snap_strict.sample_size == len(rows)
+
+    # 旧路径（calendar=None）窗口更窄：[t-272d, t-20d] 比严格窗口少覆盖左端 ~80+ 天
+    # 写入的最早行在 strict_start 附近，落到 legacy_start 之外 → sample_size 减少
+    service_legacy = FactorMonitorService(
+        session=db_session, engine=FactorMonitorEngine(),
+    )
+    snap_legacy = await service_legacy.rolling_icir_state(
+        session=db_session, trade_date=t,
+        strategy=strategy, factor=factor, state=state,
+    )
+    # 旧路径只能看到 legacy_start 之后的行 → 严格少于 strict（覆盖性证伪）
+    if snap_legacy is not None:
+        assert snap_legacy.sample_size < snap_strict.sample_size

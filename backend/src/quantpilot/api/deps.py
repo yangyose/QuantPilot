@@ -134,10 +134,20 @@ def get_notification_service(
 
 
 def get_factor_monitor_service(
+    request: Request,
     session: AsyncSession = Depends(get_db),
 ) -> FactorMonitorService:
-    """按请求构造 FactorMonitorService。"""
-    return FactorMonitorService(session, FactorMonitorEngine())
+    """按请求构造 FactorMonitorService。
+
+    Phase 14 §14-5：注入 app.state.calendar 让 rolling_icir_state 走严格交易日
+    窗口（SDD §7.4：252 + 20 交易日）。lifespan 启动失败导致 calendar 缺失时
+    （Tushare token 未配置 + fallback_calendar 也失败）传 None → service 回退到
+    日历日近似 + WARNING 日志。
+    """
+    calendar = getattr(request.app.state, "calendar", None)
+    return FactorMonitorService(
+        session, FactorMonitorEngine(), calendar=calendar,
+    )
 
 
 def get_report_service(session: AsyncSession = Depends(get_db)) -> ReportService:

@@ -79,7 +79,10 @@ class MonthlyScheduler:
 
         async with self._session_factory() as session:
             try:
-                service = FactorMonitorService(session, self._factor_monitor_engine)
+                # Phase 14 §14-5：注入 calendar 让 rolling_icir_state 走严格交易日
+                service = FactorMonitorService(
+                    session, self._factor_monitor_engine, calendar=self._calendar,
+                )
                 notifier: NotificationService | None = None
                 if self._notification_channel is not None:
                     cfg = ConfigService(session, self._redis)
@@ -115,7 +118,10 @@ class MonthlyScheduler:
 
         async with self._session_factory() as session:
             try:
-                service = FactorMonitorService(session, self._factor_monitor_engine)
+                # Phase 14 §14-5：注入 calendar 让 rolling_icir_state 走严格交易日
+                service = FactorMonitorService(
+                    session, self._factor_monitor_engine, calendar=self._calendar,
+                )
                 # R13-P1-2：注入 NotificationService 让 apply_monthly_rebalance
                 # 内部的 check_persistent_decay 能触发 factor_decayed_persistent
                 # 告警（3 个月连续 ICIR < 0.05）。

@@ -523,6 +523,8 @@ SDD §2.1 要求"V1.0 必须在真历史数据上验证 IC 时序量级、多场
 
 ## 7. §14-5：ICIR 窗口改严格交易日（factor_monitor_service）
 
+> **实施状态：✅ 完成 2026-05-26**（commit 待补；UT-P14-5-01 + INT-P14-5-01 全部 PASS；ruff 0 error；unit+e2e 560 + integration 126 回归通过）
+
 ### 7.1 问题
 
 `services/factor_monitor_service.py::rolling_icir_state:416-423`：
@@ -538,9 +540,32 @@ end = trade_date - timedelta(days=20)
 
 ```python
 # factor_monitor_service.py
-end = self._calendar.get_prev_trade_date(trade_date, n=20)
-start = self._calendar.get_prev_trade_date(end, n=252)  # 自 end 再回 252 交易日
+# __init__ 新增 calendar 参数
+def __init__(
+    self,
+    session: AsyncSession,
+    engine: FactorMonitorEngine,
+    repo: FactorICRepository | None = None,
+    calendar: TradingCalendar | None = None,
+) -> None:
+    ...
+    self._calendar = calendar
+
+# rolling_icir_state 内：calendar 注入时走严格交易日，否则回退日历日 + WARNING
+if self._calendar is not None:
+    window_end = self._calendar.get_prev_trade_date(trade_date, n=_ICIR_LAG_DAYS)
+    window_start = self._calendar.get_prev_trade_date(window_end, n=_ICIR_WINDOW_DAYS)
+else:
+    # 【降级说明】兼容旧测试；生产路径已全部注入 calendar
+    logger.warning("rolling_icir_state_calendar_missing ... — falling back to calendar-day")
+    window_end = trade_date - timedelta(days=_ICIR_LAG_DAYS)
+    window_start = trade_date - timedelta(days=_ICIR_WARMUP_DAYS)
 ```
+
+4 处生产路径全部注入：
+- `api/deps.py::get_factor_monitor_service` → 从 `request.app.state.calendar` 取
+- `pipeline/monthly_scheduler.py::run_factor_monitoring` + `run_icir_rebalance` → 用 `self._calendar`
+- `pipeline/daily_pipeline.py::_run_phase11_pipeline` → 用 `self._calendar`
 
 同步：SDD §7.4 措辞确认（v1.4 已写"交易日"，与本批一致，无需改）。
 

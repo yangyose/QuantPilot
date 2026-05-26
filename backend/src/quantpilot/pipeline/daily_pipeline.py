@@ -333,8 +333,10 @@ class DailyPipeline:
             repo = MarketDataRepository(session)
             # Phase 11 §6.3：FactorMonitorService 注入用于 score_universe 内
             # get_active_weights 查询 strategy_weights_history（冷启动 fallback default_matrix）
+            # Phase 14 §14-5：注入 calendar 让 rolling_icir_state 走严格交易日窗口
             factor_monitor = FactorMonitorService(
                 session, FactorMonitorEngine(), FactorICRepository(),
+                calendar=self._calendar,
             )
             scoring_service = ScoringService(
                 repo=repo,

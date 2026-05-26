@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.core.config_defaults import DEFAULT_STRATEGY_WEIGHTS
+from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import (
     FactorICRepository,
     ICAggregateRow,
@@ -129,10 +130,16 @@ class FactorMonitorService:
         session: AsyncSession,
         engine: FactorMonitorEngine,
         repo: FactorICRepository | None = None,
+        calendar: TradingCalendar | None = None,
     ) -> None:
         self._session = session
         self._engine = engine
         self._repo = repo or FactorICRepository()
+        # Phase 14 §14-5：注入 TradingCalendar 让 rolling_icir_state 走严格交易日窗口
+        # （SDD §7.4 定义：252 + 20 交易日 = 272 交易日，而非日历日）。
+        # calendar=None → 回退到旧路径（日历日近似），仅供旧测试兼容；生产路径
+        # （main.py lifespan / MonthlyScheduler / DailyPipeline / deps.py）必须注入。
+        self._calendar = calendar
 
     # ------------------------------------------------------------------ 月末计算
 
@@ -429,13 +436,28 @@ class FactorMonitorService:
             factor:     策略内因子键
             state:      市场状态（UPTREND / DOWNTREND / OSCILLATION）
         """
-        # 窗口右端 = t - lag（20 个交易日 ≈ 20 个日历日，§4.1 简化）
-        # 注：lag 严格意义应是 20 个交易日，但 factor_ic_window_state.trade_date
-        # 本身就是交易日，所以 [t-272d, t-20d] 在日历日维度等价于约 [t-272 交易日,
-        # t-20 交易日]——A 股 252 交易日 ≈ 365 日历日，本实现用日历日是设计简化，
-        # P11-B2 月末批后回算时确保日期定位为交易日即可
-        window_end = trade_date - timedelta(days=_ICIR_LAG_DAYS)
-        window_start = trade_date - timedelta(days=_ICIR_WARMUP_DAYS)
+        # Phase 14 §14-5：窗口端点改严格交易日（SDD §7.4 定义：lag=20 交易日 +
+        # 回看 252 交易日；旧路径用 272/20 日历日 ≈ 188/14 交易日，比规格短约 25%）。
+        # 注入 TradingCalendar 后走严格交易日；未注入则回退到旧日历日路径仅供旧测试
+        # 兼容（生产路径全部已注入）。
+        if self._calendar is not None:
+            window_end = self._calendar.get_prev_trade_date(
+                trade_date, n=_ICIR_LAG_DAYS,
+            )
+            window_start = self._calendar.get_prev_trade_date(
+                window_end, n=_ICIR_WINDOW_DAYS,
+            )
+        else:
+            # 【降级说明】无 calendar 注入 → 回退到日历日近似窗口（约 188 交易日，
+            # 比 SDD §7.4 规格短 25%）。仅供 Phase 11 历史单元测试兼容；生产路径
+            # 必须注入 TradingCalendar 走严格交易日。
+            logger.warning(
+                "rolling_icir_state_calendar_missing strategy=%s factor=%s state=%s "
+                "trade_date=%s — falling back to calendar-day window (Phase 14 §14-5)",
+                strategy, factor, state, trade_date,
+            )
+            window_end = trade_date - timedelta(days=_ICIR_LAG_DAYS)
+            window_start = trade_date - timedelta(days=_ICIR_WARMUP_DAYS)
 
         rows = await self._repo.get_ic_daily_window(
             session,
