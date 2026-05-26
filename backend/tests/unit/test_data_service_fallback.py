@@ -181,3 +181,47 @@ async def test_ut_p13_d_02h_explicit_ts_codes_not_overridden_by_pit() -> None:
     assert passed_codes == explicit
     # repo 未被调用（显式 ts_codes 时跳过 PIT 查询）
     svc._repo.get_active_stock_codes_as_of.assert_not_awaited()
+
+
+# ============================================================
+# Phase 14 §14-7 R13-P2-2：ingest_daily 异常分支也写 exception_occurred metric
+# ============================================================
+
+
+async def test_ut_p14_7_2a_record_exception_metric_writes_value() -> None:
+    """_record_exception_metric 写一行 metric_key='exception_occurred'。"""
+    from unittest.mock import patch
+
+    repo = SimpleNamespace()
+    repo.session = SimpleNamespace()
+
+    with patch(
+        "quantpilot.data.data_quality_repository.DataQualityRepository.upsert_metric",
+        new=AsyncMock(),
+    ) as mock_upsert:
+        await DataService._record_exception_metric(
+            repo, date(2026, 5, 22), "daily_quote", 1.0,
+        )
+        mock_upsert.assert_awaited_once()
+        call_kwargs = mock_upsert.await_args.kwargs
+        assert call_kwargs["metric_date"] == date(2026, 5, 22)
+        assert call_kwargs["data_type"] == "daily_quote"
+        assert call_kwargs["metric_key"] == "exception_occurred"
+        assert call_kwargs["metric_value"] == 1.0
+
+
+async def test_ut_p14_7_2b_record_exception_metric_swallows_failure() -> None:
+    """upsert 抛异常 → _record_exception_metric best-effort 不再抛。"""
+    from unittest.mock import patch
+
+    repo = SimpleNamespace()
+    repo.session = SimpleNamespace()
+
+    with patch(
+        "quantpilot.data.data_quality_repository.DataQualityRepository.upsert_metric",
+        new=AsyncMock(side_effect=RuntimeError("db boom")),
+    ):
+        # 不应抛——只 logger.exception 兜底
+        await DataService._record_exception_metric(
+            repo, date(2026, 5, 22), "daily_quote", 1.0,
+        )

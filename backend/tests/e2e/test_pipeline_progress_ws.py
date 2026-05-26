@@ -18,15 +18,20 @@ from quantpilot.main import app
 
 
 def test_e2e_p13_d_01a_ws_redis_none_returns_error() -> None:
-    """redis=None → 客户端收到 error 帧后连接关闭。"""
+    """redis=None → 客户端收到 error 帧后连接关闭。
+
+    Phase 14 §14-7 R13-P2-5：error 帧统一为 REST 格式 {code, data, msg}。
+    """
     with TestClient(app) as tc:
         original_redis = getattr(app.state, "redis", None)
         app.state.redis = None
         try:
             with tc.websocket_connect("/api/v1/pipeline/progress") as ws:
                 payload = ws.receive_json()
-                assert "error" in payload
-                assert "Redis" in payload["error"]
+                # Phase 14 §14-7 R13-P2-5：统一 {code, data, msg} schema
+                assert payload.get("code") == 503
+                assert payload.get("data") is None
+                assert "Redis" in payload.get("msg", "")
         finally:
             app.state.redis = original_redis
 

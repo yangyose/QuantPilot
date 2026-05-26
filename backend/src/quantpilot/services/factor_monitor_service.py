@@ -779,15 +779,21 @@ class FactorMonitorService:
             # 区分（alert_type=factor_decayed vs factor_decayed_persistent）。
             # notifier=None 时 check_persistent_decay 内部不 await notifier（直接
             # 返回 bool），不抛异常 → MonthlyScheduler 注入 NotificationService。
+            # Phase 14 §14-7 R13-P2-3：累积命中持续告警的 (strategy, factor, state)
+            # 三元组，后续单月告警路径（offline_decisions R1/R2/R3 触发的告警）
+            # 通过该集合跳过同月重复告警（同月用户体感 2 条 → 1 条）。
+            persistent_decay_hits: set[tuple[str, str, str]] = set()
             for strategy, snap in snapshots.items():
                 try:
-                    await self.check_persistent_decay(
+                    persistent_hit = await self.check_persistent_decay(
                         session=session,
                         strategy=strategy, factor=strategy, state=state,
                         icir_now=float(snap.icir),
                         notifier=notifier,
                         as_of=month_end_date,
                     )
+                    if persistent_hit:
+                        persistent_decay_hits.add((strategy, strategy, state))
                 except Exception:
                     logger.exception(
                         "check_persistent_decay_failed state=%s strategy=%s",
@@ -837,6 +843,34 @@ class FactorMonitorService:
                 session, as_of_date=month_end_date,
                 strategy_factor_states=sfs_list,
             )
+
+            # Phase 14 §14-7 R13-P2-3：R1/R2/R3 单月告警（best-effort）。
+            # 命中持续告警的 (strategy, factor, state) 跳过同月单月告警，避免用户
+            # 24h 内收到 factor_decayed_persistent + factor_decayed_<rule> 两条
+            # 同源通知（_is_duplicate 按 alert_type 区分会让两条都发）。
+            if notifier is not None:
+                for sfs, decision in offline_decisions.items():
+                    action = decision.get("action")
+                    if action in ("offline", "halve", "warn"):
+                        strategy_n, factor_n, state_n = sfs
+                        if sfs in persistent_decay_hits:
+                            logger.info(
+                                "single_month_alert_suppressed_by_persistent "
+                                "strategy=%s factor=%s state=%s rule=%s",
+                                strategy_n, factor_n, state_n,
+                                decision.get("rule"),
+                            )
+                            continue
+                        try:
+                            await notifier.notify_factor_alert(
+                                f"factor_decayed_{decision.get('rule', 'rule')}",
+                                strategy_n, factor_n,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "single_month_alert_failed strategy=%s factor=%s "
+                                "state=%s", strategy_n, factor_n, state_n,
+                            )
 
             # 5. 决策权重：ICIR 加权 + 应用下线规则；冷启动 fallback
             positive_icirs = {

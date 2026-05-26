@@ -334,12 +334,12 @@ if app.state.redis is not None:
 | P1-2 | P1 | apply_monthly_rebalance 接入 check_persistent_decay | Phase 13 补丁批 / 本周内 | ✅ 2026-05-22 |
 | P1-3 | P1 | _notify_pipeline_failure 改 notify_health_alert | Phase 13 补丁批 / 本周内 | ✅ 2026-05-22 |
 | P1-4 | P1 | vite.config + frontend/nginx.conf 加 WS proxy | Phase 13 补丁批 / 本周内 | ✅ 2026-05-22 |
-| P2-1 | P2 | DataQualityRepository 改 instance + 取消 repo._session | Phase 14 启动核查 | pending |
-| P2-2 | P2 | ingest_daily 异常分支也写 metric | Phase 14 启动核查 | pending |
-| P2-3 | P2 | apply_monthly_rebalance 优先级控制（持续告警抑制单月）| Phase 14 启动核查 | pending |
-| P2-4 | P2 | API_REQUEST_DURATION 用 route template | Phase 14 启动核查 | pending |
-| P2-5 | P2 | WS error 帧改 `{code, data, msg}` 格式 | Phase 14 启动核查 | pending |
-| P2-6 | P2 | lifespan 加 redis.aclose() | Phase 14 启动核查 | pending |
+| P2-1 | P2 | DataQualityRepository 改 instance + 取消 repo._session | Phase 14 §14-7 | ✅ 2026-05-26 |
+| P2-2 | P2 | ingest_daily 异常分支也写 metric | Phase 14 §14-7 | ✅ 2026-05-26 |
+| P2-3 | P2 | apply_monthly_rebalance 优先级控制（持续告警抑制单月）| Phase 14 §14-7 | ✅ 2026-05-26 |
+| P2-4 | P2 | API_REQUEST_DURATION 用 route template | Phase 14 §14-7 | ✅ 2026-05-26 |
+| P2-5 | P2 | WS error 帧改 `{code, data, msg}` 格式 | Phase 14 §14-7 | ✅ 2026-05-26 |
+| P2-6 | P2 | lifespan 加 redis.aclose() | Phase 14 §14-7 | ✅ 2026-05-26 |
 | P3-1 | P3 | API-101 冒烟改 Upgrade header 探测 | V1.5-A 监控增强批 | pending |
 | P3-2 | P3 | SecretFilter 扫 record.__dict__ | V1.5-A 监控增强批 | pending |
 | P3-3 | P3 | factor_monitor_params config_key 收纳阈值 | V1.5-A 监控增强批 | pending |
@@ -359,6 +359,17 @@ if app.state.redis is not None:
 回归：unit+e2e **552 PASS**（+11 from 541）/ integration **118 PASS** / ruff **0 error** / vue-tsc **0 error**。
 
 P2 6 项归入 Phase 14 启动核查；P3 5 项归入 V1.5-A。
+
+### 8.1.1 Phase 14 §14-7 P2 收口（2026-05-26）
+
+6 项 P2 一次性合入（commit 待补；UT/E2E 9 项新增 + 回归基线 unit+e2e 570 + integration 126 + ruff 0 error）：
+
+- **P2-1** `services/data_service.py`：`_record_validation` 用 `repo.session` 公共属性（MarketDataRepository docstring 允许的"无状态 Repository 传递场景"）替代 `repo._session` 私有访问；`fetch_dividends` 改走 `AccountService(self._repo.session).get_all_positions()` 替代 raw `SELECT Position`，遵守 Phase 7 评审 C-02 + CLAUDE.md §6 Service 层约束
+- **P2-2** `services/data_service.py`：`ingest_daily` 的 daily_quote / financial_data 两个 try/except 加 finally 段调新方法 `_record_exception_metric(repo, trade_date, data_type, value)` 写 `metric_key='exception_occurred'`（异常 → 1 / 正常 → 0）；2 UT 覆盖正常写入 + best-effort 兜底
+- **P2-3** `services/factor_monitor_service.py::apply_monthly_rebalance`：累积 `persistent_decay_hits: set[(strategy, factor, state)]`；接 `check_factor_offline_rules` 后对 R1/R2/R3 action 触发单月 `notifier.notify_factor_alert("factor_decayed_<rule>")`；命中持续告警的三元组 → 仅日志 "single_month_alert_suppressed_by_persistent" 不发；4 UT 覆盖 4 情景（全命中 / 全未命中 / action=ok / 部分命中）
+- **P2-4** `main.py::_api_request_duration_middleware`：`endpoint` 标签改 `request.scope.get("route").path`（route template）替代 raw URL；route 未匹配（404）时 fallback 用 raw path 保留可观测性；2 E2E 覆盖 path-param 模板化 + 404 fallback
+- **P2-5** `api/v1/pipeline.py::ws_pipeline_progress`：Redis 未配置时 error 帧改 `{"code": 503, "data": None, "msg": "..."}` 统一 REST 格式；前端 `components/PipelineProgressCard.vue` 同步加 `data.code !== 0` 优先路径 + 保留旧 `data.error` 兼容路径；既有 E2E 同步断言新格式
+- **P2-6** `main.py` lifespan finally 段加 `await app.state.redis.aclose()` + try/except best-effort；2 E2E 覆盖正常关闭 + aclose 抛异常 best-effort 不阻断
 
 ### 8.2 推迟项前向引用位置（防丢失）
 

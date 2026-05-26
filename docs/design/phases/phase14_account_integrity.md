@@ -603,6 +603,8 @@ else:
 
 ## 9. §14-7：Phase 13 实施评审 P2 6 项
 
+> **实施状态：✅ 完成 2026-05-26**（commit 待补；6 P2 全部收口，新增 9 UT/E2E，回归 unit+e2e 570 + integration 126 + ruff 0 error）
+
 依据：`docs/reviews/phase13_implementation_review_2026-05-22.md` §8 P2 行。
 
 ### 9.1 R13-P2-1：DataQualityRepository 改 instance + 取消 repo._session

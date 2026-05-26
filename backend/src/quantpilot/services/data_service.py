@@ -186,7 +186,11 @@ class DataService:
         from quantpilot.core.metrics import VALIDATOR_ERRORS
         from quantpilot.data.data_quality_repository import DataQualityRepository
 
-        session = repo._session  # Repository 公开 session 访问受限，使用内部属性
+        # Phase 14 §14-7 R13-P2-1：用 repo.session 公共属性替代 repo._session 私有访问。
+        # MarketDataRepository.session docstring 明示该属性"供同 Service 内部把 session
+        # 透传给 ... 其他无状态 Repository"——DataQualityRepository 正是无状态 Repository，
+        # 此处属允许的传递场景（不在 DataService 自身内做 raw session.execute）。
+        session = repo.session
         try:
             await DataQualityRepository.upsert_metric(
                 session,
@@ -220,6 +224,36 @@ class DataService:
                 data_type=data_type, error_type="invalid_rows",
             ).inc(invalid_count)
 
+    @staticmethod
+    async def _record_exception_metric(
+        repo: MarketDataRepository,
+        trade_date: date,
+        data_type: str,
+        value: float,
+    ) -> None:
+        """Phase 14 §14-7 R13-P2-2：ingest_daily 异常分支也写一行
+        ``metric_key='exception_occurred'`` 占位（value=1 异常 / value=0 正常完成），
+        让 /health/data.recent_violations 即使在 fetch 抛异常时也能看到当日数据信号。
+
+        失败 best-effort，不抛——本身只是观测埋点。
+        """
+        from quantpilot.data.data_quality_repository import DataQualityRepository
+
+        try:
+            await DataQualityRepository.upsert_metric(
+                repo.session,
+                metric_date=trade_date,
+                data_type=data_type,
+                metric_key="exception_occurred",
+                metric_value=value,
+                details=None,
+            )
+        except Exception:
+            logger.exception(
+                "exception_metric_write_failed: data_type=%s trade_date=%s",
+                data_type, trade_date,
+            )
+
     async def ingest_daily(
         self,
         trade_date: date,
@@ -251,6 +285,11 @@ class DataService:
             raise ValueError(f"{trade_date} is not a trading date")
 
         # ── 1. 日线行情 ──────────────────────────────────────────────────────
+        # Phase 14 §14-7 R13-P2-2：try/except 外层 finally 兜底写一行
+        # exception_occurred metric（异常路径 → 1；正常完成 → 0），保证 /health/data
+        # 在 daily_quote fetch 抛异常时也能看到该日数据质量信号（原实现只在 try
+        # 内 _record_validation 写 metric，异常分支 metric 完全缺失）。
+        daily_quote_exception_value = 0.0
         try:
             quote_df = await self._fetch_daily_quotes_with_fallback(trade_date)
             # 历史回填时注入 namechange 缓存，按 PIT 还原 is_st（避免所有日期 is_st=False）
@@ -284,8 +323,14 @@ class DataService:
         except Exception as exc:
             errors.append(f"daily_quotes error: {exc}")
             logger.exception("daily_quotes_fetch_failed", extra={"trade_date": str(trade_date)})
+            daily_quote_exception_value = 1.0
+        finally:
+            await self._record_exception_metric(
+                repo, trade_date, "daily_quote", daily_quote_exception_value,
+            )
 
         # ── 2. 财务数据（PIT，as_of_date=trade_date）────────────────────────
+        financial_exception_value = 0.0
         try:
             fin_df = await self._adapter.fetch_financial_data(as_of_date=trade_date)
             vr_fin = self._validator.validate_financial_data(fin_df, as_of_date=trade_date)
@@ -306,8 +351,13 @@ class DataService:
                 financial_count = await repo.upsert_financial_data(valid_fin_df)
         except Exception as exc:
             errors.append(f"financial_data error: {exc}")
+            financial_exception_value = 1.0
             logger.exception(
                 "financial_data_fetch_failed", extra={"trade_date": str(trade_date)}
+            )
+        finally:
+            await self._record_exception_metric(
+                repo, trade_date, "financial_data", financial_exception_value,
             )
 
         if not _skip_indexes:
@@ -607,9 +657,6 @@ class DataService:
         数据源：TushareAdapter.fetch_dividend_data(trade_date)
         仅处理 ex_date == trade_date 的记录（精确日期匹配）。
         """
-        from sqlalchemy import select
-
-        from quantpilot.models.account import Position
         from quantpilot.services.account_service import AccountService
 
         df = await self._adapter.fetch_dividend_data(trade_date)
@@ -617,11 +664,11 @@ class DataService:
             logger.info("fetch_dividends_skip: no dividend data for %s", trade_date)
             return 0
 
-        # 取所有账户持仓（跨账户）
-        session = self._repo._session
-        positions: list[Position] = list(
-            (await session.execute(select(Position))).scalars().all()
-        )
+        # Phase 14 §14-7 R13-P2-1：取所有账户持仓改走 AccountService.get_all_positions()，
+        # 不再 self._repo._session.execute(select(Position))；CLAUDE.md §6 + Phase 7 评审
+        # C-02 + repository.py session docstring 均禁止 Service 自身 raw session.execute。
+        account_service = AccountService(self._repo.session)
+        positions = await account_service.get_all_positions()
         if not positions:
             return 0
 
@@ -630,8 +677,6 @@ class DataService:
         for p in positions:
             if p.shares > 0:
                 holding_map.setdefault(p.ts_code, []).append((p.account_id, p.shares))
-
-        account_service = AccountService(session)
         processed = 0
 
         for _, row in df.iterrows():

@@ -45,7 +45,17 @@ const statusColor = computed(() => {
 onMounted(() => {
   wsClient = new WebSocketClient('/api/v1/pipeline/progress')
   wsClient.onMessage((data) => {
-    const d = data as Partial<PipelineProgress> & { error?: string }
+    // Phase 14 §14-7 R13-P2-5：WS error 帧统一为 REST 格式 {code, data, msg}；
+    // 旧 {error: string} 兜底保留兼容（虽然后端已不再发送旧 schema）。
+    const d = data as Partial<PipelineProgress> & {
+      error?: string
+      code?: number
+      msg?: string
+    }
+    if (typeof d.code === 'number' && d.code !== 0) {
+      wsError.value = d.msg ?? `推送异常 code=${d.code}`
+      return
+    }
     if (d.error) {
       wsError.value = d.error
       return

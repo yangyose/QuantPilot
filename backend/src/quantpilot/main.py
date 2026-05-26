@@ -143,6 +143,15 @@ async def lifespan(app: FastAPI):
         app.state.scheduler.shutdown(wait=False)
         logger.info("scheduler_stopped")
 
+    # Phase 14 §14-7 R13-P2-6：lifespan shutdown 释放 Redis client，避免多 worker
+    # 启停 + hot reload 下连接泄漏（best-effort：失败仅 warn 不阻断关闭流程）。
+    if getattr(app.state, "redis", None) is not None:
+        try:
+            await app.state.redis.aclose()
+            logger.info("redis_closed")
+        except Exception:
+            logger.warning("redis_close_failed", exc_info=True)
+
 
 app = FastAPI(
     title="QuantPilot",
@@ -181,9 +190,15 @@ async def _api_request_duration_middleware(request, call_next):
         raise
     finally:
         elapsed = time.perf_counter() - started
-        # endpoint 用 path（V1.0 不做 path templating，标签维度可控）
+        # Phase 14 §14-7 R13-P2-4：endpoint 用 route template（如
+        # /api/v1/signals/{signal_id}/lineage）替代 raw URL（如
+        # /api/v1/signals/123/lineage），避免 Prometheus series 基数爆炸（每
+        # signal_id 一个独立 time series）。route 未匹配（404）时 fallback
+        # 用 raw path 保留可观测性。
+        route = request.scope.get("route")
+        endpoint_label = getattr(route, "path", None) or path
         API_REQUEST_DURATION.labels(
-            endpoint=path, method=request.method, status=str(status_code),
+            endpoint=endpoint_label, method=request.method, status=str(status_code),
         ).observe(elapsed)
     return response
 

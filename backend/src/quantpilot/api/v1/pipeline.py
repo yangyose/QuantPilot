@@ -153,8 +153,11 @@ async def ws_pipeline_progress(websocket: WebSocket) -> None:
     await websocket.accept()
     redis = getattr(websocket.app.state, "redis", None)
     if redis is None:
+        # Phase 14 §14-7 R13-P2-5：WS error 帧统一为 REST API 响应格式
+        # {code, data, msg}，避免前端为 WS 单独维护一套兼容 schema。
+        # （前端 PipelineProgressCard 同批改读 data.code===503 + data.msg。）
         await websocket.send_json(
-            {"error": "Redis 未初始化，进度推送不可用"}
+            {"code": 503, "data": None, "msg": "Redis 未初始化，进度推送不可用"}
         )
         await websocket.close()
         return
