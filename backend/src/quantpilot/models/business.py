@@ -1,5 +1,6 @@
 from datetime import date, datetime
 
+import sqlalchemy as sa
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
@@ -216,6 +217,14 @@ class FactorICWindowState(Base):
     ic_ci_high: Mapped[float | None] = mapped_column(Numeric(8, 4))
     t_stat: Mapped[float | None] = mapped_column(Numeric(8, 4))
     half_life: Mapped[int | None] = mapped_column(Integer)
+    # Phase 14 §14-6：row_type 区分 daily / aggregate 行（共表拆分方案 A）。
+    # 旧行（alembic 0014 升级前）：icir IS NOT NULL → 'aggregate'，否则 'daily'。
+    # 新行：upsert_ic_daily → 'daily'；upsert_ic_aggregate → 'aggregate'。
+    # partial unique index uq_factor_ic_window_state_aggregate 在 'aggregate' 行
+    # 强制 (strategy, factor, state, trade_date) 唯一；daily 行仍受全表 UNIQUE 约束。
+    row_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="daily",
+    )
     created_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default="NOW()"
     )
@@ -229,6 +238,14 @@ class FactorICWindowState(Base):
             "idx_factor_ic_window_state_date_strategy",
             "trade_date", "strategy",
             postgresql_ops={"trade_date": "DESC"},
+        ),
+        # Phase 14 §14-6：partial unique on aggregate 行，配合 row_type 列
+        # 让 WHERE row_type='aggregate' 查询走 index-only scan。
+        Index(
+            "uq_factor_ic_window_state_aggregate",
+            "strategy", "factor", "state", "trade_date",
+            unique=True,
+            postgresql_where=sa.text("row_type = 'aggregate'"),
         ),
     )
 

@@ -580,6 +580,8 @@ else:
 
 ## 8. §14-6：factor_ic_window_state 共表拆分评估
 
+> **实施状态：✅ 完成 2026-05-26**（方案 A 落地；alembic 0014 + ORM/Repository 切 row_type 过滤；6 INT-P14-6 全 PASS；测试 DB 已升级到 0014；生产 DB 待 Phase 14 整批收尾统一升级）
+
 ### 8.1 问题
 
 当前 `factor_ic_window_state` 表 daily 行（仅 ic_value/sample_size）+ aggregate 行（icir/CI/t_stat/half_life/...）共表 + 同 UNIQUE 约束 `(strategy, factor, state, trade_date)`，靠 `ic_value/icir IS NOT NULL` 区分行类型。5y × 250 trade_date × 4 strategy × 4 factor × 3 state ≈ 1.2M 行后表膨胀；索引不能加速 `WHERE icir IS NOT NULL` 谓词查询。

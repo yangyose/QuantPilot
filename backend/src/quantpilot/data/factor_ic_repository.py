@@ -95,6 +95,8 @@ class FactorICRepository:
         """
         if not rows:
             return 0
+        # Phase 14 §14-6：写入时显式标记 row_type='daily'（partial unique 在
+        # 'aggregate' 上不约束此类行；既有全表 UNIQUE 仍保证 4-tuple 唯一）
         values = [
             {
                 "strategy": r.strategy,
@@ -103,6 +105,7 @@ class FactorICRepository:
                 "trade_date": r.trade_date,
                 "ic_value": r.ic_value,
                 "sample_size": r.sample_size,
+                "row_type": "daily",
             }
             for r in rows
         ]
@@ -112,6 +115,8 @@ class FactorICRepository:
             set_={
                 "ic_value": stmt.excluded.ic_value,
                 "sample_size": stmt.excluded.sample_size,
+                # 不覆盖 row_type：若同 4-tuple 已存在 aggregate 行（含 ic_value），
+                # 保留 'aggregate' 标记，本日级 upsert 仅更新 ic_value/sample_size
             },
         )
         await session.execute(stmt)
@@ -130,6 +135,8 @@ class FactorICRepository:
         """
         if not rows:
             return 0
+        # Phase 14 §14-6：写入时显式标记 row_type='aggregate'。on_conflict 时
+        # 强制 row_type='aggregate'（即使旧行为 'daily'，aggregate 写入升级行类型）。
         values = [
             {
                 "strategy": r.strategy,
@@ -144,6 +151,7 @@ class FactorICRepository:
                 "ic_ci_high": r.ic_ci_high,
                 "t_stat": r.t_stat,
                 "half_life": r.half_life,
+                "row_type": "aggregate",
             }
             for r in rows
         ]
@@ -159,6 +167,7 @@ class FactorICRepository:
                 "ic_ci_high": stmt.excluded.ic_ci_high,
                 "t_stat": stmt.excluded.t_stat,
                 "half_life": stmt.excluded.half_life,
+                "row_type": stmt.excluded.row_type,
             },
         )
         await session.execute(stmt)
@@ -204,7 +213,11 @@ class FactorICRepository:
         limit: int,
     ) -> list[FactorICWindowState]:
         """取某 (strategy, factor, state) 在 ``trade_date <= as_of`` 范围内最近
-        ``limit`` 行**聚合行**（``icir IS NOT NULL``），按 trade_date 降序排列。
+        ``limit`` 行**聚合行**（``row_type='aggregate'``），按 trade_date 降序排列。
+
+        Phase 14 §14-6：过滤改用 ``row_type='aggregate'`` 替代 ``icir IS NOT NULL``，
+        走 partial unique index uq_factor_ic_window_state_aggregate 的 index-only
+        scan（NULL 谓词不能利用索引）。
 
         供 ``FactorMonitorService.check_factor_offline_rules`` 实施 R1（ICIR<0
         连续 6 月）/ R2（t-stat<1.96 连续 12 月）/ R4（sample_size<60 连续 3 月）
@@ -217,7 +230,7 @@ class FactorICRepository:
                 FactorICWindowState.factor == factor,
                 FactorICWindowState.state == state,
                 FactorICWindowState.trade_date <= as_of,
-                FactorICWindowState.icir.isnot(None),
+                FactorICWindowState.row_type == "aggregate",
             )
             .order_by(FactorICWindowState.trade_date.desc())
             .limit(limit)
@@ -237,10 +250,12 @@ class FactorICRepository:
     ) -> list[FactorICWindowState]:
         """Phase 11 §9.2：GET /factor-quality/ic-history 查询 ICIR 聚合行时序。
 
-        过滤条件均可选；返回 ``icir IS NOT NULL`` 的聚合行，按 trade_date 升序。
+        过滤条件均可选；返回聚合行（Phase 14 §14-6：``row_type='aggregate'``
+        替代 ``icir IS NOT NULL`` 谓词，走 partial unique index 优化），
+        按 trade_date 升序。
         """
         stmt = select(FactorICWindowState).where(
-            FactorICWindowState.icir.isnot(None),
+            FactorICWindowState.row_type == "aggregate",
         )
         if strategy:
             stmt = stmt.where(FactorICWindowState.strategy == strategy)
@@ -265,8 +280,9 @@ class FactorICRepository:
         as_of: date,
     ) -> FactorICWindowState | None:
         """取某 (strategy, factor, state) 在 ``trade_date <= as_of`` 范围内
-        最近一行**聚合行**（``icir IS NOT NULL``），供 B2 Hysteresis 判定 +
-        历史回看。"""
+        最近一行**聚合行**（Phase 14 §14-6：``row_type='aggregate'`` 替代
+        ``icir IS NOT NULL`` 谓词走 partial unique index），供 B2 Hysteresis
+        判定 + 历史回看。"""
         stmt = (
             select(FactorICWindowState)
             .where(
@@ -274,7 +290,7 @@ class FactorICRepository:
                 FactorICWindowState.factor == factor,
                 FactorICWindowState.state == state,
                 FactorICWindowState.trade_date <= as_of,
-                FactorICWindowState.icir.isnot(None),
+                FactorICWindowState.row_type == "aggregate",
             )
             .order_by(FactorICWindowState.trade_date.desc())
             .limit(1)
