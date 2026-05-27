@@ -209,6 +209,8 @@ async def find_fund_flow_by_idempotency(
 
 ## 4. §14-2：5y candidate_pool 历史回填 + ICIR 历史回算
 
+> **实施状态：代码 ✅ 完成 2026-05-27**（commit 待补；scripts/backfill_candidate_pool.py + scripts/backfill_icir_rebalance.py + repo `get_existing_candidate_pool_dates` 交付；UT-P14-2-01/03 + INT-P14-2-01/02 全部 PASS；unit+e2e 577 + integration 136 + ruff 0 error）；**真机回填 50-80h 后台执行 ⏳ 启动中**
+
 ### 4.1 问题
 
 Phase 11 收尾时手动跑 `apply_monthly_rebalance(2026-04-30)` 仅写入 12 行（3 state × 4 strategy），`weights_source` 全 `default_matrix`，因为 ICIR 滚动累积需 ≥ 272 日候选池历史（`ic_window_days=252 + icir_lag_days=20`），而生产 DB 当时只有 2026-02 ~ 2026-05 的 78 天 candidate_pool 数据。

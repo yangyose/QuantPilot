@@ -794,6 +794,28 @@ class MarketDataRepository:
         )
         return {row[0] for row in result.all()}
 
+    async def get_existing_candidate_pool_dates(
+        self, start_date: date, end_date: date,
+    ) -> set[date]:
+        """返回 [start_date, end_date] 区间内 candidate_pool 已写入的 trade_date 集合。
+
+        Phase 14 §14-2：仅查 candidate_pool **单表**（与 `get_fully_ingested_dates`
+        双表交集语义不同）。回填脚本用此判断已存在日 + 跳过，区分语义：
+        - `get_fully_ingested_dates`：daily_quote ∩ financial_data 双表（保护原始数据
+          per-day 原子性，见 Bug 6 / RM-18）
+        - 本方法：仅 candidate_pool 单表（5 步管线产物，是否已算）
+
+        in_pool 状态不参与过滤——当日全市场跑完 ScoringService 后 in_pool=True/False
+        都算"已计算"。
+        """
+        result = await self._session.execute(
+            select(CandidatePool.trade_date).distinct().where(
+                CandidatePool.trade_date >= start_date,
+                CandidatePool.trade_date <= end_date,
+            )
+        )
+        return {row[0] for row in result.all()}
+
     async def get_pool(
         self,
         trade_date: date | None = None,
