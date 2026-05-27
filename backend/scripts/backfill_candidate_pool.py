@@ -273,11 +273,14 @@ async def _main() -> int:
         f"mode: {'force-overwrite' if args.force else 'skip-existing'} ==="
     )
 
-    # 拉日历（前后 30 天 buffer 保护边界查询）
+    # 拉日历（前 120 / 后 30 天 buffer 保护边界查询）：
+    # UniverseFilter 需要 calendar.get_prev_trade_date(today, 60 交易日) → 约 90 日历日；
+    # _PRICE_WINDOW_DAYS=90 + ADX 14 期 warm-up → 取 120 日历日 buffer 保险（覆盖
+    # ~80 交易日，可应对所有依赖前置历史的 engine 路径）。
     adapter = TushareAdapter(token=settings.tushare_token)
     calendar = await TradingCalendar.from_adapter(
         adapter,
-        args.start - timedelta(days=30),
+        args.start - timedelta(days=120),
         args.end + timedelta(days=30),
     )
 

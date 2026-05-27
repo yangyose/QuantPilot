@@ -79,7 +79,15 @@ class MarketStateEngine:
             close=df["close"],
             length=self.adx_period,
         )
-        df["adx"] = adx_df[f"ADX_{self.adx_period}"]
+        # pandas-ta 在输入行数 < adx_period * 2 时返回 None（不抛异常）。
+        # 把 df["adx"] 置 NaN 让下游 identify() 的 valid_mask 把这些日子过滤掉，
+        # 与原 warm-up 行为一致；否则会 TypeError 'NoneType' object is not subscriptable
+        # （2026-05-27 5y 回填早期日 2021-05-13 ~ ~2021-06-01 触发，daily_quote MIN
+        # = 2021-05-13，ADX 14 期需 ~28 行才返回 DataFrame）。
+        if adx_df is None or f"ADX_{self.adx_period}" not in adx_df.columns:
+            df["adx"] = float("nan")
+        else:
+            df["adx"] = adx_df[f"ADX_{self.adx_period}"]
         return df
 
     def determine_raw_state(
