@@ -61,6 +61,11 @@ class BacktestDataBundle:
     pe_pb_history: pd.DataFrame = field(default_factory=pd.DataFrame)
     # B3-3：HS300 后复权累计价（Momentum.rs_6m 真实计算；index=trade_date）
     index_adj_prices: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    # Phase 14 §14-3：5y 月末 rebalance active_weights 时序，键 (state_str, effective_date)。
+    # 值含 weights / weights_source / orthogonalize_order / hysteresis_status；
+    # 主循环用 max(effective_date) <= trade_date AND state 做 PIT 前向查找。
+    # 空 dict → BacktestEngine 走 aggregate_legacy 降级（保留旧 mock 回测兼容）。
+    active_weights_history: dict[tuple[str, date], dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,6 +76,9 @@ class BacktestResult:
     signal_history: list[dict]      # 每日交易记录
     performance: dict               # 绩效报告（SDD 附录 C）
     disclaimer: str                 # SDD §7.7.4 局限性声明
+    # Phase 14 §14-3：聚合分支统计——'real_5step' / 'legacy_fallback' / 'real_5step_failed' /
+    # 'mixed'（多日 + 路径不同时取众数 + 后缀）。供前端展示「本次回测是否走 5 步管线」。
+    pipeline_mode: str = "legacy_fallback"
 
 
 @dataclass
@@ -173,6 +181,8 @@ class BacktestEngine:
         position_snapshots: list[dict] = []
         # V1.0 整改 Batch 3 — B3-2：T+1 撮合用待执行队列（T 日生成 → T+1 日撮合）
         pending_signals: list = []
+        # Phase 14 §14-3：每日 pipeline_mode 统计，最终聚合到 BacktestResult.pipeline_mode
+        pipeline_mode_counter: dict[str, int] = {}
 
         total = len(trade_dates)
         for i, trade_date in enumerate(trade_dates):
@@ -229,6 +239,11 @@ class BacktestEngine:
             market_state = self._get_market_state(data.hs300_history, trade_date)
 
             # ---------- f. 策略评分（B3-3：传入真实 pe_pb_history + index_adj_prices）
+            #            Phase 14 §14-3 改造 1：MarketSnapshot 补 industry / market_cap / beta，
+            #            供 Scorer.aggregate 5 步管线 Step 2（行业 + 市值中性化）使用。
+            strategy_factors: dict[str, pd.DataFrame] = {}
+            strategy_scores_dict: dict[str, list] = {}
+            market_snap: dict = {}
             if len(universe_idx) > 0:
                 td_ts = pd.Timestamp(trade_date)
                 adj_hist = adj_prices.loc[:td_ts].T
@@ -236,6 +251,20 @@ class BacktestEngine:
                 pe_pb_t = self._slice_pe_pb_history_at(data.pe_pb_history, trade_date)
                 # B3-3：index_adj_prices 截至当日（HS300 累计 close）
                 idx_adj_t = self._slice_index_at(data.index_adj_prices, trade_date)
+
+                # §14-3：行业 dict（从 stock_info_t.sw_industry_l1 派生 PIT）
+                industry_map: dict[str, str] = {}
+                if "sw_industry_l1" in stock_info_t.columns:
+                    sw = stock_info_t["sw_industry_l1"].dropna()
+                    industry_map = {str(k): str(v) for k, v in sw.items()}
+
+                # §14-3：market_cap Series（从 quotes_t.float_mkt_cap PIT 切片）
+                market_cap_series: pd.Series | None = None
+                if "float_mkt_cap" in quotes_t.columns:
+                    mc = quotes_t["float_mkt_cap"].dropna()
+                    if not mc.empty:
+                        market_cap_series = mc.astype(float)
+
                 from quantpilot.engine.strategies.base import MarketSnapshot
                 market_snap: MarketSnapshot = {
                     "trade_date": trade_date,
@@ -244,39 +273,87 @@ class BacktestEngine:
                     "financials": financials_t,
                     "pe_pb_history": pe_pb_t,
                     "index_adj_prices": idx_adj_t,
+                    "industry": industry_map,
+                    "market_cap": market_cap_series,
+                    "beta": None,  # V1.0 永远 None，与 ScoringService._build_market_snapshot 一致
                 }
-                strategy_scores_dict: dict[str, list] = {}
+
+                # §14-3 改造 2：策略循环切 compute_strategy_factors（5 步管线入口）
+                #            同时仍保留 s.score 路径以备 legacy_fallback 分支使用
                 for s in self._strategies:
                     try:
-                        score = s.score(universe_idx, market_snap)
-                        strategy_scores_dict[s.name] = score
+                        factor_df = s.compute_strategy_factors(universe_idx, market_snap)
+                        strategy_factors[s.name] = factor_df
                     except Exception:
-                        # B3-9：策略评分失败用 logger.exception（原 logger.debug 静默吞异常）
                         logger.exception(
-                            "backtest_strategy_score_error strategy=%s date=%s",
+                            "backtest_strategy_compute_factors_error strategy=%s date=%s",
                             s, trade_date,
                         )
-            else:
-                strategy_scores_dict = {}
 
-            # ---------- g. 聚合评分 ----------
+            # ---------- g. 聚合评分（§14-3 改造 3：二路径选择） ----------
+            from quantpilot.engine.scorer import WINSORIZE_MIN_SAMPLES
+
+            market_state_str = (
+                market_state.value if hasattr(market_state, "value") else str(market_state)
+            )
+            weights_record = self._lookup_active_weights(
+                trade_date, market_state_str, data.active_weights_history,
+            )
+
             composite_scores: list = []
-            if strategy_scores_dict:
+            day_pipeline_mode = "legacy_fallback"
+
+            if (len(universe_idx) < WINSORIZE_MIN_SAMPLES
+                    or weights_record["weights"] is None
+                    or not strategy_factors):
+                # 降级路径：universe 不足 / active_weights 未就绪 / 因子矩阵全失败
+                # → 走 Phase 4 aggregate_legacy（需 s.score 0-100 输出，临时再算一次）
+                if len(universe_idx) > 0:
+                    for s in self._strategies:
+                        try:
+                            strategy_scores_dict[s.name] = s.score(universe_idx, market_snap)
+                        except Exception:
+                            logger.exception(
+                                "backtest_strategy_score_legacy_error strategy=%s date=%s",
+                                s, trade_date,
+                            )
+                if strategy_scores_dict:
+                    try:
+                        composite_scores = self._scorer.aggregate_legacy(
+                            market_state, strategy_scores_dict,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "backtest_scorer_aggregate_legacy_error date=%s", trade_date,
+                        )
+                        composite_scores = []
+                day_pipeline_mode = "legacy_fallback"
+            else:
+                # 真 5 步路径：直接调既有 Scorer.aggregate（engine 层纯函数）
                 try:
-                    # 【降级说明】Phase 11 §8.1 共内核约束 V1.0 未完整落地：BacktestEngine 内
-                    # 走 Phase 4 aggregate_legacy（避免破坏 mock 集成测试 + 无 PIT market_cap
-                    # 数据源）。下游 composite DataFrame 仍补 Phase 11 字段供 SignalGenerator
-                    # 分位主路径消费。完整接入由 Phase 14 §14-2 承接（含 PIT 市值数据 +
-                    # 真实 ICIR 滚动加权 fallback 链）。
-                    composite_scores = self._scorer.aggregate_legacy(
-                        market_state, strategy_scores_dict
+                    composite_scores = self._scorer.aggregate(
+                        market_state=market_state,
+                        strategy_factors=strategy_factors,
+                        snapshot=market_snap,
+                        weights_runtime=weights_record["weights"],
+                        weights_source=weights_record["weights_source"],
+                        orthogonalize_order=weights_record["orthogonalize_order"],
+                        hysteresis_status=weights_record["hysteresis_status"],
+                        single_strategy_mode=False,
                     )
+                    day_pipeline_mode = "real_5step"
                 except Exception:
-                    # B3-9：scorer.aggregate 失败用 logger.exception
                     logger.exception("backtest_scorer_aggregate_error date=%s", trade_date)
                     composite_scores = []
+                    day_pipeline_mode = "real_5step_failed"
+
+            pipeline_mode_counter[day_pipeline_mode] = (
+                pipeline_mode_counter.get(day_pipeline_mode, 0) + 1
+            )
 
             # 转换为 SignalGenerator 期望的 DataFrame 格式（Phase 11 §5：派生分位字段）
+            # §14-3：real_5step 路径下 CompositeScore 已含真 composite_z / composite_pct_in_market /
+            #       weights_source；legacy_fallback 路径从 composite_score 反推（保持旧行为）。
             if composite_scores:
                 rows = [
                     {
@@ -284,21 +361,29 @@ class BacktestEngine:
                         "composite_score": cs.composite_score,
                         "score_breakdown": cs.score_breakdown,
                         "raw_factors": None,
+                        "composite_z": getattr(cs, "composite_z", None),
+                        "composite_pct_in_market": getattr(
+                            cs, "composite_pct_in_market", None,
+                        ),
+                        "weights_source": getattr(cs, "weights_source", None),
                     }
                     for cs in composite_scores
                 ]
                 composite = pd.DataFrame(rows).set_index("ts_code")
-                # Phase 11 §5 派生字段：composite_pct_in_market = rank(pct=True, asc=False)
-                # composite_z 从 composite_score (0-100) 反推 Φ⁻¹(score/100)（夹到 [0.001, 0.999]）
-                from scipy.stats import norm as _norm
-                clipped = composite["composite_score"].clip(lower=0.1, upper=99.9) / 100.0
-                composite["composite_z"] = clipped.apply(
-                    lambda p: float(_norm.ppf(p)) if pd.notna(p) else None
-                )
-                composite["composite_pct_in_market"] = composite[
-                    "composite_score"
-                ].rank(pct=True, ascending=False)
-                composite["weights_source"] = "default_matrix"
+                # Phase 11 §5 派生字段：若 Scorer.aggregate 未填（aggregate_legacy 路径），
+                # 仍从 composite_score (0-100) 反推 Φ⁻¹(score/100)
+                if composite["composite_z"].isna().all():
+                    from scipy.stats import norm as _norm
+                    clipped = composite["composite_score"].clip(lower=0.1, upper=99.9) / 100.0
+                    composite["composite_z"] = clipped.apply(
+                        lambda p: float(_norm.ppf(p)) if pd.notna(p) else None
+                    )
+                if composite["composite_pct_in_market"].isna().all():
+                    composite["composite_pct_in_market"] = composite[
+                        "composite_score"
+                    ].rank(pct=True, ascending=False)
+                if composite["weights_source"].isna().all():
+                    composite["weights_source"] = "default_matrix"
             else:
                 composite = pd.DataFrame()
 
@@ -391,12 +476,23 @@ class BacktestEngine:
         )
         daily_positions_df = pd.DataFrame(position_snapshots)
 
+        # §14-3：聚合每日 pipeline_mode 为单一标签（众数 + 多种共存时加 mixed_ 前缀）
+        if pipeline_mode_counter:
+            modes_sorted = sorted(
+                pipeline_mode_counter.items(), key=lambda kv: kv[1], reverse=True,
+            )
+            top_mode = modes_sorted[0][0]
+            agg_mode = f"mixed_{top_mode}" if len(modes_sorted) > 1 else top_mode
+        else:
+            agg_mode = "legacy_fallback"
+
         return BacktestResult(
             daily_nav=daily_nav_series,
             daily_positions=daily_positions_df,
             signal_history=all_trade_records,
             performance=performance,
             disclaimer=DISCLAIMER,
+            pipeline_mode=agg_mode,
         )
 
     # ------------------------------------------------------------------
@@ -630,6 +726,35 @@ class BacktestEngine:
                 sig.reason = (sig.reason + " | " + msg) if sig.reason else msg
             result.append(sig)
         return result
+
+    def _lookup_active_weights(
+        self,
+        trade_date: date,
+        market_state_str: str,
+        history: dict[tuple[str, date], dict],
+    ) -> dict:
+        """Phase 14 §14-3：前向查找 active_weights snapshot。
+
+        条件：``max(effective_date) <= trade_date AND state == market_state_str``。
+
+        找不到（state 不存在 / 全部 effective_date 都晚于 trade_date / history 空）
+        → 返回 ``{"weights": None, "weights_source": "default_matrix",
+        "orthogonalize_order": [], "hysteresis_status": "stable"}`` sentinel
+        触发主循环 §14-3 改造 3 的降级路径（aggregate_legacy）。
+        """
+        candidates = [
+            (eff_date, rec) for (state, eff_date), rec in history.items()
+            if state == market_state_str and eff_date <= trade_date
+        ]
+        if not candidates:
+            return {
+                "weights": None,
+                "weights_source": "default_matrix",
+                "orthogonalize_order": [],
+                "hysteresis_status": "stable",
+            }
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
 
     @staticmethod
     def _calc_nav(

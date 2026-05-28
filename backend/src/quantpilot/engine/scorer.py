@@ -48,6 +48,11 @@ SCORE_COLUMN_MAP: dict[str, str] = {
 
 _STRATEGY_KEYS = ("trend", "momentum", "mean_reversion", "value")
 
+# Phase 14 §14-3：5 步管线 Winsorize 横截面最小样本（< 30 → BacktestEngine 走
+# aggregate_legacy 降级）。30 是 Phase 11 设计估计值；ScoringService.score_universe
+# 未来若需同等门槛检查可同源 import。
+WINSORIZE_MIN_SAMPLES = 30
+
 
 @dataclass(frozen=True)
 class CompositeScore:

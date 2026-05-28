@@ -204,6 +204,8 @@ class BacktestService:
                 "is_st": bool(r.is_st),
                 "limit_up": bool(r.limit_up),
                 "limit_down": bool(r.limit_down),
+                # Phase 14 §14-3：market_cap 中性化所需 PIT 流通市值
+                "float_mkt_cap": float(r.float_mkt_cap) if r.float_mkt_cap is not None else None,
             } for r in dq_rows])
 
             # B3-8：DataValidator 校验 + 剔除无效行
@@ -322,6 +324,42 @@ class BacktestService:
             hs300_history = pd.DataFrame()
             index_adj_prices = pd.Series(dtype=float)
 
+        # ── 5. active_weights_history（Phase 14 §14-3）─────────────────────
+        # 注：实际 ORM `StrategyWeightsHistory` schema 是一行一 (state, strategy, trade_date) +
+        # weight_used 标量；本处把若干行 group by (state, trade_date) 组装成 dict（与
+        # FactorMonitorService.get_active_weights:711 的运行时组装路径同源；orthogonalize_order
+        # 由 weights 降序派生，未持久化列）。设计 v1.2 §5.2.2 的 (market_state, effective_date)/
+        # weights_json 是模板误判，本处按真 schema 实现。
+        from quantpilot.models.business import StrategyWeightsHistory
+
+        sw_rows = (await self._session.execute(
+            select(StrategyWeightsHistory)
+            .where(StrategyWeightsHistory.trade_date <= config.end_date)
+            .order_by(
+                StrategyWeightsHistory.state,
+                StrategyWeightsHistory.trade_date,
+                StrategyWeightsHistory.strategy,
+            )
+        )).scalars().all()
+        active_weights_history: dict[tuple[str, date], dict] = {}
+        for r in sw_rows:
+            key = (r.state, r.trade_date)
+            slot = active_weights_history.setdefault(
+                key,
+                {
+                    "weights": {},
+                    "weights_source": r.weights_source,
+                    "orthogonalize_order": [],
+                    "hysteresis_status": r.hysteresis_status,
+                },
+            )
+            slot["weights"][r.strategy] = float(r.weight_used)
+        # orthogonalize_order：与生产 get_active_weights:711 一致——按 weight 降序
+        for slot in active_weights_history.values():
+            slot["orthogonalize_order"] = sorted(
+                slot["weights"], key=lambda s: slot["weights"][s], reverse=True,
+            )
+
         return BacktestDataBundle(
             adj_prices=adj_prices,
             stock_info=stock_info,
@@ -330,6 +368,7 @@ class BacktestService:
             daily_quotes=daily_quotes,
             pe_pb_history=pe_pb_history,
             index_adj_prices=index_adj_prices,
+            active_weights_history=active_weights_history,
         )
 
 
