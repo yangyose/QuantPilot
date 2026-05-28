@@ -496,6 +496,8 @@ def _lookup_active_weights(
 
 ## 6. §14-4：回测引擎 §2.1 ICIR 校准最小集
 
+> **实施状态（代码 + UT 部分）：✅ 完成 2026-05-28**（commit 待补；engine/diagnostics/ic_aggregator.py 纯函数 + 3 个 CLI 脚本 + UT-P14-4-01/02 + compute_t_stat 边界 10 项全 PASS；ruff 0 error；unit+e2e 592 回归通过）。**真机 DoD（真机-P14-4-1/2/3）：等 §14-2 5y 回填完成后跑**——3 个脚本均依赖 `factor_ic_window_state` IC_daily 行存在（§14-2 `backfill_icir_rebalance.py` 跑完后才有 ≥272d IC_daily 序列），slippage_sensitivity 还依赖 5y daily_quote + strategy_weights_history（也是 §14-2 产出）。
+
 ### 6.1 问题
 
 SDD §2.1 要求"V1.0 必须在真历史数据上验证 IC 时序量级、多场景对比、滑点敏感性"；Phase 11 收尾仅做了 4 trade_date × 3 state 跨制度抽样，未做时序量级 + 多场景对比。
