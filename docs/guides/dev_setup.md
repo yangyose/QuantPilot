@@ -262,12 +262,48 @@ uv run alembic upgrade head
 | 集成测试 | `backend/tests/integration/` | ~85 | PostgreSQL | ~30 s |
 | 冒烟测试 | `backend/tests/smoke/` | ~125 | 服务运行中 + `API_PASSWORD` | ~20 s |
 
-### 6.1 自动测试钩子
+### 6.1 Claude Code 工程化资产（hooks / skills）
 
-`.claude/hooks/auto_test.sh` 监听 `backend/**/*.py` 变更：
-- 始终跑：`unit/` + `e2e/`（秒级反馈）
-- 仅在编辑 `alembic/` 或 `tests/integration/` 且 PostgreSQL 容器在线时：跑 `integration/`
-- 失败时结果回传给 Claude，自动进入调试
+`.claude/` 下的 hooks 与 skills **已入库**，clone 到新机器即随仓库带过来。但它们有运行时依赖，换机后需按本节确认可用，否则会**静默失效**（比没有更危险——给人"有守卫"的错觉）。
+
+**入库 vs 本机**：
+- 入库（共享）：`.claude/settings.json`（hook 注册）、`.claude/hooks/*`、`.claude/skills/*`
+- 本机（gitignore）：`.claude/settings.local.json`（个人权限/偏好，不随仓库）
+
+**已配置的 hooks**：
+- `auto_test.sh`（PostToolUse: Edit|Write）：编辑 `backend/**/*.py` 后自动跑 `unit/`+`e2e/`；编辑 `alembic/` 或 `tests/integration/` 且 PG 容器在线时加跑 `integration/`；失败回传 Claude 自动调试。
+- `guard.sh` + `guard.py`（PreToolUse: Bash|Edit|Write）：强制宪法红线——生产破坏性动作(prod 信号 AND 破坏性)弹确认、`git add -A/./--all` 拒绝、测试文件写入 `@pytest.mark.anyio` 拒绝。
+
+**已配置的 skills**（对话中按 description 自动触发，也可 `/<name>` 显式调）：
+- `prod-healthcheck`：生产体检/补跑/回填 OOM 恢复运行手册（含「换机适配」段）。
+- `phase-kickoff` / `phase-closeout`：Phase 启动/收尾核查（对应本文 §5 + 项目 CLAUDE.md §5）。
+
+#### 换机后必做：依赖与重定向校验
+
+1. **Python 解释器**（hooks 解析 JSON 依赖）：需 PATH 上有可用的 `python` / `py` / `python3` 之一。
+   ⚠️ 本机 `python3` 是坏的 Windows Store 别名桩（`python3 --version` 输出 `Python` 后 exit 49），故两个 hook 都按 `python→py→python3` 顺序探测**真能跑**的解释器；新机器若三者全无，hook 会 fail-open 放行（不阻断，但红线守卫等于失效）——确保至少装一个真 Python 3。
+2. **Shell**：hook 是 `.sh`，非 Windows 原生跑；Windows 上由 Claude Code 经 Git Bash 执行（须装 Git for Windows）。
+3. **guard.py 生产信号重定向**（**安全关键**）：`guard.py` 靠正则识别"是否针对生产"——
+   `docker-compose.prod.yml | .env.prod | quantpilot-(db|backend|redis|nginx)-1`。
+   容器名 = compose 项目名（默认 = 仓库目录名小写）+ 服务名。**若 clone 到非 `QuantPilot` 目录、或设了 `COMPOSE_PROJECT_NAME`，容器前缀变化 → 正则漏判 → 生产破坏性动作不再弹确认**。换机后务必核对并改 `guard.py` 里的前缀正则（或统一项目名）。
+4. **prod-healthcheck skill**：按其文内「换机适配」段重定向容器名（动态发现）+ 确认 `.env.prod` 凭据。
+
+#### 验证 hooks 可用（人工在终端跑——hook 只拦 Claude 的工具调用，不拦你手敲的命令）
+
+```bash
+# guard.py：三条规则各验一例
+echo '{"tool_name":"Bash","tool_input":{"command":"docker exec quantpilot-db-1 psql -c \"DROP TABLE x\""}}' | python .claude/hooks/guard.py   # 期望输出 permissionDecision=ask
+echo '{"tool_name":"Bash","tool_input":{"command":"uv run pytest tests/integration/"}}'                    | python .claude/hooks/guard.py   # 期望无输出（放行：本地/测试库不拦）
+echo '{"tool_name":"Bash","tool_input":{"command":"git add -A"}}'                                          | python .claude/hooks/guard.py   # 期望 permissionDecision=deny
+
+# auto_test.sh：解析能力（输出 PARSED: 路径 即正常；输出空/报错说明 python 不可用）
+echo '{"tool_input":{"file_path":"backend/src/x.py"}}' | python -c "import sys,json;print('PARSED:',json.load(sys.stdin).get('tool_input',{}).get('file_path',''))"
+```
+
+#### 修改 skills / hooks
+
+- skill 改 `.claude/skills/<name>/SKILL.md`（frontmatter `name`+`description` 驱动自动触发；description 写满触发词命中率更高）。新建/改完通常**新开会话**才进可用列表。
+- hook 改逻辑后用上面的命令离线验证；改 `guard.py` 正则后务必重跑三条用例。改 `settings.json` 的 matcher/命令后，hook 下次工具调用即生效。
 
 ### 6.2 手动运行
 
