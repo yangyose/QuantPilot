@@ -2,9 +2,21 @@
 # auto_test.sh — PostToolUse 钩子：编辑 Python 文件后自动运行测试
 # 输出结果直接反馈给 Claude，失败时 Claude 会自动进入调试
 
+# ---------- 0. 选一个真能跑的 Python 解释器 ----------
+# 本机 python3 是坏的 Windows Store 别名桩（输出 "Python" exit 49），
+# 按 python → py → python3 探测；找不到就放行（不阻断编辑流）。
+PYBIN=""
+for c in python py python3; do
+    if "$c" -c "import sys" >/dev/null 2>&1; then
+        PYBIN="$c"
+        break
+    fi
+done
+[ -z "$PYBIN" ] && exit 0
+
 # ---------- 1. 从 stdin 解析被编辑的文件路径 ----------
 INPUT=$(cat)
-FILE_PATH=$(echo "$INPUT" | python3 -c "
+FILE_PATH=$(echo "$INPUT" | "$PYBIN" -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
