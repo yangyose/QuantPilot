@@ -185,8 +185,13 @@ class FactorICRepository:
         """查询窗口 ``[start_date, end_date]`` 内某 (strategy, factor, state) 的
         IC_daily 单点序列（按 trade_date 升序）。
 
-        - 仅返回 ``ic_value IS NOT NULL`` 的行（过滤掉纯聚合行）
+        - 仅返回 ``row_type='daily'`` 且 ``ic_value IS NOT NULL`` 的行
         - 调用方：``FactorMonitorService.rolling_icir_state``
+
+        Phase 14 §14-9 P2-2：必须按 ``row_type='daily'`` 过滤——若 daily 行与某
+        month_end aggregate 行碰撞同 4-tuple，``upsert_ic_aggregate`` 会把该行升级为
+        ``row_type='aggregate'`` 但 ``set_`` 不含 ``ic_value`` → 旧 daily ic_value 残留；
+        仅靠 ``ic_value IS NOT NULL`` 会把这种被升级行误计入 daily 采样（双重计入）。
         """
         stmt = (
             select(FactorICWindowState)
@@ -196,12 +201,36 @@ class FactorICRepository:
                 FactorICWindowState.state == state,
                 FactorICWindowState.trade_date >= start_date,
                 FactorICWindowState.trade_date <= end_date,
+                FactorICWindowState.row_type == "daily",
                 FactorICWindowState.ic_value.isnot(None),
             )
             .order_by(FactorICWindowState.trade_date.asc())
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_existing_daily_ic_dates(
+        self,
+        session: AsyncSession,
+        start_date: date,
+        end_date: date,
+    ) -> set[date]:
+        """查区间 ``[start_date, end_date]`` 内已有 ``row_type='daily'`` 的 trade_date 集合。
+
+        供 ``scripts/backfill_daily_ic.py`` 断点续传跳过已回填日（Phase 14 §14-9.4）。
+        仅计 daily 行——纯 aggregate 行（月末批写入，无对应 daily 回填）不计入。
+        """
+        stmt = (
+            select(FactorICWindowState.trade_date)
+            .where(
+                FactorICWindowState.row_type == "daily",
+                FactorICWindowState.trade_date >= start_date,
+                FactorICWindowState.trade_date <= end_date,
+            )
+            .distinct()
+        )
+        result = await session.execute(stmt)
+        return {row[0] for row in result.all()}
 
     async def get_recent_aggregates(
         self,
