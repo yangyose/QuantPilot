@@ -11,14 +11,25 @@ from datetime import date
 
 import pandas as pd
 
+from quantpilot.engine.factor_monitor import FactorMonitorEngine
+
 __all__ = [
     "ICRecord",
     "MonthlyAggregateRow",
     "PanelCellRow",
+    "DailyICPoint",
     "compute_t_stat",
     "aggregate_monthly",
     "build_panel",
+    "compute_daily_ic",
+    "compute_forward_returns",
+    "_DAILY_IC_MIN_XS",
 ]
+
+# Phase 14 §14-9 S-02：日级 IC 每日最小横截面样本。高于 calc_ic 自带的 5 地板，
+# 避免噪声 IC 污染 ICIR 滚动窗口；A 股全 universe ~2400，正常日远超 30，
+# 触发跳过多为早期数据 / 大面积停牌日。
+_DAILY_IC_MIN_XS = 30
 
 
 @dataclass(frozen=True)
@@ -52,6 +63,80 @@ class PanelCellRow:
     ic_std: float
     n_months: int
     t_stat: float | None
+
+
+@dataclass(frozen=True)
+class DailyICPoint:
+    """Phase 14 §14-9：单日单策略 IC 观测（写 factor_ic_window_state row_type='daily'）。"""
+
+    strategy: str
+    ic_value: float
+    sample_size: int  # 对齐后横截面有效股票数
+
+
+def compute_forward_returns(
+    adj_close: pd.DataFrame,
+    base_date: date,
+    end_date: date,
+    excluded: set[str] | None = None,
+) -> pd.Series:
+    """Phase 14 §14-9.3：从**后复权** adj_close 透视表算前向收益。
+
+    `ret = adj_close[end_date]/adj_close[base_date] − 1`，逐 ts_code。
+
+    - 输入 `adj_close`：``MarketDataRepository.get_adj_prices_bulk`` 的输出
+      （index=ts_code，columns=trade_date，values=close×adj_factor 后复权）。
+    - `excluded`：base 或 end 日涨跌停 / 停牌的 ts_code（SDD §7.4 line 473），从结果剔除。
+    - 缺 base 或 end 价、或 base ≤ 0 的 ts_code 自动剔除。
+
+    **不复用** ``FactorMonitorService._calc_forward_returns`` /
+    ``AttributionService._calc_forward_returns_panel``——二者用原始 close（未复权）
+    + 日历日近似窗口 + 无涨跌停剔除，会扭曲 20 日 IC（§14-9 S-01）。
+    """
+    empty = pd.Series(dtype=float, name="forward_return")
+    if adj_close.empty or base_date not in adj_close.columns or end_date not in adj_close.columns:
+        return empty
+    df = pd.DataFrame(
+        {"base": adj_close[base_date], "end": adj_close[end_date]}
+    ).dropna()
+    df = df[df["base"] > 0]
+    if excluded:
+        df = df.drop(index=[c for c in excluded if c in df.index])
+    if df.empty:
+        return empty
+    ret = (df["end"] - df["base"]) / df["base"]
+    ret.name = "forward_return"
+    return ret
+
+
+def compute_daily_ic(
+    strategy_z: dict[str, pd.Series],
+    forward_returns: pd.Series,
+    min_xs: int = _DAILY_IC_MIN_XS,
+) -> list[DailyICPoint]:
+    """Phase 14 §14-9.1：逐策略算单日 Spearman Rank IC。
+
+    对每个策略：与 `forward_returns` 按 ts_code 内连接 dropna → 对齐有效数 n。
+
+    - n < `min_xs` → 跳过该策略（S-02：避免噪声 IC 污染窗口）。
+    - 复用 ``FactorMonitorEngine.calc_ic``（对齐样本 < 5 返 None）；返回 None
+      或退化 nan（横截面无方差）→ 跳过该策略（P3-1：不写占位行）。
+    - 否则产出 ``DailyICPoint(strategy, ic_value, sample_size=n)``。
+
+    纯函数，无 IO。
+    """
+    engine = FactorMonitorEngine()
+    out: list[DailyICPoint] = []
+    for strategy, z in strategy_z.items():
+        combined = pd.DataFrame({"z": z, "r": forward_returns}).dropna()
+        n = int(len(combined))
+        if n < min_xs:
+            continue
+        ic = engine.calc_ic(combined["z"], combined["r"])
+        if ic is None or math.isnan(ic):
+            continue
+        out.append(DailyICPoint(strategy=strategy, ic_value=float(ic), sample_size=n))
+    return out
 
 
 def compute_t_stat(mean: float, std: float, n: int) -> float | None:
