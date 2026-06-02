@@ -380,6 +380,7 @@ docker stats --no-stream
 | 误删数据 / 错配置 | `scripts/restore_db.sh backups/qp_<已知良好时间>.sql.gz` |
 | 想清空重来 | `docker compose -f docker-compose.prod.yml down -v` ⚠️ 会删所有数据卷 |
 | 表结构不一致（升级失败） | `docker compose exec backend uv run alembic current`；对照 `alembic history`；必要时 `downgrade <prev_rev>` |
+| 怀疑行情/候选池缺交易日 | `docker compose exec backend uv run python scripts/audit_data_integrity.py`——以 `trade_calendar`（is_open）为权威基准对 daily_quote / candidate_pool / index_history 做差集，逐日报告缺口；缺口用 `scripts/refill_history.py --start <D> --end <D> --skip-confirm` 补行情后再 `backfill_candidate_pool.py --start <D> --end <D> --force` 重算 |
 
 ---
 

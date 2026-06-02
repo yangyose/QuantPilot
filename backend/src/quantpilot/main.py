@@ -92,11 +92,35 @@ async def lifespan(app: FastAPI):
 
         today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
         try:
-            calendar = await TradingCalendar.from_adapter(
-                adapter,
-                today - timedelta(days=730),
-                today + timedelta(days=30),
-            )
+            # 交易日历 DB 优先：从持久化的 trade_calendar 加载；若 DB 未覆盖所需
+            # 范围（首次部署 / 新机 / 跨年前瞻不足）则自愈拉 Tushare 落库再加载。
+            # 范围 ~6y 历史覆盖 5y 数据 + 30 天前瞻。
+            from quantpilot.data.repository import MarketDataRepository
+            from quantpilot.services.data_service import bootstrap_trade_calendar
+
+            # required（触发自愈的最低前瞻 +30d）与 fill（自愈时一次性填到的前瞻
+            # +90d，与月度刷新 Job 一致）分离：若自愈只填 +30d，月内每日重启都会因
+            # 前瞻滑动而反复重拉 6y trade_cal（评审 CAL-C-02）。
+            cal_start = today - timedelta(days=365 * 6)
+            required_end = today + timedelta(days=30)
+            fill_end = today + timedelta(days=90)
+            async with AsyncSessionLocal() as cal_session:
+                cal_repo = MarketDataRepository(cal_session)
+                coverage = await cal_repo.get_trade_calendar_coverage()
+                if (
+                    coverage is None
+                    or coverage[0] > cal_start
+                    or coverage[1] < required_end
+                ):
+                    await bootstrap_trade_calendar(
+                        adapter, cal_repo, cal_start, fill_end
+                    )
+                    await cal_session.commit()
+                    logger.info("trade_calendar_self_healed: start=%s end=%s",
+                                cal_start, fill_end)
+                calendar = await TradingCalendar.from_repo(
+                    cal_repo, cal_start, required_end
+                )
             app.state.calendar = calendar
 
             # Phase 10 §4.4 评审 C-02/C-03：BacktestEngine 不再作为单例驻留。

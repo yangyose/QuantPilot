@@ -91,6 +91,17 @@ def create_scheduler(
         misfire_grace_time=1800,
     )
 
+    # 交易日历月度刷新 Job（每月 1 日 06:00）：向前滚动窗口刷新 trade_calendar，
+    # 让次年日历发布后自动落库，保持 DB 优先日历常新（不依赖重启）。
+    scheduler.add_job(
+        _trade_calendar_refresh_job,
+        trigger=CronTrigger(day=1, hour=6, timezone="Asia/Shanghai"),
+        args=[session_factory, adapter],
+        id="trade_calendar_refresh",
+        replace_existing=True,
+        misfire_grace_time=7200,
+    )
+
     return scheduler
 
 
@@ -165,6 +176,35 @@ async def _monthly_job(
         await scheduler.run_all(today)
 
     logger.info("monthly_job_done: trigger_date=%s", today)
+
+
+async def _trade_calendar_refresh_job(
+    session_factory: async_sessionmaker,
+    adapter: DataSourceAdapter,
+) -> None:
+    """每月刷新 trade_calendar（向前滚动 ~6y 历史 + 90 天前瞻）。
+
+    自建 session 显式 commit（asyncio.create_task / 调度 job 不走 get_db 自动 commit）。
+    """
+    from datetime import timedelta
+
+    from quantpilot.data.repository import MarketDataRepository
+    from quantpilot.services.data_service import bootstrap_trade_calendar
+
+    today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
+    start = today - timedelta(days=365 * 6)
+    end = today + timedelta(days=90)
+    try:
+        async with session_factory() as session:
+            repo = MarketDataRepository(session)
+            written = await bootstrap_trade_calendar(adapter, repo, start, end)
+            await session.commit()
+        logger.info(
+            "trade_calendar_refresh_job_done: start=%s end=%s rows=%d",
+            start, end, written,
+        )
+    except Exception:
+        logger.exception("trade_calendar_refresh_job_failed")
 
 
 async def _weekly_report_job(session_factory: async_sessionmaker) -> None:

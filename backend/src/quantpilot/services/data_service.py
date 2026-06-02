@@ -8,13 +8,35 @@ from datetime import date, timedelta
 
 from quantpilot.core.database import AsyncSessionLocal
 from quantpilot.data.adapters.base import DataSourceAdapter
-from quantpilot.data.calendar import TradingCalendar
+from quantpilot.data.calendar import TradingCalendar, build_calendar_rows
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.data.validators import DataValidator
 
 logger = logging.getLogger(__name__)
 
 _TARGET_INDEXES = ["000001.SH", "000300.SH", "000905.SH", "399006.SZ"]
+
+
+async def bootstrap_trade_calendar(
+    adapter: DataSourceAdapter,
+    repo: MarketDataRepository,
+    start: date,
+    end: date,
+    exchange: str = "SSE",
+) -> int:
+    """从 adapter 拉开市日 → 重建「全历法日 + is_open」→ 落库 trade_calendar。
+
+    不依赖 TradingCalendar 实例，供启动期（日历尚未构造）直接用 adapter+repo
+    自愈拉取。返回 upsert 行数。调用方负责 commit（per-startup session）。
+    """
+    open_days = await adapter.fetch_trade_calendar(start, end)
+    rows = build_calendar_rows(open_days, start, end, exchange=exchange)
+    written = await repo.upsert_trade_calendar(rows)
+    logger.info(
+        "trade_calendar_bootstrapped: start=%s end=%s open_days=%d rows_upserted=%d",
+        start, end, len(open_days), written,
+    )
+    return written
 
 
 @dataclass
@@ -83,6 +105,18 @@ class DataService:
         # notifier 暴露 notify_health_alert("data_source_unavailable", ...) 方法。
         self._fallback_adapter = fallback_adapter
         self._notifier = notifier
+
+    async def refresh_trade_calendar(
+        self, start: date, end: date, exchange: str = "SSE"
+    ) -> int:
+        """刷新 trade_calendar（调度器周期调用，向前滚动窗口）。
+
+        委托 bootstrap_trade_calendar 复用同一重建逻辑；用 self._repo，由调用方
+        所在 session 上下文负责 commit（get_db 自动 commit / 显式 session 需 commit）。
+        """
+        return await bootstrap_trade_calendar(
+            self._adapter, self._repo, start, end, exchange=exchange
+        )
 
     async def _fetch_daily_quotes_with_fallback(
         self, trade_date: date, ts_codes: list[str] | None = None,

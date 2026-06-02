@@ -1,8 +1,8 @@
 # QuantPilot 系统设计文档
 
-> **版本：** v1.8
+> **版本：** v1.10
 > **基线依据：** QuantPilot_SDD（规范文档，专家审定版）
-> **日期：** 2026-04-20
+> **日期：** 2026-06-01
 > **说明：** 本文档为顶层架构基线，保持稳定。各开发阶段的详细设计见 `docs/design/phases/` 目录，按需创建。
 
 ---
@@ -24,6 +24,7 @@
 | **v1.7** | 2026-04-20 | **Phase 10 范围重划**：§9 Phase 10 行由"通知与部署"扩展为"配置消费 + 通知 + 部署收尾"——纳入 ConfigService（Redis 缓存 + 11 类 config_key 落地 + 部分覆盖合并 + PUT 失效）、Scorer/RiskChecker/SignalGenerator/UniverseFilter/CandidatePoolManager/BacktestEngine 六类消费端接入 UserConfig（SDD §14 + 附录 B 完整落地）、pipeline_run.config_snapshot 快照、WxPusherAdapter + NotificationService（3 次重试 + 站内信降级）、5 类通知触发（市场状态变化/新信号/止损预警/Pipeline 失败/因子告警）、止损预警 Job（APScheduler CronTrigger）、in_app_notification 表 + 3 端点、Settings 前端三级折叠 + 入门向导 + YAML 导出、WatchlistTab + NotificationTab、生产 Docker Compose + Nginx/SSL 模板、RotatingFileHandler + JSON 日志、全链路收尾冒烟测试 API-74~84；文件名引用由 `phase10_notification.md` 更新为 `phase10_deployment.md`。根因：Phase 1–9 实现中 user_config 表落库但消费端全部硬编码（仅 PerformanceService 读 risk_free_rate），SDD §14 用户配置要求未落地；V1.5 L1/L2/L3 RBAC 折衷为 V1.0"基础/进阶/专家"三级前端折叠。 |
 | **v1.8** | 2026-04-20 | **Phase 10 评审同步**（来自 `docs/reviews/phase10_design_review_2026-04-20.md` 驱动 Phase 10 v1.1 修订）：§9 Phase 10 行精化——①config_key 数由 11 改为 12（新增 `factor_monitor_params`，对齐 SDD 附录 B "IC 下期收益窗口"默认参数）；②消费端新增 FactorMonitorService（IC 窗口参数化）；③`pipeline_run.config_snapshot` 显式标注"启动时一次性写入"语义（禁 CP 内再访问 ConfigService）；④WxPusherAdapter 路径由 `data/adapters/` 迁至 `notification/`（与 §3 / §5.10 目录规划一致），新增 `NotificationChannel` ABC；⑤通知端点数 3 → 5（含 wx-status / read-all）；⑥NotificationService 日志级别三级（单次失败 WARN / 链路降级 ERROR / 兜底失败 ERROR）。评审同步推迟项：WS 前端消费 G-1（Pipeline WS 后端未实装，Backtest WS 后端已实装但前端推迟 V1.5）、AKShare 自动降级 G-2（`akshare.py::AKShareAdapter` 已存在但 DataService 未接降级路径，推迟 V1.5）、多账户 UI 切换 G-4（推迟 V1.5） |
 | **v1.9** | 2026-05-25 | **Phase 14 估算同步**（来自 `docs/reviews/phase14_design_review_2026-05-25.md` v1.0 P2-3 + Phase 14 设计 v1.1 修订）：§9 Phase 14 行 `~3-5 pd` → `~5-8 pd`（2026-05-14 V1.0 重新定位时锁定 8 子项，原估算仅含 RM-13 + 回测 IC 验证，未含 5y 回填 + ICIR 历史回算 + BacktestEngine 真 5 步 + Phase 13 P2 6 项 + Phase 12 P2 2 项）；§9 注尾 Phase 11~15 估算合计 ~38-55 pd 中 Phase 14 拆分同步；§9 Phase 14 文件名引用更新为 `phase14_account_integrity.md v1.1`（评审 P1×3 + P2×4 + P3×6 全收口）；R12-P1-2 标注「已在 Phase 13 启动核查交付，不重列入本 phase」 |
+| **v1.10** | 2026-06-01 | **交易日历持久化 + 完整性核验基准 + 集成测试红线护栏**（V1.0 收尾期数据基础设施加固，对齐 SDD v1.4-r1）：§4.1 新增 `trade_calendar` 表（全历法日 + is_open，alembic 0015）；§9 注新增日历持久化条目（落地件清单：repo 三方法 + `TradingCalendar.from_repo` + `bootstrap_trade_calendar` 自愈 + main.py 启动 DB 优先 + APScheduler 月度刷新 Job + `scripts/audit_data_integrity.py`）。动机：`TradingCalendar` 原纯内存 + 启动实时拉数据源 + 不落库 → 数据完整性核验缺权威参照（只能假日交叉验证启发式）、离线不可用。附带红线加固：`tests/conftest.py::_guard_test_db_or_abort()` 阻止集成测试误对非 `:5433` 库跑 `alembic downgrade base`（CLAUDE.md C-1）；`auto_test.sh` 钩子改为仅 `DATABASE_URL` 含 `:5433` 才跑集成测试。回归 736 passed + ruff 0 error |
 
 ---
 
@@ -304,7 +305,7 @@ QuantPilot/
 ├── backend/
 │   ├── src/quantpilot/
 │   │   ├── models/                    # SQLAlchemy ORM 模型
-│   │   │   ├── market.py              # StockInfo, DailyQuote, IndexHistory, FinancialData
+│   │   │   ├── market.py              # StockInfo, DailyQuote, IndexHistory, FinancialData, IndexComponent, TradeCalendar
 │   │   │   ├── business.py            # CandidatePool, Signal, SignalScoreSnapshot
 │   │   │   │                          # FactorIcHistory, Report, MarketStateHistory
 │   │   │   ├── account.py             # Account, Position, TradeRecord, FundFlow
@@ -500,6 +501,19 @@ CREATE TABLE index_component (
     UNIQUE (index_code, ts_code, trade_date)
 );
 CREATE INDEX idx_index_component_date ON index_component(index_code, trade_date);
+
+-- 交易日历（SDD §4.5；数据完整性核验的权威基准；alembic 0015）
+-- 全历法日 + is_open：每个自然日一行（含闭市日 is_open=FALSE），忠实数据源 trade_cal。
+-- 启动 DB 优先：TradingCalendar.from_repo 从本表构造内存日历；缺范围自愈拉数据源落库。
+-- 完整性核验：以 is_open=TRUE 全集对各日频表实际入库交易日做差集（audit_data_integrity.py）。
+CREATE TABLE trade_calendar (
+    exchange       VARCHAR(10) NOT NULL DEFAULT 'SSE',  -- A 股沪深同历
+    cal_date       DATE NOT NULL,
+    is_open        BOOLEAN NOT NULL,                    -- 是否开市
+    updated_at     TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (exchange, cal_date)
+);
+CREATE INDEX idx_trade_calendar_open ON trade_calendar(exchange, is_open, cal_date);
 ```
 
 ### 4.2 业务数据表
@@ -1375,6 +1389,7 @@ curl http://localhost:8000/health
 > - **Phase 11~15 估算合计 ~38-55 pd（8-11 周）**：Phase 11 ~12-18 pd（评分管线重构 + ICIR 工程化主体）+ Phase 12 ~6-10 pd（前端 L1/L2/L3 视图 + 多因子回归归因）+ Phase 13 ~8-12 pd（Prometheus/OTel/告警栈）+ Phase 14 ~5-8 pd（RM-13 + 5y 回填 + ICIR 历史回算 + BacktestEngine 真 5 步 + ICIR 校准最小集 + Phase 13 P2 6 项 + Phase 12 P2 2 项；估算同步自 Phase 14 设计 v1.1 评审 P2-3，2026-05-25）+ Phase 15 ~6-8 pd（5y 真机 RC 验收 + 文档校核 + 生产部署演练）。pd 拆分依据见 `docs/design/v1_5_roadmap.md` v2.0 §★ 升级清单 + Phase 11 设计文档 §14（已交付 v1.1，2026-05-15）+ Phase 12~15 设计文档（待创建）。
 > - **Phase 11~15 设计文档由各 Phase 启动时创建**（当前 `phase11_scoring_industrialization.md` 已交付 2026-05-15；`phase12_~phase15_*.md` 仍未交付），CLAUDE.md §5 启动核查规则强制要求设计文档存在方可进入实施。
 > - **V1.0 发布后 V1.5+ 完整 scope（SDD §16 11 项产品功能 + V1.0 评审 P2/P3 15 项剩余 + SDD 外部专家评审 7 项剩余 + Phase 10 评审 1 项剩余 = 34 项；含已升级 V1.0 清单、推迟原因、修复条件、估算）见 `docs/design/v1_5_roadmap.md`（v2.0 重构后）**——所有推迟项不在 V1.0 Phase 范围内，V1.5 启动（V1.0 RC 后）按该路线图 §6 主题（V1.5-A..J）打包。
+> - **交易日历持久化（2026-06-01，§4.1 `trade_calendar`）属 V1.0 收尾期数据基础设施加固**，归 Phase 14 数据完整性收尾批（不单列独立 phase 行）——在 Phase 14 5y 回填 + 生产迁移准备期间发现：`TradingCalendar` 原为纯内存、启动实时拉数据源、不落库，致数据完整性核验缺权威参照。落地件：alembic 0015 `trade_calendar` 表（全历法日 + is_open）+ `MarketDataRepository.{upsert_trade_calendar,get_trade_calendar_dates,get_trade_calendar_coverage}` + `TradingCalendar.from_repo` + `bootstrap_trade_calendar`（自愈拉取）+ main.py 启动 DB 优先 + APScheduler `trade_calendar_refresh` 月度刷新 Job + `scripts/audit_data_integrity.py`（日历差集核验，差集范围限定数据实际覆盖区间——不含未来未采集日 / 早于回填起点的历法日，避免假缺口）。SDD 同步见 v1.4-r1（§4.5 扩写 + §5.5 完整性核验行）。**附带红线加固**：`tests/conftest.py` 新增 `_guard_test_db_or_abort()`——集成测试遇非 `:5433` 测试库直接 `pytest.exit`，杜绝误对生产库跑 `alembic downgrade base`（CLAUDE.md C-1 / feedback_pytest_wipes_db）。
 
 ---
 

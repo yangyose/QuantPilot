@@ -316,7 +316,13 @@ uv run pytest tests/ --cov=quantpilot --cov-report=term-missing -v
 # 按层
 uv run pytest tests/unit/ -v
 uv run pytest tests/e2e/ -v
-uv run pytest tests/integration/ -v   # 需 PostgreSQL 运行中
+# ⚠️ 集成测试会 `alembic downgrade base` DROP 全部表——必须连独立测试库（:5433），
+#    绝不能对含真实数据的 :5432 跑（conftest 有硬护栏：非 :5433 直接中止）。
+docker run -d --name quantpilot-testdb-5433 -e POSTGRES_USER=quantpilot \
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=quantpilot -p 5433:5432 postgres:15
+DATABASE_URL=postgresql+asyncpg://quantpilot:test@localhost:5433/quantpilot \
+  uv run pytest tests/integration/ -v
+docker rm -f quantpilot-testdb-5433   # 跑完清理
 
 # 冒烟（需先启服务）
 API_PASSWORD=YOUR_PASSWORD uv run pytest tests/smoke/ -v
@@ -380,7 +386,7 @@ npm run type-check
 # === 测试 ===
 cd backend
 uv run pytest tests/unit/ tests/e2e/ -q                     # 快速反馈
-uv run pytest tests/integration/ -v                         # 需 DB
+DATABASE_URL=...:5433/... uv run pytest tests/integration/ -v   # ⚠️ 必须连 :5433 测试库（会 DROP 全表）
 uv run pytest tests/ --cov=quantpilot --cov-report=html     # HTML 覆盖率
 API_PASSWORD=xxx uv run pytest tests/smoke/ -v              # 冒烟（需服务在线）
 

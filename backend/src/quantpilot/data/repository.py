@@ -22,6 +22,7 @@ from quantpilot.models.market import (
     IndexComponent,
     IndexHistory,
     StockInfo,
+    TradeCalendar,
 )
 
 _STOCK_UPDATE_COLS = [
@@ -543,6 +544,63 @@ class MarketDataRepository:
                 for r in rows
             ]
         )
+
+    # ── trade_calendar（权威交易日历，数据完整性核验基准）─────────────────────
+
+    async def upsert_trade_calendar(self, rows: list[dict]) -> int:
+        """批量 upsert trade_calendar，500 行/批（asyncpg 单 SQL 参数上限 32767）。
+
+        rows: [{"exchange": "SSE", "cal_date": date, "is_open": bool}, ...]
+        ON CONFLICT (exchange, cal_date) DO UPDATE is_open + updated_at。
+        """
+        if not rows:
+            return 0
+        total = 0
+        for i in range(0, len(rows), _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            stmt = pg_insert(TradeCalendar).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["exchange", "cal_date"],
+                set_={"is_open": stmt.excluded.is_open, "updated_at": func.now()},
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount
+        return total
+
+    async def get_trade_calendar_dates(
+        self,
+        start: date,
+        end: date,
+        *,
+        only_open: bool = True,
+        exchange: str = "SSE",
+    ) -> list[date]:
+        """查 [start, end] 范围日历日（升序）。only_open=True 仅返回开市日。"""
+        stmt = select(TradeCalendar.cal_date).where(
+            TradeCalendar.exchange == exchange,
+            TradeCalendar.cal_date >= start,
+            TradeCalendar.cal_date <= end,
+        )
+        if only_open:
+            stmt = stmt.where(TradeCalendar.is_open.is_(True))
+        stmt = stmt.order_by(TradeCalendar.cal_date)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_trade_calendar_coverage(
+        self, exchange: str = "SSE"
+    ) -> tuple[date, date] | None:
+        """返回已落库日历的 (min_cal_date, max_cal_date)；空表返回 None。"""
+        result = await self._session.execute(
+            select(
+                func.min(TradeCalendar.cal_date),
+                func.max(TradeCalendar.cal_date),
+            ).where(TradeCalendar.exchange == exchange)
+        )
+        row = result.one()
+        if row[0] is None:
+            return None
+        return (row[0], row[1])
 
     # ── index_component ────────────────────────────────────────────────────────
 

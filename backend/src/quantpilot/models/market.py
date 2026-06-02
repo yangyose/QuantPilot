@@ -130,3 +130,27 @@ class IndexComponent(Base):
         ),
         Index("idx_index_component_date", "index_code", "trade_date"),
     )
+
+
+class TradeCalendar(Base):
+    """A 股交易日历（权威完整性核验基准）。
+
+    全历法日 + is_open 标志：每个自然日一行（含闭市日 is_open=false），忠实
+    Tushare trade_cal。is_trade_date 可对范围内任意日期权威作答；daily_quote /
+    candidate_pool / index_history 缺交易日核验取 is_open=true 做差集。
+    复合主键 (exchange, cal_date)；exchange 默认 'SSE'（A 股沪深同历）。
+    见 alembic 0015 + scripts/audit_data_integrity.py。
+    """
+
+    __tablename__ = "trade_calendar"
+
+    exchange: Mapped[str] = mapped_column(String(10), primary_key=True, default="SSE")
+    cal_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    is_open: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="NOW()"
+    )
+
+    __table_args__ = (
+        Index("idx_trade_calendar_open", "exchange", "is_open", "cal_date"),
+    )

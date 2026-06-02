@@ -16,6 +16,7 @@ from quantpilot.models.market import (
     IndexComponent,
     IndexHistory,
     StockInfo,
+    TradeCalendar,
 )
 from quantpilot.models.system import PipelineRun, SystemConfig, UserConfig, UserConfigHistory
 
@@ -27,6 +28,7 @@ __all__ = [
     "FinancialData",
     "IndexHistory",
     "IndexComponent",
+    "TradeCalendar",
     # business
     "MarketStateHistory",
     "CandidatePool",

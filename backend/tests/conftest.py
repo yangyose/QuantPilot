@@ -1,3 +1,5 @@
+import os
+import re
 import subprocess
 import sys
 from collections.abc import AsyncGenerator, Generator
@@ -49,9 +51,34 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     app.routes.remove(test_route)
 
 
+def _guard_test_db_or_abort() -> None:
+    """红线护栏：集成测试只允许打测试库（:5433）。
+
+    `_ensure_schema` 收尾跑 `alembic downgrade base` 会 DROP 所有表。若 DATABASE_URL
+    误指向生产/本地数据库（:5432），整套真实数据会被灭。此前仅靠「跑测试时手动改
+    DATABASE_URL」+ auto_test 钩子小心，无源头拦截（CLAUDE.md C-1 / feedback_pytest
+    _wipes_db 踩过一次）。本护栏在任何 alembic 动作之前硬中止整个 session。
+
+    放行条件：URL 含 ':5433'（测试库约定端口）或显式 QUANTPILOT_ALLOW_PROD_TEST_DB=1
+    （仅限明知后果的特殊场景）。
+    """
+    url = settings.database_url
+    if ":5433" in url or os.getenv("QUANTPILOT_ALLOW_PROD_TEST_DB") == "1":
+        return
+    masked = re.sub(r"://[^@]*@", "://***@", url)
+    pytest.exit(
+        "拒绝对非测试库运行集成测试：集成测试会 `alembic downgrade base` DROP 所有表。\n"
+        f"  当前 DATABASE_URL = {masked}\n"
+        "  测试库约定端口为 :5433。请把 DATABASE_URL 指向 :5433 测试库后重试\n"
+        "  （确知后果时可设 QUANTPILOT_ALLOW_PROD_TEST_DB=1 绕过）。",
+        returncode=2,
+    )
+
+
 @pytest.fixture(scope="session")
 def _ensure_schema() -> Generator[None, None, None]:
     """整个测试 session 跑一次 alembic upgrade head（同步，与 event loop 解耦）"""
+    _guard_test_db_or_abort()
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=BACKEND_DIR, capture_output=True, text=True,

@@ -1,11 +1,67 @@
 from __future__ import annotations
 
 import bisect
-from datetime import date
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from datetime import date, timedelta
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from quantpilot.data.adapters.base import DataSourceAdapter
+
+
+class _CalendarRepo(Protocol):
+    """from_repo 所需的最小 repo 接口（避免对 MarketDataRepository 的硬依赖）。"""
+
+    async def get_trade_calendar_dates(
+        self, start: date, end: date, *, only_open: bool = ..., exchange: str = ...
+    ) -> list[date]: ...
+
+
+def build_calendar_rows(
+    open_days: Iterable[date],
+    start: date,
+    end: date,
+    exchange: str = "SSE",
+) -> list[dict]:
+    """把开市日列表 + [start, end] 范围重建为「全历法日 + is_open」行。
+
+    每个自然日一行（含闭市日 is_open=False），忠实落库为 trade_calendar。
+    open_days 中落在 [start, end] 外的日期忽略（以范围为准）。
+    """
+    open_set = set(open_days)
+    rows: list[dict] = []
+    d = start
+    while d <= end:
+        rows.append({"exchange": exchange, "cal_date": d, "is_open": d in open_set})
+        d += timedelta(days=1)
+    return rows
+
+
+def missing_trading_days(
+    open_days: Iterable[date],
+    present_days: Iterable[date],
+) -> list[date]:
+    """开市日中未出现在 present_days 的交易日（升序）= 数据缺口。"""
+    return sorted(set(open_days) - set(present_days))
+
+
+def resolve_audit_range(
+    arg_start: date | None,
+    arg_end: date | None,
+    coverage: tuple[date, date],
+    data_min: date | None,
+    data_max: date | None,
+) -> tuple[date, date]:
+    """解析完整性审计的差集范围。
+
+    默认范围 = 数据实际覆盖区间（参照表 daily_quote 的 min/max trade_date），并夹在
+    日历 coverage 内——避免拿日历的未来前瞻日（尚无行情）或早于回填起点的历法日做
+    差集而误报假缺口。显式 arg_start/arg_end 优先。
+    """
+    cov_start, cov_end = coverage
+    start = arg_start or (max(cov_start, data_min) if data_min is not None else cov_start)
+    end = arg_end or (min(cov_end, data_max) if data_max is not None else cov_end)
+    return start, end
 
 
 class TradingCalendar:
@@ -82,4 +138,21 @@ class TradingCalendar:
     ) -> TradingCalendar:
         """从数据源适配器加载交易日历"""
         dates = await adapter.fetch_trade_calendar(start_date, end_date)
+        return cls(dates)
+
+    @classmethod
+    async def from_repo(
+        cls,
+        repo: _CalendarRepo,
+        start_date: date,
+        end_date: date,
+        exchange: str = "SSE",
+    ) -> TradingCalendar:
+        """从持久化的 trade_calendar 表加载交易日历（DB 优先路径）。
+
+        只取 is_open=True 的开市日构造，与 from_adapter 等价但不依赖联网。
+        """
+        dates = await repo.get_trade_calendar_dates(
+            start_date, end_date, only_open=True, exchange=exchange
+        )
         return cls(dates)

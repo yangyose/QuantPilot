@@ -53,12 +53,14 @@ fi
 
 echo "✓ Unit/E2E tests passed"
 
-# ---------- 4. 集成测试（仅当需要且 PostgreSQL 容器在运行时） ----------
+# ---------- 4. 集成测试（仅当需要 且 DATABASE_URL 指向测试库 :5433 时） ----------
+# 红线（CLAUDE.md C-1 / feedback_pytest_wipes_db）：集成测试 conftest 收尾会
+# `alembic downgrade base` DROP 所有表。绝不能对生产/本地数据库（:5432）跑。
+# 仅当 DATABASE_URL 显式指向测试库 :5433 才运行；否则跳过（conftest 另有硬护栏兜底）。
 if $RUN_INTEGRATION; then
-    # 检查 PostgreSQL 容器是否运行
-    if docker ps --format "{{.Names}}" 2>/dev/null | grep -qiE "postgres|quantpilot.*(db|postgres)"; then
+    if [[ "${DATABASE_URL:-}" == *":5433"* ]]; then
         echo ""
-        echo "--- Integration tests ---"
+        echo "--- Integration tests (test DB :5433) ---"
         uv run pytest tests/integration/ -x -q --tb=short --no-header 2>&1
         INT_EXIT=$?
         if [ $INT_EXIT -ne 0 ]; then
@@ -68,8 +70,9 @@ if $RUN_INTEGRATION; then
         fi
     else
         echo ""
-        echo "⚠ Integration tests SKIPPED (PostgreSQL container not running)"
-        echo "  启动方式: docker compose -f docker-compose.dev.yml up -d db"
+        echo "⚠ Integration tests SKIPPED — DATABASE_URL 未指向测试库 :5433"
+        echo "  集成测试会 DROP 全部表，禁止对 :5432 运行。"
+        echo "  跑法: 起 :5433 测试库后 DATABASE_URL=...:5433/... uv run pytest tests/integration/"
     fi
 fi
 
