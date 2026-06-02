@@ -1,8 +1,8 @@
-# Phase 14：账户资金链 + 5y candidate_pool 回填 + ICIR 历史回算 + BacktestEngine 真 5 步 + 评审推迟项收口
+# Phase 14：账户资金链 + 5y candidate_pool 回填 + ICIR 历史回算 + BacktestEngine 真 5 步 + 日级 IC 生产者 + 评审推迟项收口
 
-> 版本：v1.2（2026-05-25 短复审收口）
-> 状态：设计完成 + 评审通过（v1.0 评审 P1×3 + P2×4 + P3×6 全收口 + v1.1 短复审 C-1×3 + C-2×4 + C-3×1 全收口） → TDD 实施
-> 估算：~5-8 pd（V1.0 收尾批次第 4 个 phase）
+> 版本：v1.3-r1（2026-06-02 新增 §14-9 日级 IC 生产者 + 设计评审 P1/P2/P3 + 补充 S 项收口）
+> 状态：设计完成 + 评审通过（v1.0 P1×3 + P2×4 + P3×6 + v1.1 短复审 C-1×3 + C-2×4 + C-3×1 + v1.3 §14-9 评审 P1×1 + P2×2 + P3×3 + 补充自审 S-01/02/03 全收口） → TDD 实施
+> 估算：~7-12 pd（V1.0 收尾批次第 4 个 phase；v1.3 新增 §14-9 日级 IC 生产者 ~2-4 pd）
 > 依据文档：
 > - SDD §7.4（ICIR 窗口定义）/ §7.7.1（回测引擎）/ §11（账户资金链 V1.0 必修项）
 > - system_design §9 Phase 14 行（8 项 scope 锁定）
@@ -11,6 +11,7 @@
 > - 评审报告：`docs/reviews/phase13_implementation_review_2026-05-22.md` §8 P2 6 项
 > - 评审报告：`docs/reviews/phase14_design_review_2026-05-25.md` v1.0（v1.1 修订依据）
 > - 评审报告：`docs/reviews/phase14_design_review_v1_1_short_2026-05-25.md`（v1.1 §5 短复审，v1.2 修订依据）
+> - 评审报告：`docs/reviews/phase14_design_review_v1_3_2026-06-02.md`（v1.3 §14-9 评审 + 整合性专项，v1.3-r1 修订依据）
 
 ---
 
@@ -21,6 +22,8 @@
 | v1.0 | 2026-05-23 | 初版交付 |
 | v1.1 | 2026-05-25 | 评审 P1/P2 全收口：P1-1 §3 表名 `cash_flow`→`fund_flow` + schema 改"扩既有 `FundFlowCreate`"（保留单 schema 路径，不新增 DepositRequest/DividendRequest）+ repo 方法名对齐；P1-2 §5 重写采方案 A（engine 层抽 5 步纯函数 `Scorer.aggregate_pipeline` + active_weights 入 BacktestDataBundle）；P1-3 §1.3/§7.2/§10.1/§11/§12 删 R12-P1-2 重复（已在 Phase 13 启动核查交付）；P2-1 §4.2.1 措辞改正 + 显式新增 `get_existing_candidate_pool_dates` repo 方法；P2-2 §6.3 补 3 项量化 DoD；P2-3 同步 system_design v1.9 §9 估算 3-5pd → 5-8pd；P2-4 §3.2 补 IntegrityError 重查路径 + §3.4 加并发竞态 INT；P3-1~6 措辞 / 长度 / SIGTERM / 路径 / 常量 / 端点措辞批量修订 |
 | v1.2 | 2026-05-25 | §5 短复审收口（详见 `docs/reviews/phase14_design_review_v1_1_short_2026-05-25.md`）：C-1×3 删除冗余抽象——v1.1 §5.2 设计 "新增 engine/scoring/pipeline.py + Scorer.aggregate_pipeline + InsufficientUniverseError" 是 3 项已存在轮子的误判，既有 `engine/factor_pipeline.py::FactorPipeline` + `engine/orthogonalizer.py` + `engine/scorer.py::Scorer.aggregate` 已完整覆盖 5 步管线 engine 层纯函数；v1.2 §5.2 重写为 "BacktestEngine 直接复用既有 Scorer.aggregate"。C-2×4 补实施细节——(1) BacktestService `_load_data_bundle` 补加载 `daily_quote.float_mkt_cap` 列；(2) 新增 `BacktestDataBundle.active_weights_history` 字段 + 加载 `strategy_weights_history` 全表；(3) BacktestEngine 主循环 3 处改造（MarketSnapshot 补 industry/market_cap/beta + s.score → compute_strategy_factors + aggregate_legacy/aggregate 分支二选）；(4) `WINSORIZE_MIN_SAMPLES=30` 常量定义在 `engine/scorer.py` 顶部（既有代码 grep 无此常量）+ 新增 `_lookup_active_weights` helper（PIT 前向查找）。C-3 §1.2 §14-3 估算 1-1.5 pd → 0.6-1 pd（5-8 pd 总估算不变 → system_design 无需再次同步）。R14-OPEN-3 + P3-4 引用路径同步修正 |
+| v1.3 | 2026-06-02 | **新增 §14-9 日级 IC 生产者（ICIR 历史回算补全 + 实盘续算）**：迁移准备期实跑 `backfill_icir_rebalance.py` 发现 §14-2 ICIR 历史回算只产 `default_matrix`、`factor_ic_window_state` 0 行，根因是日级 IC 时序 `IC_daily(s,f,t)`（SDD §7.4 全 universe Spearman Rank IC）**无任何生产者**（`upsert_ic_daily` 仅测试调用，CP2 只读权重不写日级 IC）→ `rolling_icir_state` 恒 < 60 样本回退冷启动。§14-9 落地：engine 纯函数 `compute_daily_ic`（复用 `FactorMonitorEngine.calc_ic`）+ `scripts/backfill_daily_ic.py`（5y 全 universe 逐日 `score_universe` 抽 `score_breakdown_raw[strategy]["z_raw"]` × 前向收益 → 写 `row_type='daily'`，trade_date=因子值日 d、state=state[d]）+ 实盘 CP2 续算接线（20 日 lag，z 源方案 (a)/(b) 待定）+ 重跑 §14-2 月末批 `--force` 切 `icir`；解锁 §14-4 ICIR 校准。同步 system_design §9 Phase 14 行 item (9) + 估算 ~5-8 → ~7-12 pd |
+| v1.3-r1 | 2026-06-02 | §14-9 设计评审收口（`docs/reviews/phase14_design_review_v1_3_2026-06-02.md` 6 项 + 补充自审 3 项）：**P1-1** 文档头版本 v1.2→v1.3-r1 + 估算 ~5-8→~7-12 pd 同步；**P2-1** system_design §9 累计估算脚注 rollup 同步（Phase 14 ~7-12 pd + 合计 ~40-59 pd）；**P2-2** §14-9 daily/aggregate 同 4-tuple 碰撞 → `get_ic_daily_window` 增 `row_type='daily'` 谓词 + INT-P14-9-02；**P3-1** `calc_ic -> float\|None` + None 不写占位行；**P3-2** 修订历史行序；**P3-3** 实盘续算 z 源消费节点闭合 §11.1；**S-01** §11.3.3 显式禁止复用缺陷版前向收益（`_calc_forward_returns`/`_calc_forward_returns_panel` 原始 close+日历近似+无剔除）改用 adj+严格交易日 + R14-OPEN-8 V1.5 统一项；**S-02** `_DAILY_IC_MIN_XS=30` 每日最小横截面；**S-03** INT-P14-9-01 fixture 去 candidate_pool 改 daily_quote/financial/market_state |
 
 ---
 
@@ -46,8 +49,9 @@ Phase 14 是 V1.0 收尾批次（Phase 11~15）的第 4 个 phase，承担 3 类
 | 14-6 | factor_ic_window_state 共表拆分评估 | 0.5 | §8 |
 | 14-7 | Phase 13 评审 P2 6 项 | 0.8 | §9 |
 | 14-8 | AttrBackfill + asyncpg 32767 注释（R12-P1-2 已在 Phase 13 启动核查交付，不重列） | 0.2 | §10 |
+| 14-9 | 日级 IC 生产者（ICIR 历史回算补全 + 实盘续算；v1.3 新增 2026-06-02）| 2-4 | §11 |
 
-**合计 ~5-8 pd**（估算同步至 system_design v1.9 §9 Phase 14 行）。
+**合计 ~7-12 pd**（v1.3 新增 §14-9 ~2-4 pd；估算同步至 system_design §9 Phase 14 行）。
 
 ### 1.3 启动核查（CLAUDE.md §5 + §11.1）
 
@@ -64,6 +68,15 @@ Phase 14 是 V1.0 收尾批次（Phase 11~15）的第 4 个 phase，承担 3 类
 **未在 Phase 14 收口的推迟项**：
 - R13-P3 5 项（监控增强）→ v1_5_roadmap §4.5 V1.5-A ✓
 - Phase 15 RC 验收项（5y 真机 + STRONG 相对百分比 + 覆盖率门槛 + 文档校核）→ Phase 15 ✓
+
+**v1.3 增补启动核查（2026-06-02，§14-9）**：
+| 核查项 | 结论 |
+|--------|------|
+| 范围归属判定 | §14-9 是 §9 Phase 14 行 item (2) 的**补全**（item 2 已分配"ICIR 历史回算→icir"，日级 IC 生产者为其隐藏未交付部分）→ 归 Phase 14 新增 §14-9，**不新建 phase**（C-5 唯一归属，新建会与已分配模块重复）|
+| 孤儿模块检查 | 增强既有 `FactorMonitorEngine`/`ScoringService.score_universe`/`DailyPipeline` CP2 + 新增纯函数 `compute_daily_ic` + 新脚本 `scripts/backfill_daily_ic.py`；**无新 §3/§5 顶层模块、无新 §6 端点** |
+| 推迟项消费 | D14-1（ICIR 累积→icir）= 本 §14-9；D14-2（BacktestEngine 真 5 步）= §14-3 独立；D14-3（ICIR 校准最小集）= §14-4，**依赖本 §14-9 跑出真 IC 后方可消费**（仍待 §14-9 完成）|
+| §9 回写（C-5 红线）| ✓ 先于本设计正文：system_design §9 Phase 14 行 item (2) 标缺口 + 新增 item (9) + header 估算 ~5-8 → ~7-12 pd |
+| 实盘续算 z 源 | 【设计待定】见 §11.3.5，回填先行、续算接线后定夺 |
 
 ---
 
@@ -681,7 +694,86 @@ else:
 
 ---
 
-## 11. 实施顺序与依赖
+## 11. §14-9：日级 IC 生产者（ICIR 历史回算补全 + 实盘续算）
+
+> **实施状态：⏳ 设计 v1.3 新增 2026-06-02**（迁移准备期发现 §14-2 ICIR 历史回算隐藏未交付）。本节补全 §14-2 缺失的上游"日级 IC 时序生产者"，并接线实盘续算让 ICIR 长期不失效。
+
+### 11.1 问题
+
+§14-2 设计假设"只要 candidate_pool 5y 全量在库，逐月跑 `apply_monthly_rebalance` 就能写满 `factor_ic_window_state` + `strategy_weights_history` 5y 历史"。2026-06-02 迁移准备期实跑（`backfill_icir_rebalance.py --start 2021-05 --end 2026-05`）发现：61 月末中 49 个有 ≥ 272 日历史的月**全部产 `default_matrix`**，`factor_ic_window_state` **0 行**。
+
+根因链：`apply_monthly_rebalance` → `rolling_icir_state` → `get_ic_daily_window` 读 `factor_ic_window_state` 的 `row_type='daily'` 行作 IC 样本；样本 < 60 → 返回 None → 冷启动 fallback。而**这些日级 IC 行无任何生产者**：`FactorICRepository.upsert_ic_daily` 全代码仅测试调用，日常 pipeline CP2 `score_universe` 只读 active weights 不写日级 IC。即 §14-2 ICIR 历史回算缺失上游输入，结构性恒冷启动。
+
+SDD §7.4（line 460）：`IC_daily(s,f,t) = Spearman corr(factor_value_{t-20}, return_{t-20→t})`，全 universe 横截面 Rank IC，单点不区分 state；月末按 `state_{t-20}` 子集聚合 ICIR。
+
+### 11.2 数据契约（与既有约定对齐）
+
+日级 IC 行写 `factor_ic_window_state`（§14-6 已分 `row_type`）：
+
+| 列 | 值 | 依据 |
+|---|---|---|
+| strategy / factor | strategy / = strategy | V1.0 factor=strategy 简化（`apply_monthly_rebalance._STRATEGY_NAMES`）|
+| trade_date | **因子值日 d**（= 观测日 t 的 t−20）| 对齐 `rolling_icir_state` 窗口 `[t−272, t−20]` 选因子值日 + INT-P14-2 `_seed_daily_ic` key = `month_end−(lag+i)` |
+| state | `market_state[d]`（因子值日真实 state，对应 SDD `state_{t-20}`）| 每日仅一行该日真实 state（**非**测试那样跨 3 state 复制）|
+| ic_value | 全 universe Spearman Rank IC | SDD §7.4 |
+| sample_size | 对齐后横截面有效股票数 | `rolling_icir_state` 以日级**行数**（≥60）判样本；本列存横截面 N |
+| row_type | 'daily' | §14-6 partial unique 仅约束 'aggregate'，不约束 daily 行 |
+
+### 11.3 实施路径
+
+**11.3.1 engine 纯函数（复用为主）**
+- 复用 `engine/factor_monitor.py::FactorMonitorEngine.calc_ic(factor_values, forward_returns) -> float | None`（已 `spearmanr` + dropna 对齐；**有效对齐样本 < 5 返 `None`**——P3-1）。
+- 新增薄编排纯函数 `compute_daily_ic(strategy_z: dict[str, pd.Series], forward_returns: pd.Series) -> list[DailyICPoint]`（每策略调 `calc_ic` + 统计对齐后 sample_size）；严格无 IO，配 UT。落 `engine/diagnostics/ic_aggregator.py`（§14-4 既有 IC 聚合模块）或同层新 module。
+- **None 处置（P3-1）**：某策略当日 `calc_ic` 返 `None`（样本不足）→ **不写该 (strategy, d) daily 行**（不写 `ic_value=NULL` 占位——`get_ic_daily_window` 按 `ic_value IS NOT NULL` 过滤，NULL 行只徒增表行不被采样；少写一行 = 该策略该日不计入窗口样本，语义正确）。
+
+**11.3.2 全 universe strategy_z 来源**
+- 关键约束：`candidate_pool` 仅存 top-N pool（~60/日），IC 必须全 universe（~2400）→ **不可复用 candidate_pool**（截断截面 + 量程受限会系统性低估 IC）。
+- `ScoringService.score_universe(session, d, universe, state)` 返回**全 universe** `list[CompositeScore]`（写 pool 是独立步）；每 `CompositeScore.score_breakdown_raw[strategy]["z_raw"]` = 该股该策略 z（AttributionService 已消费同字段，P12 实证等价）。
+- backfill 逐日：`UniverseFilter(d)` 取全 universe → `score_universe(d, universe, state[d])` → 抽每策略 z Series（全 universe，剔 None）。Rank IC 对单调变换不变 → z_raw 与 Φ(z)×100 等价。
+
+**11.3.3 前向收益（严格定义，不复用既有缺陷实现）**
+- **【S-01 警告：禁止复用既有两个前向收益函数】** `FactorMonitorService._calc_forward_returns`（`:299`）与 `AttributionService._calc_forward_returns_panel`（`:273`）均有三处缺陷，**不可用于 IC 计算**：① 用**原始 close（未复权）**——20 日窗口内除权/拆分扭曲收益；② **日历日近似窗口**（`window×1.4~1.5` 天取首个 close，非严格 t=d+20 交易日，与 §14-5 严格交易日整改相悖）；③ **无涨跌停/停牌剔除**（违反 SDD §7.4 line 473）。实施者易顺手复用 → 必须显式回避。
+- **正确实现**：复用 `MarketDataRepository.get_adj_prices_bulk`（**后复权 adj_close = close×adj_factor**）：取 universe 在 `[d, t]`（`t = calendar.get_next_trade_date(d, 20)` **严格交易日**）的 adj_close → `ret = adj_close[t]/adj_close[d] − 1`；剔 d 或 t 的 `daily_quote.limit_up/limit_down/is_suspended` 异常收益（SDD §7.4 line 473）。
+- 跳过区间末尾 20 交易日（t 越界 → forward return 不可得）。
+- **【S-02 每日最小横截面】**：对齐后有效股票数 < `_DAILY_IC_MIN_XS`（建议 30；高于 `calc_ic` 自带的 5 地板，避免噪声 IC 污染窗口）→ 该 (strategy, d) 不写 daily 行 + `logger.info`（A 股全 universe ~2400，正常日远超 30；触发多为早期数据 / 大面积停牌日）。
+- **【已知分歧 → V1.5 统一项】** attribution 自身仍用缺陷版前向收益（原始 close + 日历近似），与 daily-IC 的 adj+严格版定义不同；二者不同消费方，V1.0 不强行统一，登记 V1.5 抽共享 `compute_forward_returns` 纯函数收敛（R14-OPEN-8）。
+
+**11.3.4 backfill 脚本 `scripts/backfill_daily_ic.py`**
+- 仿 `backfill_candidate_pool.py` 骨架：`--start/--end/--dry-run-plan/--skip-confirm/--force`；per-day `AsyncSessionLocal` + commit；SIGINT/SIGTERM graceful（复用 `_GracefulInterrupt`）；断点续传查已存在 daily trade_date（新增 repo `get_existing_daily_ic_dates(start, end) -> set[date]`）。
+- 逐 trade_date d（[start, end] 去末 20 交易日）：universe → state[d] → score_universe → forward_returns → `compute_daily_ic` → `ICDailyRow`×4（state=state[d]）→ batched `upsert_ic_daily`（每行 6 列；批 ≤ 2000 行 = 12000 占位符 < 32767，沿用既有 §14-2 `_seed` 批长）。
+- **单日耗时未实测** → R14-OPEN-6：实跑前先单日计时定全量工期（初判 `score_universe` 全 universe ~10-60s/日 → 5y ~3-20h，纯 DB 无 Tushare）。
+- **【P2-2 daily/aggregate 4-tuple 碰撞】**：daily 行写在因子值日 d，而每个 month_end 自身也是某观测的因子值日 → §11.6 顺序"先 daily 回填、再月末批 `--force`"时 `upsert_ic_aggregate` 会命中既有 daily 行的 `(strategy,factor,state,trade_date)` 4-tuple，`on_conflict_do_update` 升 `row_type='aggregate'` 但 `set_` 不含 `ic_value` → 旧 daily `ic_value` 残留 → 该行被 `get_ic_daily_window`（按 `ic_value IS NOT NULL`）与 aggregate 查询双重计入。**修复**：`FactorICRepository.get_ic_daily_window` 谓词增 `row_type='daily'`（最干净，使 daily/aggregate 区分显式化）；配 INT-P14-9-02 覆盖"同 4-tuple 先 daily 后 aggregate → daily 窗口不再取到该行"。
+
+**11.3.5 实盘续算接线（CP2，forward-looking）**
+- 回填只填到迁移日；要让 ICIR 长期不失效，须把日级 IC 计算接进日常 pipeline：交易日 t 用已实现 t−20→t 收益对因子值日 d=t−20 计算 IC → 写 `row_type='daily'`。
+- d=t−20 的 strategy_z 获取：**【设计待定：(a) CP2 落"全 universe 日级 z 快照"（新表/缓存，~2400×4/日，20 日滚动保留即可，t 日回看 t−20）vs (b) 续算步骤在 t 日 PIT 复算 d=t−20 的 `score_universe`（省存储、每日多一次 CP2 计算）。回填脚本天然走 (b) 等价逐日现算；实盘倾向 (a) 避免每日双倍 CP2 算力。本子项分两步交付——回填（迁移关键路径）先行验证，续算接线方案 (a)/(b) 在回填验证通过后定夺。**消费节点：§14-9 续算接线步（本批内、回填验证通过后定夺，不推迟出 Phase 14）**。】**
+
+### 11.4 测试矩阵
+
+| 编号 | 类型 | 覆盖 |
+|------|------|------|
+| UT-P14-9-01 | unit | `compute_daily_ic`：单调正相关 strategy_z↔return → IC≈+1；反相关 → IC≈−1；含 NaN → sample_size 为对齐后有效数；**某策略对齐样本 < 5 → `calc_ic` 返 None → 该策略不产 daily 行（P3-1）** |
+| UT-P14-9-02 | unit | 前向收益：**后复权 adj_close** 序列 + **严格 20 交易日** → 正确 ret；涨跌停/停牌行剔除；**对齐有效 N < `_DAILY_IC_MIN_XS`(30) → 不写该日（S-02）** |
+| UT-P14-9-03 | unit | backfill plan/skip：mock `get_existing_daily_ic_dates` 部分 set → 跳过；区间末尾 20 交易日不处理 |
+| UT-P14-9-04 | unit | SIGINT graceful（仿 UT-P14-2-03）：inflight d commit + 不启动下一日 |
+| INT-P14-9-01 | integration | 合成 **daily_quote/financial_data/market_state_history**（跳周末；**非 candidate_pool**——backfill 经 `score_universe` 读原始数据不读 pool，S-03）小窗口 → `factor_ic_window_state` daily 行写入 + state 标签 = 因子值日 state；串联 `apply_monthly_rebalance` 后 dominant state 出 `weights_source='icir'` |
+| INT-P14-9-02 | integration | **daily/aggregate 4-tuple 碰撞（P2-2）**：同 `(s,f,state,d)` 先 `upsert_ic_daily` 后月末批 `upsert_ic_aggregate` → `get_ic_daily_window`（增 `row_type='daily'` 谓词后）不再取到被升级行，daily 窗口不重复计入 |
+| 真机-P14-9 | manual | 5y 回填后 `COUNT(*) WHERE row_type='daily'` ≈ 1180 trade_date × 4 ≈ 4700（减末 20 日 + None/稀疏跳过）；重跑 §14-2 月末批 `--force` 后 `weights_source='icir'` 行 > 0（至少 UPTREND dominant 月）|
+
+### 11.5 已知边界
+
+- **稀疏 state**：DOWNTREND/OSCILLATION 在某 252 日窗口 state 子集 < 60 → 该 state×月仍 `default_matrix`（SDD §7.4 line 478 合规降级，非 bug）。UPTREND（A 股近 5y 主导）应稳定切 icir。
+- **末尾 20 交易日**：区间最末 20 交易日 forward return 不可得，IC 留空（实盘续算在 +20 日后自然补上）。
+- **实盘续算 z 源 (a)/(b)**：见 §11.3.5 【设计待定】。
+- **daily/aggregate 共表区分（P2-2）**：`get_ic_daily_window` 必须按 `row_type='daily'` 过滤（§11.3.4），不能仅靠 `ic_value IS NOT NULL`——否则月末批 `--force` 升级行残留 ic_value 会被双重计入。
+
+### 11.6 实施顺序
+
+§14-9 依赖 §14-2 candidate_pool 5y 在库（✅ 已完成）。顺序：engine 纯函数 + 脚本（TDD RED→GREEN）→ 单日计时（R14-OPEN-6）→ 5y daily IC 回填（**prod 5432，需用户单独确认**）→ 重跑 §14-2 月末批 `--force`（icir 覆盖 default_matrix）→ 真机验证 → 实盘续算接线（CP2，方案定夺后）→ 全回归。关键路径插 §14-2 之后、§14-4 之前（§14-4 ICIR 校准依赖真 IC 时序）。
+
+---
+
+## 12. 实施顺序与依赖
 
 ```
 §14-1 RM-13 deposit 幂等            （独立，可先做）
@@ -692,27 +784,29 @@ else:
        ↓
 §14-6 共表拆分（方案 A）            （不阻塞 §14-2，但建议先做）
        ↓
-§14-2 5y candidate_pool 回填 + ICIR 历史回算（耗时最长 50-80h）
+§14-2 5y candidate_pool 回填 + ICIR 历史回算（耗时最长 50-80h；2026-06-02 发现 ICIR 段缺日级 IC 生产者 → §14-9 补全）
        ↓
-§14-3 BacktestEngine 真 5 步（方案 A v1.2：直接复用既有 `Scorer.aggregate` + BacktestService 补加载 float_mkt_cap + active_weights_history + BacktestEngine 主循环 3 处改造 + WINSORIZE_MIN_SAMPLES=30 + _lookup_active_weights helper）
+§14-9 日级 IC 生产者（依赖 §14-2 candidate_pool 在库；engine 纯函数 + backfill_daily_ic 5y 回填 ~3-20h + 重跑月末批 --force 切 icir + 实盘续算接线）
+       ↓
+§14-3 BacktestEngine 真 5 步（方案 A v1.2：直接复用既有 `Scorer.aggregate` + BacktestService 补加载 float_mkt_cap + active_weights_history + BacktestEngine 主循环 3 处改造 + WINSORIZE_MIN_SAMPLES=30 + _lookup_active_weights helper；与 §14-9 无依赖，可并行）
        ↓
 §14-8 AttrBackfill                  （依赖 §14-2 candidate_pool）
        ↓
-§14-4 ICIR 校准最小集               （依赖 §14-2 + §14-3 全部到位）
+§14-4 ICIR 校准最小集               （依赖 §14-2 + §14-3 + **§14-9 真 IC 时序** 全部到位）
 ```
 
-**关键路径**：§14-1/§14-7 → §14-5 → §14-6 → §14-2 → §14-3 → §14-8 → §14-4
+**关键路径**：§14-1/§14-7 → §14-5 → §14-6 → §14-2 → §14-9 → §14-3 → §14-8 → §14-4
 
 ---
 
-## 12. DoD（Phase 14 收尾标准）
+## 13. DoD（Phase 14 收尾标准）
 
 | 项 | 验收标准 |
 |---|---------|
-| 单元测试 | UT-P14-1-* / UT-P14-2-* / UT-P14-3-* / UT-P14-4-01~02 / UT-P14-5-01 全部 PASS |
-| 集成测试 | INT-P14-1-01/02 / INT-P14-2-01 / INT-P14-3-01 / INT-P14-5-01 / INT-P14-6-01/02 / INT-P14-8-01 全部 PASS（测试 DB 5433）|
+| 单元测试 | UT-P14-1-* / UT-P14-2-* / UT-P14-3-* / UT-P14-4-01~02 / UT-P14-5-01 / UT-P14-9-01~04 全部 PASS |
+| 集成测试 | INT-P14-1-01/02 / INT-P14-2-01 / INT-P14-3-01 / INT-P14-5-01 / INT-P14-6-01/02 / INT-P14-8-01 / INT-P14-9-01 全部 PASS（测试 DB 5433）|
 | E2E | E2E-P14-1-01（deposit 幂等）PASS |
-| 真机验收 | 5y candidate_pool 全量在库（≥ 60k 行）+ `strategy_weights_history.weights_source='icir'` ≥ 700 行 + attribution_history ≥ 200 行 + 真机-P14-4-1/2/3 三项量化阈值全部 PASS |
+| 真机验收 | 5y candidate_pool 全量在库（≥ 60k 行）+ **§14-9 `factor_ic_window_state` daily 行 ≈ 4700**（~1180 trade_date × 4 strategy）+ 重跑月末批 `--force` 后 `strategy_weights_history.weights_source='icir'` 行 **> 0**（dominant state UPTREND；稀疏 state < 60 样本仍 `default_matrix` 属 SDD §7.4 合规，故不设 ≥700 绝对门槛）+ attribution_history ≥ 200 行 + 真机-P14-4-1/2/3 三项量化阈值全部 PASS |
 | ruff | 0 error |
 | 冒烟 | 现 deposit/dividend 冒烟扩展幂等用例（同 key 调用 2 次 → 200 + 同 flow_id），编号续接 API-102（具体编号实施时确认）+ Phase 13 冒烟仍 PASS |
 | 文档同步 | system_design v1.9 §9 Phase 14 行标 "完成 ✓"；CLAUDE.md §9；Phase 13 评审报告 §8 R13-P2-* 6 项勾选；Phase 12 评审报告 §4 R12-P2-2/P2-3 勾选（R12-P1-2 已在 Phase 13 启动核查勾选，不重复）|
@@ -720,7 +814,7 @@ else:
 
 ---
 
-## 13. 未在 Phase 14 收口的相关项目
+## 14. 未在 Phase 14 收口的相关项目
 
 - **Phase 15 RC**：5y 真机端到端验收（评分 + 信号 + 因子 + 监控 + 账户）/ 30 日完整版跨制度回归 / STRONG 相对百分比化 / 覆盖率 ≥ 90% 门槛 / 文档校核 / V1.0 RC 标签
 - **V1.5-A 监控增强**：R13-P3 5 项（API-101 Upgrade header / SecretFilter record.__dict__ / factor_monitor_params config_key / TushareAdapter 统一埋点 / Grafana 3 panel）
@@ -729,7 +823,7 @@ else:
 
 ---
 
-## 14. 风险与开放问题
+## 15. 风险与开放问题
 
 | 编号 | 风险 | 缓解 |
 |------|------|------|
@@ -738,7 +832,10 @@ else:
 | R14-OPEN-3 | §14-3 真 5 步 universe 阈值 | `WINSORIZE_MIN_SAMPLES=30` 在 §5.2.3 新定义于 `engine/scorer.py` 顶部（既有代码 grep 无此常量，Phase 14 §14-3 是首个消费方）；ScoringService 未来如需同等门槛检查可同源 import；选 30 的理由：与 §14-2 candidate_pool 默认 50 上限同源思路（横截面统计量稳定性下限）|
 | R14-OPEN-4 | RM-13 idempotency_key 前端 UUID 生成时机（disabled 按钮内复用 vs 新生成）| 按钮 mounted 时生成；提交成功后清空 + 下次 enabled 重新生成（避免长时间复用导致跨会话冲突）|
 | R14-OPEN-5 | ICIR 历史回算 60 month_end × 5-20s 估算 | 实际跑前先 1 个 month_end 单次计时验证（PG 调用 + commit 可能高于 5s）|
+| R14-OPEN-6 | §14-9 日级 IC 回填单日 `score_universe`（全 universe）耗时未实测，5y 工期 ~3-20h 为初判 | 实跑前先单日计时定全量工期；纯 DB 无 Tushare，可 nohup 后台 + 断点续传（`get_existing_daily_ic_dates`）+ SIGINT/SIGTERM graceful |
+| R14-OPEN-7 | §14-9 实盘续算 d=t−20 因子值 z 源方案 (a) 落全 universe 日级 z 快照 vs (b) t 日 PIT 复算 `score_universe` 未定 | 回填（迁移关键路径）先行验证；续算接线方案在回填验证通过后定夺（§11.3.5 【设计待定】）|
+| R14-OPEN-8 | daily-IC 与 attribution 前向收益定义分歧（前者 adj+严格交易日 / 后者原始 close+日历近似）| V1.0 二者不同消费方不强行统一；V1.5 抽共享 `compute_forward_returns(adj, 严格交易日, 剔涨跌停/停牌)` 纯函数收敛 attribution + daily-IC + ICIR 三处（S-01）|
 
 ---
 
-> **依据 CLAUDE.md §11.1 三链必填**：本设计文档 §1.3 启动核查已 grep 跨 system_design + roadmap + reviews/ 三处确认 8 项 scope 完整；§13 显式列出未在本 phase 收口的项目及其归属。
+> **依据 CLAUDE.md §11.1 三链必填**：本设计文档 §1.3 启动核查已 grep 跨 system_design + roadmap + reviews/ 三处确认 8 项 scope 完整；§14 显式列出未在本 phase 收口的项目及其归属。
