@@ -89,3 +89,20 @@
 - **CAL-C-01 验证点**：UT-CAL-04 断言无参默认范围 = daily_quote 实际区间（不含早于回填起点的 2020-06，不含未来前瞻 2026-08），假缺口根除。
 
 8 项全部 ✅。下一步：提交（日历改动 + 本评审报告，按文件名 add）→ 生产库 5432 三步（需用户单独确认）。
+
+---
+
+## 7. 生产库执行记录（2026-06-02）
+
+提交后用户逐项确认，对生产栈（`docker-compose.prod.yml`，db 5432 内网无 host 映射）执行三步。
+
+**机制更正**：运行中的 backend 镜像 COPY src 进镜像（非挂载），是 0015 之前构建的 stale 镜像（无新迁移 / 模型 / main.py 自愈 / audit 脚本）——记过的「Docker COPY src 镜像 stale」陷阱。故正确路径为**重建镜像 + 重启**（CMD `alembic upgrade head &&` 自动迁移 + 新 main.py lifespan 自愈灌日历），再跑审计：
+
+| 步骤 | 命令 | 结果 |
+|------|------|------|
+| 重建 | `compose ... build backend` | 镜像刷新 COPY src/alembic/scripts 层 |
+| ① 迁移 | 重启 backend，CMD 自动执行 | `Running upgrade 0014 -> 0015` ✅ |
+| ② 灌日历 | 新 main.py lifespan 自愈（Tushare→5432） | SSE **2281 历法日行 / 1516 开市日 / 2020-06-03 → 2026-08-31** ✅ |
+| ③ 审计 | `exec backend python scripts/audit_data_integrity.py` | **退出码 0，无缺口** ✅ |
+
+**CAL-C-01 真机验证**：无参默认范围自动夹到 `2021-05-13 → 2026-06-01`（daily_quote 实际区间），未取日历全 extent（含未来前瞻 2026-08 / 早于回填起点 2020-06）——三表（daily_quote / candidate_pool / index_history）各 1224 天全 present，假缺口根除。生产库迁移基线就绪。
