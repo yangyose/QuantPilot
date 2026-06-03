@@ -316,12 +316,15 @@ class ScoringService:
     # Phase 11 §6.3：run_daily_scoring 切换到 5 步管线（DailyPipeline CP2 主入口）
     # =====================================================================
 
-    async def _run_phase11_pipeline(
-        self,
-        trade_date: date,
-        holding_codes: frozenset[str] | set[str] = frozenset(),
+    async def score_universe_for_date(
+        self, trade_date: date,
     ) -> list[CompositeScore]:
-        """Phase 11 §6.3：``run_daily_scoring`` 在 ``factor_monitor`` 注入时走的新路径。
+        """Phase 14 §14-9 / Phase 11 §6.3：全 universe 评分，返回 full-universe
+        composites，**不写 candidate_pool**。
+
+        ``scripts/backfill_daily_ic.py`` 复用此方法取全 universe strategy_z
+        （``CompositeScore.score_breakdown_raw[strategy]["z_raw"]``）算日级 IC；
+        ``run_daily_scoring`` 的 5 步管线路径（``_run_phase11_pipeline``）在此之上再写 pool。
 
         - UniverseFilter + 黑名单 → universe
         - 当日 market_state（fallback OSCILLATION）
@@ -383,10 +386,21 @@ class ScoringService:
         else:
             market_state = MarketStateEnum(state_record.market_state)
 
-        composites = await self.score_universe(
+        return await self.score_universe(
             self._repo.session, trade_date, list(universe), market_state,
         )
 
+    async def _run_phase11_pipeline(
+        self,
+        trade_date: date,
+        holding_codes: frozenset[str] | set[str] = frozenset(),
+    ) -> list[CompositeScore]:
+        """Phase 11 §6.3：``run_daily_scoring`` 在 ``factor_monitor`` 注入时走的新路径
+        ——``score_universe_for_date`` 全 universe 评分 + ``write_candidate_pool`` 入池。
+        """
+        composites = await self.score_universe_for_date(trade_date)
+        if not composites:
+            return []
         await self.write_candidate_pool(
             composites, trade_date, holding_codes=holding_codes,
         )
