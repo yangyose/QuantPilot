@@ -49,6 +49,8 @@ sudo systemctl enable --now docker
 
 > Windows / macOS 服务器场景不在此文档覆盖范围。如果你用 Docker Desktop 试装，流程类似但建议读完后用 Linux 复跑。
 
+> **CPU 架构**：x86_64 与 **ARM64（aarch64）均支持**。在 ARM64 机（如 Oracle Cloud Always Free Ampere A1）上部署有少量差异（镜像需在本机构建、迁移与保活注意事项）——见 **§14**。
+
 ---
 
 ## 3. 一键部署（推荐路径）
@@ -491,6 +493,55 @@ docker volume rm $(docker volume ls -q | grep -E 'prometheus_data|grafana_data')
 
 > **数据保留**：Prometheus 默认 retention 30 天 / 2GB（在 compose `command` 内配置）。
 > 长期归档建议接 remote_write 到 Mimir/Thanos；V1.0 单实例足够。
+
+---
+
+## 14. ARM64 部署（Oracle Cloud Always Free 等）
+
+QuantPilot 全栈支持 **ARM64（aarch64）**。推荐的低成本海外免备案目标是 **Oracle Cloud Always Free 的 Ampere A1**（4 OCPU / 24GB RAM / 200GB，永久免费，新加坡/东京区）。24GB 内存让全期数据回填（如新增因子/策略后重算 5y `score_universe`）能直接在服务器上跑，无需升配。
+
+本节只列**与 x86 标准流程的差异**；其余（§3~§13）通用。
+
+### 14.1 架构兼容性（为什么能跑）
+
+- **base 镜像全多架构**：`python:3.12-slim` / `postgres:15-alpine` / `redis:7-alpine` / `nginx:1.25-alpine` 官方均有 arm64 变体，`docker compose build/pull` 在 ARM 机上自动取 arm64。
+- **Python 栈全有 aarch64 wheel**：pandas / numpy / scipy / pandas-ta / asyncpg / pydantic-core 均提供 manylinux aarch64 轮子，`uv sync` 无需本地编译。
+- **无 x86-only 依赖**：代码与依赖不含架构绑定的二进制。
+
+### 14.2 镜像构建：在 ARM 机上本地 build（不要 x86 交叉推送）
+
+最简、最稳的做法是**直接在 Oracle ARM 机上构建**，让 `uv sync` 自然解析 aarch64 wheel：
+
+```bash
+# 在 Oracle ARM 机上（已拉代码）
+docker compose -f docker-compose.prod.yml --env-file .env.prod build backend
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+```
+
+> 若坚持本地 x86 交叉构建后推送，需 `docker buildx build --platform linux/arm64 ...` + 镜像仓库中转；不如直接在目标机 build 省事。
+
+### 14.3 数据迁移：架构无关
+
+`pg_dump` 是**逻辑导出**，与 CPU 架构无关。x86 机上 `scripts/backup_db.sh` 产出的 `qp_*.sql.gz` 可直接在 ARM 机上 `scripts/restore_db.sh` 灌入 ARM 的 Postgres 15——5y 全量数据无障碍迁移。
+
+迁移红线（同 §11 / 迁移备忘）：**源端 pg_data 卷在目标端验证数据完整前绝不删**；同一逻辑库同时只能一台对外/续跑。
+
+### 14.4 前端构建：24GB 下无 OOM
+
+2GB 小机上 vite/npm 构建有 OOM 风险（需本地预构建 dist 再传）。**Oracle 24GB 机直接在服务器上构建即可**，`frontend-builder` 不必特殊处理。
+
+### 14.5 Oracle Always Free 专属注意事项
+
+| 事项 | 说明 / 缓解 |
+|------|------------|
+| **抢容量** | 新加坡/东京区 A1 旺季可能 `Out of Capacity`。**两层解**：① **升 PAYG 提升启动优先级**（多数人升级后直接可建，与防回收同一动作）；② 仍不行则跑开源重试脚本循环调 `LaunchInstance`（`mohankumarpaluru/oracle-freetier-instance-creation`：每 60s 重试 + 成功通知；脚本纯调 OCI API，可跑在任意常开机器/本地）。战术：试遍 AD / 先抢 1 OCPU 再 resize 到 4/24 / 错峰重试。 |
+| **闲置回收（首要解）** | 判定＝7 天内 95 百分位 CPU<20%。**权威防回收 = 账号升级 Pay-As-You-Go（PAYG）**：Always-Free 的 4核/24GB 仍 $0（不超免费额度不扣费），但实例**豁免闲置回收**。比 keepalive 干净彻底，强烈推荐升级后再建实例。退路：留在 free-trial 时靠常驻 PG + cron 持续小负载保活（95 百分位需持续占用，较浪费）。 |
+| **账号验证** | 注册需信用卡做身份验证（不扣费），偶有风控；保持 `scripts/backup_db.sh` 每日备份 + 异地副本兜底（§7）。 |
+| **无 SLA** | 免费层无可用性保证。关键是**备份**——数据可从异地 dump 随时在任意 ARM/x86 机重建。 |
+
+### 14.6 验收（ARM 机部署后）
+
+与 x86 相同：`scripts/prod_smoke.sh` 全过 + `/health` 200 + 17:30 批跑通。额外确认 `uname -m` 显示 `aarch64`、`docker image inspect quantpilot-backend --format '{{.Architecture}}'` 为 `arm64`。
 
 ---
 
