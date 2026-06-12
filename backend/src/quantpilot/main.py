@@ -161,6 +161,18 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("fallback_calendar_init_failed_no_tushare")
 
+    # 启动回收孤儿回测任务（上次进程因部署/重启/OOM 中断残留的 RUNNING/PENDING → FAILED），
+    # 独立 try/except 不阻塞启动。
+    try:
+        from quantpilot.core.database import AsyncSessionLocal
+        from quantpilot.services.backtest_service import reconcile_orphan_backtests
+
+        recovered = await reconcile_orphan_backtests(AsyncSessionLocal)
+        if recovered:
+            logger.info("orphan_backtests_reconciled count=%d", recovered)
+    except Exception:
+        logger.exception("orphan_backtest_reconcile_failed")
+
     yield
 
     if app.state.scheduler is not None:

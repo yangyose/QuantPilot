@@ -264,40 +264,47 @@ class BacktestService:
         else:
             stock_info = pd.DataFrame()
 
-        # ── 3. financials ─────────────────────────────────────────────────────
+        # ── 3. financials（+ 3b. pe_pb_history） ──────────────────────────────
+        # 内存优化（2026-06-12）：原实现 `select(FinancialData)` 全表（631 万行）×
+        # 两次 list-of-dicts materialize（financials + pe_pb_history），在 2GB 机上
+        # 跑长区间回测必爆内存。改为：
+        #   (1) 按 [lookback_start, end_date] 切界 publish_date——financial_data 是日级
+        #       （每股每交易日一行），PIT 在 trade_date 取 publish_date<=trade_date 的最近
+        #       一行，必落在 [start-130d, start] 内，故下界 lookback_start 安全保留 PIT 行；
+        #       上界 end_date 本就排除未来数据。回测 [start,end] 永不引用窗口外行。
+        #   (2) 列裁剪 select（只取 8 列、返回轻量 Row 元组，不进 identity map）；
+        #   (3) pe_pb_history 从 fin_df 列子集派生，不再二次 materialize 全量。
         from quantpilot.models.market import FinancialData
         fin_rows = (await self._session.execute(
-            select(FinancialData)
-        )).scalars().all()
+            select(
+                FinancialData.ts_code,
+                FinancialData.report_period,
+                FinancialData.publish_date,
+                FinancialData.net_profit_yoy,
+                FinancialData.total_equity,
+                FinancialData.debt_to_asset,
+                FinancialData.pe_ttm,
+                FinancialData.pb,
+            )
+            .where(FinancialData.publish_date >= lookback_start)
+            .where(FinancialData.publish_date <= config.end_date)
+        )).all()
         if fin_rows:
-            financials = pd.DataFrame([{
-                "ts_code": r.ts_code,
-                "report_period": r.report_period,
-                "publish_date": r.publish_date,
-                "net_profit_yoy": float(r.net_profit_yoy) if r.net_profit_yoy is not None else None,
-                "total_equity": float(r.total_equity) if r.total_equity is not None else None,
-                "debt_to_asset": float(r.debt_to_asset) if r.debt_to_asset is not None else None,
-                "pe_ttm": float(r.pe_ttm) if r.pe_ttm is not None else None,
-                "pb": float(r.pb) if r.pb is not None else None,
-            } for r in fin_rows])
-            if not financials.empty:
-                financials = financials.set_index(["ts_code", "report_period"])
+            fin_df = pd.DataFrame(fin_rows, columns=[
+                "ts_code", "report_period", "publish_date",
+                "net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb",
+            ])
+            # NUMERIC → float（Decimal/None → float/NaN，与原 float(...)/None 行为等价）
+            for c in ("net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb"):
+                fin_df[c] = pd.to_numeric(fin_df[c], errors="coerce")
+            financials = fin_df.set_index(["ts_code", "report_period"])
+            # 3b. pe_pb_history（B3-3 ValueStrategy 真实分位数）——从 fin_df 派生
+            pe_pb_history = (
+                fin_df[["ts_code", "publish_date", "pe_ttm", "pb"]]
+                .set_index(["ts_code", "publish_date"]).sort_index()
+            )
         else:
             financials = pd.DataFrame()
-
-        # ── 3b. pe_pb_history（B3-3 ValueStrategy 真实分位数） ───────────────
-        if fin_rows:
-            pe_pb_history = pd.DataFrame([{
-                "ts_code": r.ts_code,
-                "publish_date": r.publish_date,
-                "pe_ttm": float(r.pe_ttm) if r.pe_ttm is not None else None,
-                "pb": float(r.pb) if r.pb is not None else None,
-            } for r in fin_rows])
-            if not pe_pb_history.empty:
-                pe_pb_history = (
-                    pe_pb_history.set_index(["ts_code", "publish_date"]).sort_index()
-                )
-        else:
             pe_pb_history = pd.DataFrame()
 
         # ── 4. hs300_history（OHLC + 累计后复权 close） ──────────────────────
@@ -370,6 +377,39 @@ class BacktestService:
             index_adj_prices=index_adj_prices,
             active_weights_history=active_weights_history,
         )
+
+
+async def reconcile_orphan_backtests(session_factory) -> int:
+    """应用启动时回收孤儿回测任务（残留 RUNNING/PENDING → FAILED）。
+
+    回测在后台 BackgroundTask 中执行；进程因部署/重启/OOM 中断时，`run_task` 来不及
+    写 SUCCESS/FAILED，任务会永久卡在 RUNNING/PENDING（轮询端点永远拿不到结果，前端
+    表现为"超时"）。启动时把这类残留任务标 FAILED——既清理历史孤儿、也防复发。
+
+    用独立事务（`async with session.begin()`）保证 CLI/启动钩子路径显式提交。
+    返回回收条数。
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update as sql_update
+
+    from quantpilot.models.system import BacktestTask
+
+    async with session_factory() as session:
+        async with session.begin():
+            result = await session.execute(
+                sql_update(BacktestTask)
+                .where(BacktestTask.status.in_(("RUNNING", "PENDING")))
+                .values(
+                    status="FAILED",
+                    error_msg="进程重启中断（孤儿任务启动回收）",
+                    finished_at=datetime.now(tz=timezone.utc),
+                )
+            )
+    count = result.rowcount or 0
+    if count:
+        logger.info("reconcile_orphan_backtests recovered=%d", count)
+    return count
 
 
 def _config_to_dict(config: BacktestConfig) -> dict:
