@@ -182,9 +182,15 @@ const historyColumns = [
       text="信号为算法量化结果，反映模型对历史数据的拟合判断，不构成任何投资建议、不接受委托、不构成投顾服务。是否依据信号交易由用户自行决策并承担全部后果。"
     />
     <a-tabs v-model:active-key="activeTab">
-      <!-- 今日信号 Tab -->
-      <a-tab-pane key="today" tab="今日信号">
+      <!-- 最新信号 Tab -->
+      <a-tab-pane key="today" tab="最新信号">
         <a-spin :spinning="signalStore.loading">
+          <div
+            v-if="signalStore.signalDate"
+            style="margin-bottom: 12px; color: rgba(0,0,0,.45); font-size: 13px"
+          >
+            信号日期：{{ signalStore.signalDate }}
+          </div>
           <template v-if="signalStore.signals.length > 0">
             <SignalCard
               v-for="signal in signalStore.signals"
@@ -193,7 +199,7 @@ const historyColumns = [
               @click="openSignal"
             />
           </template>
-          <EmptyState v-else title="今日暂无信号" />
+          <EmptyState v-else title="暂无信号" description="每日收盘后 17:30 Pipeline 生成当日信号" />
         </a-spin>
       </a-tab-pane>
 

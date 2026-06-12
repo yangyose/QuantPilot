@@ -52,9 +52,12 @@ def _mock_signal(
 # SAPI-01: GET /signals（mock 返回空列表）
 # ---------------------------------------------------------------------------
 async def test_sapi_01_get_signals_empty(client: AsyncClient) -> None:
-    """SAPI-01: GET /signals → 200, data.signals=[]"""
+    """SAPI-01: GET /signals（无 trade_date，库中无信号）→ 200, signals=[], trade_date=None。
+
+    缺省走 get_latest_signals（最新可用信号），无任何信号时返回 ([], None)。
+    """
     mock_service = AsyncMock()
-    mock_service.get_today_signals = AsyncMock(return_value=[])
+    mock_service.get_latest_signals = AsyncMock(return_value=([], None))
 
     app.dependency_overrides[get_signal_service] = lambda: mock_service
     try:
@@ -67,16 +70,17 @@ async def test_sapi_01_get_signals_empty(client: AsyncClient) -> None:
     assert body["code"] == 0
     assert body["data"]["signals"] == []
     assert body["data"]["total"] == 0
+    assert body["data"]["trade_date"] is None
 
 
 # ---------------------------------------------------------------------------
 # SAPI-02: GET /signals（mock 返回 2 条信号）
 # ---------------------------------------------------------------------------
 async def test_sapi_02_get_signals_with_data(client: AsyncClient) -> None:
-    """SAPI-02: GET /signals → 200, data.signals 长度=2，字段完整"""
+    """SAPI-02: GET /signals（无 trade_date）→ 200，返回最新可用信号 + 解析出的 trade_date。"""
     sigs = [_mock_signal(1, "000001.SZ"), _mock_signal(2, "000002.SZ")]
     mock_service = AsyncMock()
-    mock_service.get_today_signals = AsyncMock(return_value=sigs)
+    mock_service.get_latest_signals = AsyncMock(return_value=(sigs, date(2026, 4, 8)))
 
     app.dependency_overrides[get_signal_service] = lambda: mock_service
     try:
@@ -90,12 +94,40 @@ async def test_sapi_02_get_signals_with_data(client: AsyncClient) -> None:
     data = body["data"]
     assert data["total"] == 2
     assert len(data["signals"]) == 2
+    # 缺省返回最新有信号交易日，trade_date 反映真实信号日期（非字面今天）
+    assert data["trade_date"] == "2026-04-08"
     item = data["signals"][0]
     assert "id" in item
     assert "ts_code" in item
     assert "signal_type" in item
     assert "score" in item
     assert "status" in item
+
+
+async def test_sapi_07_get_signals_explicit_date(client: AsyncClient) -> None:
+    """SAPI-07: GET /signals?trade_date=YYYY-MM-DD → 走指定日期路径（get_today_signals）。"""
+    sigs = [_mock_signal(1, "000001.SZ", trade_date=date(2026, 4, 8))]
+    mock_service = AsyncMock()
+    mock_service.get_today_signals = AsyncMock(return_value=sigs)
+    # 显式日期不应触发 latest 回退
+    mock_service.get_latest_signals = AsyncMock(return_value=([], None))
+
+    app.dependency_overrides[get_signal_service] = lambda: mock_service
+    try:
+        resp = await client.get(
+            "/api/v1/signals",
+            params={"trade_date": "2026-04-08"},
+            headers=_auth_header(),
+        )
+    finally:
+        app.dependency_overrides.pop(get_signal_service, None)
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["trade_date"] == "2026-04-08"
+    assert data["total"] == 1
+    mock_service.get_today_signals.assert_awaited_once()
+    mock_service.get_latest_signals.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

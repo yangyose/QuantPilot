@@ -49,23 +49,27 @@ describe('useSignalStore', () => {
     expect(store.currentLineage).toBeNull()
   })
 
-  it('fetchSignals 成功后写入 signals 并重置 loading', async () => {
-    vi.mocked(signalApi.getSignals).mockResolvedValue([mockSignal])
+  it('fetchSignals 成功后写入 signals + signalDate 并重置 loading', async () => {
+    vi.mocked(signalApi.getSignals).mockResolvedValue({
+      signals: [mockSignal],
+      tradeDate: '2026-04-15',
+    })
     const store = useSignalStore()
     await store.fetchSignals()
     expect(store.signals).toEqual([mockSignal])
+    expect(store.signalDate).toBe('2026-04-15')
     expect(store.loading).toBe(false)
   })
 
   it('fetchSignals 过程中 loading 为 true，完成后恢复 false', async () => {
-    let resolveSignals!: (v: Signal[]) => void
+    let resolveSignals!: (v: signalApi.SignalListResult) => void
     vi.mocked(signalApi.getSignals).mockReturnValue(
-      new Promise<Signal[]>((res) => { resolveSignals = res }),
+      new Promise<signalApi.SignalListResult>((res) => { resolveSignals = res }),
     )
     const store = useSignalStore()
     const promise = store.fetchSignals()
     expect(store.loading).toBe(true)
-    resolveSignals([mockSignal])
+    resolveSignals({ signals: [mockSignal], tradeDate: '2026-04-15' })
     await promise
     expect(store.loading).toBe(false)
   })

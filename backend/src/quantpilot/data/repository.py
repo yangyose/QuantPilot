@@ -1133,6 +1133,15 @@ class MarketDataRepository:
         result = await self._session.execute(q)
         return list(result.scalars().all())
 
+    async def get_latest_signal_date(self) -> date | None:
+        """返回 signal 表中最新的 trade_date（无任何信号时返回 None）。
+
+        用于"最新可用信号"默认视图：信号是收盘后每日一次产出，缺省查字面今天
+        在盘中/周末/节假日必然为空，故回退到最近一个有信号的交易日。
+        """
+        result = await self._session.execute(select(func.max(Signal.trade_date)))
+        return result.scalar_one_or_none()
+
     async def get_signal_history(
         self,
         ts_code: str | None = None,

@@ -226,6 +226,25 @@ class SignalService:
         """查询指定日期的信号列表，支持按 signal_type / status 过滤。"""
         return await self._repo.get_signals_by_date(trade_date, signal_type, status)
 
+    async def get_latest_signals(
+        self,
+        signal_type: str | None = None,
+        status: str | None = None,
+    ) -> tuple[list[SignalModel], date | None]:
+        """返回"最新有信号的交易日"的信号列表 + 该交易日。
+
+        信号是收盘后每日一次产出，首页/信号页缺省查字面今天在盘中（17:30 批之前）、
+        周末、节假日必然为空——这是无意义的空态。缺省回退到最近一个有信号的交易日
+        （与原始规格 spec_v0.1「首页展示最新信号列表」一致）。
+
+        库中无任何信号时返回 ([], None)。调用方据此把响应的 trade_date 设为 None。
+        """
+        latest = await self._repo.get_latest_signal_date()
+        if latest is None:
+            return [], None
+        signals = await self._repo.get_signals_by_date(latest, signal_type, status)
+        return signals, latest
+
     async def get_signal_history(
         self,
         ts_code: str | None = None,

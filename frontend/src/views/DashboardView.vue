@@ -177,8 +177,17 @@ const topSignals = computed(() => signalStore.signals.slice(0, 5))
         </a-spin>
       </a-card>
 
-      <!-- 今日信号摘要 -->
-      <a-card title="今日信号摘要（前5条）">
+      <!-- 最新信号摘要 -->
+      <a-card>
+        <template #title>
+          最新信号摘要（前5条）
+          <span
+            v-if="signalStore.signalDate"
+            style="font-weight: 400; color: rgba(0,0,0,.45); font-size: 12px; margin-left: 8px"
+          >
+            信号日期 {{ signalStore.signalDate }}
+          </span>
+        </template>
         <template v-if="topSignals.length > 0">
           <SignalCard
             v-for="signal in topSignals"
@@ -186,7 +195,7 @@ const topSignals = computed(() => signalStore.signals.slice(0, 5))
             :signal="signal"
           />
         </template>
-        <EmptyState v-else title="今日暂无信号" description="Pipeline 运行后生成信号" />
+        <EmptyState v-else title="暂无信号" description="每日收盘后 17:30 Pipeline 生成当日信号" />
       </a-card>
     </a-spin>
   </div>

@@ -1,8 +1,7 @@
 """Signals API：信号查询与状态管理（Phase 5）。"""
 from __future__ import annotations
 
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query  # noqa: F401
 from fastapi.responses import JSONResponse
@@ -19,10 +18,6 @@ from quantpilot.services.lineage_service import LineageService
 from quantpilot.services.signal_service import SignalService
 
 router = APIRouter()
-
-
-def _today_cn() -> date:
-    return datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
 
 
 async def _enrich_with_names(
@@ -49,21 +44,31 @@ async def _enrich_with_names(
 
 @router.get("")
 async def get_signals(
-    trade_date: date | None = Query(default=None, description="默认今日"),
+    trade_date: date | None = Query(
+        default=None, description="缺省返回最新有信号的交易日；指定则查该日"
+    ),
     signal_type: str | None = Query(default=None, description="BUY / SELL"),
     status: str | None = Query(default=None, description="NEW / VIEWED / ACTED / EXPIRED"),
     _: str = Depends(get_current_user),
     service: SignalService = Depends(get_signal_service),
     repo: MarketDataRepository = Depends(get_repo),
 ):
-    """GET /api/v1/signals — 今日（或指定日期）信号列表"""
-    target_date = trade_date or _today_cn()
-    signals = await service.get_today_signals(target_date, signal_type, status)
+    """GET /api/v1/signals — 最新可用信号列表（或指定日期）。
+
+    信号是收盘后每日一次产出，缺省查字面今天在盘中/周末/节假日必然为空。
+    故 trade_date 缺省时回退到最近一个有信号的交易日；显式传 trade_date 则查该日。
+    响应 trade_date 反映实际信号日期（无任何信号时为 null）。
+    """
+    if trade_date is not None:
+        target_date: date | None = trade_date
+        signals = await service.get_today_signals(trade_date, signal_type, status)
+    else:
+        signals, target_date = await service.get_latest_signals(signal_type, status)
     signal_dicts = await _enrich_with_names(signals, repo)
     return {
         "code": 0,
         "data": {
-            "trade_date": target_date.isoformat(),
+            "trade_date": target_date.isoformat() if target_date else None,
             "signals": signal_dicts,
             "total": len(signal_dicts),
         },

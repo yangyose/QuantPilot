@@ -17,10 +17,19 @@ export interface SignalHistoryParams {
   offset?: number
 }
 
+export interface SignalListResult {
+  signals: Signal[]
+  /** 实际信号日期（缺省查询时为最新有信号的交易日；无任何信号时为 null） */
+  tradeDate: string | null
+}
+
 /** GET /signals 响应：{trade_date, signals:[...], total} */
-export async function getSignals(params?: SignalListParams): Promise<Signal[]> {
+export async function getSignals(params?: SignalListParams): Promise<SignalListResult> {
   const res = await client.get('/api/v1/signals', { params })
-  return (res.data.data?.signals ?? []) as Signal[]
+  return {
+    signals: (res.data.data?.signals ?? []) as Signal[],
+    tradeDate: (res.data.data?.trade_date ?? null) as string | null,
+  }
 }
 
 /** GET /signals/history 响应：{signals:[...], limit, offset} */

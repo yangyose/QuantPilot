@@ -1192,7 +1192,7 @@ WebSocket 端点见 §2.7（流水线进度、回测进度）。
 | **市场** | GET | `/market/state` | 当前市场状态及历史 |
 | **市场** | GET | `/market/pool` | 候选股池（分页、排序、过滤；is_holding 标识持仓标的） |
 | **市场** | GET | `/market/stock/{ts_code}/score` | 单股历史评分走势 |
-| **信号** | GET | `/signals` | 今日信号列表 |
+| **信号** | GET | `/signals` | 最新可用信号列表（缺省回退到最近一个有信号的交易日，响应含实际 trade_date；可显式按 trade_date 过滤）。信号为收盘后每日一次产出，缺省查字面今天在盘中/周末/节假日必然为空，故回退最新——与原始规格"首页展示最新信号列表"一致 |
 | **信号** | GET | `/signals/history` | 历史信号记录 |
 | **信号** | PATCH | `/signals/{id}/status` | 更新信号状态（接受/忽略） |
 | **信号** | GET | `/signals/{id}/lineage` | 信号数据血缘（评分快照） |

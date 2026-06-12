@@ -5,6 +5,7 @@ import type { Signal, SignalLineage, SignalStatus } from '@/types/api'
 
 export const useSignalStore = defineStore('signals', () => {
   const signals = ref<Signal[]>([])
+  const signalDate = ref<string | null>(null)
   const history = ref<Signal[]>([])
   const loading = ref(false)
   const currentLineage = ref<SignalLineage | null>(null)
@@ -12,7 +13,9 @@ export const useSignalStore = defineStore('signals', () => {
   async function fetchSignals(params?: signalApi.SignalListParams): Promise<void> {
     loading.value = true
     try {
-      signals.value = await signalApi.getSignals(params)
+      const res = await signalApi.getSignals(params)
+      signals.value = res.signals
+      signalDate.value = res.tradeDate
     } finally {
       loading.value = false
     }
@@ -38,5 +41,5 @@ export const useSignalStore = defineStore('signals', () => {
     currentLineage.value = await signalApi.getSignalLineage(id)
   }
 
-  return { signals, history, loading, currentLineage, fetchSignals, fetchHistory, updateStatus, fetchLineage }
+  return { signals, signalDate, history, loading, currentLineage, fetchSignals, fetchHistory, updateStatus, fetchLineage }
 })
