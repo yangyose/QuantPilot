@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"D:\\MyWork\\10Project\\RD\\QuantPilot\\.claude\\hooks\\pull_remote_backup.ps1\"",
+            "timeout": 30,
+            "statusMessage": "检查远端备份是否需拉回本地"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash|Edit|Write",
