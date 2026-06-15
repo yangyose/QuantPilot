@@ -222,6 +222,20 @@ class BacktestEngine:
                 )
                 continue
 
+            # PIT is_st/is_suspended 注入（B3-5 设计意图的缺失实现）：stock_info 是静态基本
+            # 信息（_load_data_bundle 只放 list_date/delist_date/sw_industry_l1），而 is_st/
+            # is_suspended 随日期变化、只在当日 quotes_t 里有。UniverseFilter F-1/F-3 直接读
+            # stock_info["is_st"]/["is_suspended"]，缺列会 KeyError → universe 整日空 → 回测
+            # 退化（NAV 恒 1.0）。故在过滤前从当日 quotes_t 时点并入。
+            stock_info_t = stock_info_t.copy()
+            for _pit_col in ("is_st", "is_suspended"):
+                if _pit_col in quotes_t.columns:
+                    stock_info_t[_pit_col] = (
+                        quotes_t[_pit_col].reindex(stock_info_t.index).fillna(False).astype(bool)
+                    )
+                elif _pit_col not in stock_info_t.columns:
+                    stock_info_t[_pit_col] = False
+
             # ---------- d. Universe 过滤 ----------
             try:
                 universe_idx = self._universe_filter.filter(
@@ -633,14 +647,24 @@ class BacktestEngine:
         历史不足（暖启动期）时降级为 OSCILLATION。
         """
         try:
+            if hs300_history is None or hs300_history.empty:
+                return MarketStateEnum.OSCILLATION
             if "trade_date" in hs300_history.columns:
                 hist = hs300_history[
                     hs300_history["trade_date"].apply(
                         lambda d: pd.Timestamp(d).date() <= trade_date
                     )
-                ]
+                ].copy()
+                # MarketStateEngine.identify 以 DataFrame index 为交易日（逐行 idx.date()）。
+                # _load_data_bundle 产出的 hs300_history 是整数 RangeIndex + trade_date 列，
+                # 必须转成 date 索引，否则 identify 用 int 索引报
+                # 'int object has no attribute date' → 被吞 → 恒回落 OSCILLATION（回测退化）。
+                hist.index = pd.DatetimeIndex(pd.to_datetime(hist["trade_date"]))
             else:
-                hist = hs300_history[hs300_history.index <= pd.Timestamp(trade_date)]
+                idx = hs300_history.index
+                if not isinstance(idx, pd.DatetimeIndex):
+                    idx = pd.to_datetime(idx)
+                hist = hs300_history[idx <= pd.Timestamp(trade_date)]
             if hist.empty:
                 return MarketStateEnum.OSCILLATION
             record = self._market_state_engine.identify_latest(hist)

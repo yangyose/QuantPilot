@@ -479,6 +479,113 @@ def test_int_be_07_risk_checker_blocks_concentration() -> None:
     assert len(buys) == 0, "集中度 BLOCK 应阻止 BUY 撮合（B3-4）"
 
 
+# ─── INT-BE-09：真实 MarketStateEngine + 整数索引 hs300（回归 bug #2）───
+def test_int_be_09_market_state_real_engine_int_indexed_hs300() -> None:
+    """回归：_get_market_state 须把 _load_data_bundle 产出的 hs300_history（整数 RangeIndex
+    + trade_date 列）正确转 date 索引再喂 MarketStateEngine.identify_latest，否则报
+    'int object has no attribute date' 被吞 → 恒回落 OSCILLATION → 回测退化。
+
+    既有 INT-BE-01~08 全 mock market_state_engine，从不跑真实引擎，故漏掉此 bug。
+    本测试用真实 MarketStateEngine + 强上行序列，断言识别出 UPTREND（非异常回落）。
+    """
+    from quantpilot.engine.market_state import MarketStateEngine
+
+    # 80 个交易日的强单调上行（close 10→26），与 _load_data_bundle 同构：
+    # 整数 RangeIndex + trade_date 列（而非 date 索引）
+    n = 80
+    dates = pd.bdate_range("2023-01-02", periods=n).date
+    closes = [10.0 + i * 0.2 for i in range(n)]
+    hs300_history = pd.DataFrame({
+        "trade_date": list(dates),
+        "open": [c - 0.05 for c in closes],
+        "high": [c + 0.1 for c in closes],
+        "low": [c - 0.1 for c in closes],
+        "close": closes,
+        "vol": [1_000_000.0] * n,
+    })  # 默认 RangeIndex（关键：模拟 _load_data_bundle 的 hs300_history 形状）
+
+    engine = BacktestEngine(
+        strategies=[],
+        market_state_engine=MarketStateEngine(),  # 真实，非 mock
+        universe_filter=_make_universe_filter(),
+        scorer=_make_scorer(),
+        signal_engine=_make_signal_engine(),
+        position_engine=_make_position_engine(),
+        price_provider=None,
+        calendar=_make_calendar([dates[-1]]),
+    )
+    state = engine._get_market_state(hs300_history, dates[-1])
+    assert state == MarketStateEnum.UPTREND, (
+        f"强上行序列应识别 UPTREND，实际 {state}——整数索引未转 date 索引，"
+        "identify 报错被吞 → 回落 OSCILLATION"
+    )
+
+
+# ─── INT-BE-10：真实 UniverseFilter + stock_info 缺 is_st（回归 bug #1）───
+def test_int_be_10_universe_real_filter_pit_is_st_injected() -> None:
+    """回归：_load_data_bundle 的 stock_info 只有 list_date/delist_date/sw_industry_l1，
+    缺 is_st/is_suspended（这俩随日期变化、应从当日 quotes_t PIT 注入）。引擎须在过滤前
+    把 PIT is_st/is_suspended 并进 stock_info_t，否则真实 UniverseFilter F-1/F-3 抛 KeyError
+    → universe 整日空 → 回测退化（NAV 恒 1.0）。
+
+    既有 INT-BE 全 mock universe_filter，从不跑真实过滤，故漏掉此 bug。
+    本测试用真实 UniverseFilter；断言 universe 非空（strategy.score 被调用）。
+    """
+    from quantpilot.engine.strategies.base import StrategyScore
+    from quantpilot.engine.universe import UniverseFilter
+
+    t0, t1 = date(2023, 1, 3), date(2023, 1, 4)
+    ts_code = "0001.SZ"
+    adj_prices = pd.DataFrame({ts_code: [10.0, 10.0]}, index=pd.DatetimeIndex([t0, t1]))
+    adj_prices.index.name = "trade_date"
+
+    rows = []
+    for d in (t0, t1):
+        rows.append({
+            "trade_date": d, "ts_code": ts_code,
+            "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
+            "vol": 1_000_000, "amount": 100_000_000.0, "adj_factor": 1.0,
+            "is_suspended": False, "is_st": False, "limit_up": False, "limit_down": False,
+            "sw_industry_l1": "制造",
+        })
+    daily_quotes = pd.DataFrame(rows).set_index(["trade_date", "ts_code"]).sort_index()
+
+    # 关键：stock_info 故意缺 is_st/is_suspended（与 _load_data_bundle 的 si_map 一致）
+    stock_info = pd.DataFrame(
+        [{"list_date": date(2020, 1, 1), "delist_date": None, "sw_industry_l1": "制造"}],
+        index=pd.Index([ts_code], name="ts_code"),
+    )
+
+    mock_strategy = MagicMock()
+    mock_strategy.score.return_value = [
+        StrategyScore(ts_code=ts_code, raw_factors={}, score=85.0, reason="mock")
+    ]
+    scorer = MagicMock()
+    scorer.aggregate_legacy.return_value = []  # 不关心后续撮合，只验 universe 非空
+
+    data = BacktestDataBundle(
+        adj_prices=adj_prices, stock_info=stock_info,
+        financials=pd.DataFrame(), hs300_history=pd.DataFrame(),
+        daily_quotes=daily_quotes,
+    )
+    engine = BacktestEngine(
+        strategies=[mock_strategy],
+        market_state_engine=_make_market_state_engine(),  # mock，隔离 bug #1
+        universe_filter=UniverseFilter(),  # 真实
+        scorer=scorer,
+        signal_engine=_make_signal_engine(),
+        position_engine=_make_position_engine(),
+        price_provider=None,
+        calendar=_make_calendar([t0, t1]),
+    )
+    engine.run(_make_config([t0, t1]), data)
+
+    assert mock_strategy.score.called, (
+        "真实 UniverseFilter 应通过该股（universe 非空）；strategy.score 未被调用 = "
+        "universe 整日空——引擎未把 PIT is_st/is_suspended 注入 stock_info_t"
+    )
+
+
 # ─── INT-BE-08：T+1 vs CLOSE_T 撮合差异 ───
 def test_int_be_08_open_vs_close_execution_diff() -> None:
     """T+1 开盘 11.0 vs CLOSE_T close 10.0 → 撮合价不同（B3-2 闭环）。"""
