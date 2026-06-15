@@ -196,6 +196,88 @@ async def test_bt_07_run_partial_overlay_uses_defaults(client: AsyncClient) -> N
 
 # ─── E2E-BT-08 ─── 部分字段提供则只覆盖未提供字段
 
+_IMPORT_BODY = {
+    "task_id": "local-uuid-abcdef",
+    "config_json": {"start_date": "2021-01-01", "end_date": "2024-12-31"},
+    "config_snapshot": {"data_baseline": "2026-06-13"},
+    "started_at": "2026-06-15T10:00:00+00:00",
+    "finished_at": "2026-06-17T10:00:00+00:00",
+    "performance": {"total_return": 0.42, "sharpe": 1.1},
+    "daily_nav": {"2021-01-04": 1.0, "2024-12-31": 1.42},
+    "disclaimer": "仅供研究，不构成投资建议",
+}
+
+
+async def test_bt_10_import_no_auth(client: AsyncClient) -> None:
+    """E2E-BT-10：POST /backtest/import 无鉴权 → 401。"""
+    resp = await client.post("/api/v1/backtest/import", json=_IMPORT_BODY)
+    assert resp.status_code == 401
+
+
+async def test_bt_11_import_ok(client: AsyncClient) -> None:
+    """E2E-BT-11：本地回测结果回流 → 200，imported=True。"""
+    mock_svc = AsyncMock()
+    mock_svc.import_result = AsyncMock(return_value=True)
+    app.dependency_overrides[get_backtest_service] = lambda: mock_svc
+    try:
+        resp = await client.post("/api/v1/backtest/import", json=_IMPORT_BODY, headers=_auth())
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["imported"] is True
+        assert data["task_id"] == "local-uuid-abcdef"
+        # 传入 service 的 data_baseline 应保留在 config_snapshot
+        kwargs = mock_svc.import_result.await_args.kwargs
+        assert kwargs["config_snapshot"]["data_baseline"] == "2026-06-13"
+        assert kwargs["performance"]["sharpe"] == 1.1
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
+async def test_bt_12_import_idempotent(client: AsyncClient) -> None:
+    """E2E-BT-12：重复回流同一 task_id → 200，imported=False（幂等跳过，不覆盖）。"""
+    mock_svc = AsyncMock()
+    mock_svc.import_result = AsyncMock(return_value=False)
+    app.dependency_overrides[get_backtest_service] = lambda: mock_svc
+    try:
+        resp = await client.post("/api/v1/backtest/import", json=_IMPORT_BODY, headers=_auth())
+        assert resp.status_code == 200
+        assert resp.json()["data"]["imported"] is False
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
+async def test_bt_09_run_window_guard_rejects(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2E-BT-09：回测护栏——区间超过 backtest_max_window_days → 422，不进后台任务。
+
+    生产 2GB 机长区间回测会 OOM 拖垮整机；护栏在端点层拦截超限请求，提示本地运行。
+    """
+    from quantpilot.core.config import settings as cfg_settings
+
+    # 护栏设 100 天；_VALID_BODY 是 2023-01-01~2023-12-31（364 天）→ 超限
+    monkeypatch.setattr(cfg_settings, "backtest_max_window_days", 100)
+
+    mock_svc = AsyncMock()
+    mock_svc.create_task = AsyncMock(return_value="should-not-be-called")
+
+    mock_calendar = MagicMock()
+    mock_calendar.get_trade_dates = MagicMock(return_value=["2023-01-03"])
+    original_calendar = getattr(app.state, "calendar", None)
+    app.state.calendar = mock_calendar
+
+    app.dependency_overrides[get_backtest_service] = lambda: mock_svc
+    try:
+        resp = await client.post("/api/v1/backtest/run", json=_VALID_BODY, headers=_auth())
+        assert resp.status_code == 422
+        # 护栏在 create_task 之前拦截 → 不应进后台任务
+        mock_svc.create_task.assert_not_awaited()
+        assert "本地" in resp.json()["msg"]
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+        app.state.calendar = original_calendar
+
+
 async def test_bt_08_run_partial_overlay_mixed(client: AsyncClient) -> None:
     """E2E-BT-08：body 显式指定 commission_rate，其余走 defaults。"""
     from quantpilot.api.deps import get_config_service

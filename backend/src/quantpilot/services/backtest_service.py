@@ -78,6 +78,47 @@ class BacktestService:
             select(BacktestResult).where(BacktestResult.task_id == task_id)
         )).scalar_one_or_none()
 
+    async def import_result(
+        self,
+        *,
+        task_id: str,
+        config_json: dict,
+        config_snapshot: dict | None,
+        started_at: datetime | None,
+        finished_at: datetime | None,
+        performance: dict,
+        daily_nav: dict,
+        disclaimer: str,
+    ) -> bool:
+        """回流外部（本地算力中心）回测结果到本 DB（2026-06-15）。
+
+        长区间回测在本地大内存机跑完后经 POST /backtest/import 回流生产 DB，使生产
+        Web 也能查看。task+result 两行一起 INSERT（status=SUCCESS）。按 task_id 幂等：
+        已存在则跳过返回 False，不覆盖（防重复回流 / 与生产任务 UUID 永不撞号）。
+
+        回测两表无外键指向行情数据 → 纯 INSERT、零引用完整性风险；config_snapshot
+        含 data_baseline 标注「本结果基于截至 X 日的数据」。
+        """
+        if await self.get_task(task_id) is not None:
+            return False
+        self._session.add(BacktestTask(
+            task_id=task_id,
+            status="SUCCESS",
+            config_json=config_json,
+            config_snapshot=config_snapshot,
+            started_at=started_at,
+            finished_at=finished_at,
+        ))
+        self._session.add(BacktestResult(
+            task_id=task_id,
+            performance_json=performance,
+            daily_nav_json=daily_nav,
+            disclaimer=disclaimer,
+        ))
+        await self._session.commit()
+        logger.info("backtest_result_imported task_id=%s", task_id)
+        return True
+
     async def run_task(
         self,
         task_id: str,
@@ -377,6 +418,50 @@ class BacktestService:
             index_adj_prices=index_adj_prices,
             active_weights_history=active_weights_history,
         )
+
+
+def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:
+    """从 config_snapshot 构造 BacktestEngine（API 后台任务 + 本地 CLI 共用）。
+
+    Phase 10 §4.4 评审 C-02/C-03：Engine 不再是 app.state 单例，按 task.config_snapshot
+    即时构造，确保用户当前策略/风险/池配置被消费。本函数把构造逻辑从 `_run_backtest_bg`
+    抽出，供 scripts/run_backtest_local.py 本地回测复用同一构造路径（行为与生产一致）。
+    """
+    from quantpilot.engine.market_state import MarketStateEngine
+    from quantpilot.engine.position import PositionSizer
+    from quantpilot.engine.scorer import Scorer
+    from quantpilot.engine.signal import SignalGenerator
+    from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
+    from quantpilot.engine.strategies.momentum import MomentumStrategy
+    from quantpilot.engine.strategies.trend import TrendStrategy
+    from quantpilot.engine.strategies.value import ValueStrategy
+    from quantpilot.engine.universe import UniverseFilter
+    from quantpilot.services.config_snapshot import from_snapshot
+
+    trend_cfg = from_snapshot(snap, "strategy_params_trend")
+    momentum_cfg = from_snapshot(snap, "strategy_params_momentum")
+    mr_cfg = from_snapshot(snap, "strategy_params_mean_reversion")
+    value_cfg = from_snapshot(snap, "strategy_params_value")
+    ms_cfg = from_snapshot(snap, "market_state_params")
+    universe_cfg = from_snapshot(snap, "universe_params")
+    weights_cfg = from_snapshot(snap, "strategy_weights")
+    signal_cfg = from_snapshot(snap, "signal_params")
+
+    return BacktestEngine(
+        strategies=[
+            TrendStrategy(trend_cfg),
+            MomentumStrategy(momentum_cfg),
+            MeanReversionStrategy(mr_cfg),
+            ValueStrategy(value_cfg),
+        ],
+        market_state_engine=MarketStateEngine(ms_cfg),
+        universe_filter=UniverseFilter(universe_cfg),
+        scorer=Scorer(weights_cfg),
+        signal_engine=SignalGenerator(signal_cfg=signal_cfg, universe_cfg=universe_cfg),
+        position_engine=PositionSizer(),
+        price_provider=None,
+        calendar=calendar,
+    )
 
 
 async def reconcile_orphan_backtests(session_factory) -> int:

@@ -508,6 +508,41 @@ scripts/bootstrap_dev.sh                           # 重新跑一键
 
 ---
 
+## 9. 本地回测算力中心（长区间回测）
+
+生产 2GB 机对回测设了护栏（`BACKTEST_MAX_WINDOW_DAYS`，默认 90 天，超限 422 拒绝）——
+长区间回测 daily_quotes 全量 pivot 会 OOM 拖垮整机。长区间回测改在**本地大内存机**跑，
+跑完结果回流生产 DB，使生产 Web 也能查看。
+
+**数据流**：SessionStart 钩子每日把最新远端备份拉回 `backups/remote/` → 恢复进本地专用
+「算力库」（端口 **5434**、独立卷 `quantpilot_backtest_data`，不碰生产 fallback 5432 /
+测试库 5433）→ CLI 连 5434 跑回测（计算在 Windows 宿主 Python 进程，吃宿主内存）→
+`--push` 经 `POST /backtest/import` 回流生产（按 task_id 幂等，纯 INSERT 不覆盖）。
+
+每条结果盖「数据基线」戳（`config_snapshot.data_baseline` = 本地库 `daily_quote` 的
+max `trade_date`），标注「本结果基于截至 X 日的数据」——回测截止日在过去时结果稳定可复现，
+不受服务器后续新增数据影响。
+
+```bash
+# ① 起算力库 + 从最新远端备份恢复（幂等：同一备份不重复恢复）
+docker compose -f docker-compose.backtest-local.yml up -d
+bash scripts/sync_local_backtest_db.sh          # 加 --force 强制重恢复
+
+# ② 跑长区间回测（仅本地查看）
+DATABASE_URL=postgresql+asyncpg://quantpilot:PWD@localhost:5434/quantpilot \
+    uv run python backend/scripts/run_backtest_local.py --start 2023-01-01 --end 2026-06-12
+
+# ③ 跑完回流生产（生产 Web 可见；需服务器登录凭据，密码不落盘）
+QP_SERVER_URL=https://quant.portableagi.com QP_SERVER_USER=admin QP_SERVER_PASSWORD='***' \
+    DATABASE_URL=postgresql+asyncpg://quantpilot:PWD@localhost:5434/quantpilot \
+    uv run python backend/scripts/run_backtest_local.py --start 2023-01-01 --end 2026-06-12 --push
+```
+
+> 算力库是纯临时工，可随时 `docker compose -f docker-compose.backtest-local.yml down -v`
+> 重建；权威数据始终在服务器。
+
+---
+
 **参考文档**：
 
 - 规范：`docs/spec/QuantPilot_SDD.md`

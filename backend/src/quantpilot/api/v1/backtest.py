@@ -6,8 +6,9 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, WebSocket, status
 
 from quantpilot.api.deps import get_backtest_service, get_config_service, get_current_user
+from quantpilot.core.config import settings
 from quantpilot.engine.backtest.engine import BacktestConfig
-from quantpilot.schemas.backtest import BacktestRunRequest
+from quantpilot.schemas.backtest import BacktestImportRequest, BacktestRunRequest
 from quantpilot.services.backtest_service import BacktestService
 from quantpilot.services.config_service import ConfigService
 
@@ -52,6 +53,22 @@ async def run_backtest(
             ),
         )
 
+    # 回测护栏（2026-06-15）：生产 2GB 机长区间回测会 OOM 拖垮整机（已两次濒临宕机）。
+    # backtest_max_window_days=0 表示不限制（本地大内存机）；服务器 .env.prod 设保守值，
+    # 超限直接拒绝并提示用户在本地运行（scripts/run_backtest_local.py），不进后台任务。
+    max_days = settings.backtest_max_window_days
+    if max_days > 0:
+        window_days = (body.end_date - body.start_date).days
+        if window_days > max_days:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"回测区间 {window_days} 天超过本服务器上限 {max_days} 天。"
+                    "为避免拖垮生产机内存，长区间回测请在本地运行"
+                    "（scripts/run_backtest_local.py，数据自动同步自最新远端备份）。"
+                ),
+            )
+
     # Phase 10 §4.4：partial-overlay 成本率
     defaults = await cfg.get_backtest_defaults()
     commission_rate = (
@@ -88,6 +105,34 @@ async def run_backtest(
     )
 
     return {"code": 0, "data": {"task_id": task_id, "status": "PENDING"}, "msg": "ok"}
+
+
+@router.post("/import")
+async def import_backtest(
+    body: BacktestImportRequest,
+    _: str = Depends(get_current_user),
+    svc: BacktestService = Depends(get_backtest_service),
+) -> dict:
+    """POST /backtest/import — 回流本地算力中心跑完的回测结果（2026-06-15）。
+
+    长区间回测受护栏拦在生产机外、改在本地大内存机跑；跑完经此端点把 task+result
+    两行回流生产 DB，使生产 Web 也能查看。按 task_id 幂等（已存在则跳过、不覆盖）。
+    """
+    imported = await svc.import_result(
+        task_id=body.task_id,
+        config_json=body.config_json,
+        config_snapshot=body.config_snapshot,
+        started_at=body.started_at,
+        finished_at=body.finished_at,
+        performance=body.performance,
+        daily_nav=body.daily_nav,
+        disclaimer=body.disclaimer,
+    )
+    return {
+        "code": 0,
+        "data": {"task_id": body.task_id, "imported": imported},
+        "msg": "ok" if imported else "已存在，跳过",
+    }
 
 
 async def _fail_task(task_id: str, err_msg: str) -> None:
@@ -128,19 +173,8 @@ async def _run_backtest_bg(task_id: str, config: BacktestConfig, app_state: obje
     from sqlalchemy import select
 
     from quantpilot.core.database import AsyncSessionLocal
-    from quantpilot.engine.backtest.engine import BacktestEngine
-    from quantpilot.engine.market_state import MarketStateEngine
-    from quantpilot.engine.position import PositionSizer
-    from quantpilot.engine.scorer import Scorer
-    from quantpilot.engine.signal import SignalGenerator
-    from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
-    from quantpilot.engine.strategies.momentum import MomentumStrategy
-    from quantpilot.engine.strategies.trend import TrendStrategy
-    from quantpilot.engine.strategies.value import ValueStrategy
-    from quantpilot.engine.universe import UniverseFilter
     from quantpilot.models.system import BacktestTask
-    from quantpilot.services.backtest_service import BacktestService
-    from quantpilot.services.config_snapshot import from_snapshot
+    from quantpilot.services.backtest_service import BacktestService, build_engine_from_snapshot
 
     logger.info("backtest_bg_started task_id=%s", task_id)
 
@@ -163,31 +197,7 @@ async def _run_backtest_bg(task_id: str, config: BacktestConfig, app_state: obje
             await _fail_task(task_id, "回测任务记录不存在")
             return
         snap = task.config_snapshot or {}
-
-        ms_cfg = from_snapshot(snap, "market_state_params")
-        universe_cfg = from_snapshot(snap, "universe_params")
-        weights_cfg = from_snapshot(snap, "strategy_weights")
-        signal_cfg = from_snapshot(snap, "signal_params")
-        trend_cfg = from_snapshot(snap, "strategy_params_trend")
-        momentum_cfg = from_snapshot(snap, "strategy_params_momentum")
-        mr_cfg = from_snapshot(snap, "strategy_params_mean_reversion")
-        value_cfg = from_snapshot(snap, "strategy_params_value")
-
-        backtest_engine = BacktestEngine(
-            strategies=[
-                TrendStrategy(trend_cfg),
-                MomentumStrategy(momentum_cfg),
-                MeanReversionStrategy(mr_cfg),
-                ValueStrategy(value_cfg),
-            ],
-            market_state_engine=MarketStateEngine(ms_cfg),
-            universe_filter=UniverseFilter(universe_cfg),
-            scorer=Scorer(weights_cfg),
-            signal_engine=SignalGenerator(signal_cfg=signal_cfg, universe_cfg=universe_cfg),
-            position_engine=PositionSizer(),
-            price_provider=None,
-            calendar=calendar,
-        )
+        backtest_engine = build_engine_from_snapshot(snap, calendar)
 
         # 初始化进度记录
         app_state._backtest_progress[task_id] = {

@@ -1,0 +1,52 @@
+# 本地算力中心：回测专用 Postgres（2026-06-15）
+# 长区间回测在本地大内存机跑（避开 2GB 生产机护栏）；本 compose 只起一个独立的
+# 「算力库」，从最新远端备份恢复（scripts/sync_local_backtest_db.sh）。回测计算本身在
+# Windows 宿主的 Python 进程跑（uv run python scripts/run_backtest_local.py），吃宿主内存、
+# 不受 WSL2 配额限制；本容器只负责供数。
+#
+# 隔离红线：
+#   - 端口 5434（生产 fallback 5432 / 集成测试 5433 之外的第三个端口，永不混）
+#   - 独立卷 quantpilot_backtest_data（不碰生产 fallback 卷 quantpilot_pg_data /
+#     dev 卷 quantpilot_postgres_dev_data）
+#   - 库可随时 down -v 重建（纯算力临时工，权威数据在服务器）
+#
+# 用法：
+#   docker compose -f docker-compose.backtest-local.yml up -d
+#   bash scripts/sync_local_backtest_db.sh        # 从最新远端备份恢复
+#   DATABASE_URL=postgresql+asyncpg://quantpilot:PWD@localhost:5434/quantpilot \
+#       uv run python backend/scripts/run_backtest_local.py --start 2023-01-01 --end 2026-06-12
+
+services:
+  backtest-db:
+    image: postgres:15-alpine
+    container_name: qp-backtest-db-5434
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-quantpilot}
+      POSTGRES_USER: ${POSTGRES_USER:-quantpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quantpilot}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=2GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - random_page_cost=1.1
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - backtest_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quantpilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  backtest_data:
+    name: quantpilot_backtest_data
