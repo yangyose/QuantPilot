@@ -218,6 +218,16 @@ const progressStatus = computed(() => {
             </a-col>
           </a-row>
 
+          <!-- 数据基线戳：本地算力中心回流的回测标注「跑在截至哪天的数据」 -->
+          <a-alert
+            v-if="store.result?.dataBaseline"
+            type="info"
+            show-icon
+            style="margin-bottom: 16px"
+            :message="`本结果基于截至 ${store.result.dataBaseline} 的数据（本地算力中心回流）`"
+            description="回测截止日在过去时结果稳定可复现；若区间含此基线日之后服务器修订过的近端数据，重跑可能有细微出入。"
+          />
+
           <!-- 回测声明 -->
           <DisclaimerBanner
             v-if="store.result?.disclaimer"

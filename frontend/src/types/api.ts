@@ -270,12 +270,15 @@ export interface BacktestResultRaw {
   performance: Record<string, number | null>
   daily_nav: Record<string, number>
   disclaimer: string
+  /** 本地算力中心回流回测的数据基线日（null=生产机直接跑、无戳） */
+  data_baseline: string | null
 }
 
 /** store 内转换后格式：navSeries 为 array，供 NavChart 使用 */
 export interface BacktestResult {
   performance: Record<string, number | null>
   disclaimer: string
+  dataBaseline: string | null
   navSeries: NavPoint[]
 }
 

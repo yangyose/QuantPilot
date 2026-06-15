@@ -314,6 +314,10 @@ async def get_backtest_result(
     result = await svc.get_result(task_id)
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回测结果不存在")
+    # 数据基线戳（2026-06-15）：本地算力中心回流的回测在 config_snapshot.data_baseline
+    # 记了「跑在截至哪天的数据」；生产 Web 据此标注，回测截止日在过去时结果稳定可复现。
+    # 生产机直接跑的回测无此戳（None）→ 前端不展示基线行。
+    data_baseline = (task.config_snapshot or {}).get("data_baseline")
     return {
         "code": 0,
         "data": {
@@ -321,6 +325,7 @@ async def get_backtest_result(
             "performance": result.performance_json,
             "daily_nav": result.daily_nav_json,
             "disclaimer": result.disclaimer,
+            "data_baseline": data_baseline,
         },
         "msg": "ok",
     }

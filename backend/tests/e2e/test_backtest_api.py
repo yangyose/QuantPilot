@@ -208,6 +208,29 @@ _IMPORT_BODY = {
 }
 
 
+async def test_bt_13_result_carries_data_baseline(client: AsyncClient) -> None:
+    """E2E-BT-13：result 端点透传 config_snapshot.data_baseline（本地回流戳）。"""
+    from quantpilot.models.system import BacktestResult
+
+    task = _mock_task(status="SUCCESS")
+    task.config_snapshot = {"data_baseline": "2026-06-13"}
+    res = MagicMock(spec=BacktestResult)
+    res.performance_json = {"sharpe_ratio": 1.0}
+    res.daily_nav_json = {"2021-01-04": 1.0}
+    res.disclaimer = "仅供研究"
+
+    mock = AsyncMock()
+    mock.get_task = AsyncMock(return_value=task)
+    mock.get_result = AsyncMock(return_value=res)
+    app.dependency_overrides[get_backtest_service] = lambda: mock
+    try:
+        resp = await client.get("/api/v1/backtest/test-uuid-1234/result", headers=_auth())
+        assert resp.status_code == 200
+        assert resp.json()["data"]["data_baseline"] == "2026-06-13"
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
 async def test_bt_10_import_no_auth(client: AsyncClient) -> None:
     """E2E-BT-10：POST /backtest/import 无鉴权 → 401。"""
     resp = await client.post("/api/v1/backtest/import", json=_IMPORT_BODY)

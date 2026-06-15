@@ -37,6 +37,8 @@ class BacktestResultResponse(BaseModel):
     performance: dict[str, Any]
     daily_nav: dict[str, float]     # {trade_date_str: nav_value}
     disclaimer: str
+    # 本地算力中心回流回测的数据基线日（None=生产机直接跑、无戳）
+    data_baseline: str | None = None
 
 
 class BacktestImportRequest(BaseModel):

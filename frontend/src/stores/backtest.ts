@@ -58,6 +58,7 @@ export const useBacktestStore = defineStore('backtest', () => {
           result.value = {
             performance: raw.performance,
             disclaimer: raw.disclaimer,
+            dataBaseline: raw.data_baseline ?? null,
             navSeries,
           }
         } else if (statusData.status === 'FAILED') {
