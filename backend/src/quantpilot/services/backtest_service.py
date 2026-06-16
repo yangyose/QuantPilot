@@ -326,6 +326,9 @@ class BacktestService:
                 FinancialData.debt_to_asset,
                 FinancialData.pe_ttm,
                 FinancialData.pb,
+                # ValueStrategy roe_quality 依赖 roe；列裁剪优化（2026-06-12）漏掉它 →
+                # 回测 value 策略 roe_quality 恒 NaN → 整个 value 策略被跳过。补回。
+                FinancialData.roe,
             )
             .where(FinancialData.publish_date >= lookback_start)
             .where(FinancialData.publish_date <= config.end_date)
@@ -333,10 +336,10 @@ class BacktestService:
         if fin_rows:
             fin_df = pd.DataFrame(fin_rows, columns=[
                 "ts_code", "report_period", "publish_date",
-                "net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb",
+                "net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb", "roe",
             ])
             # NUMERIC → float（Decimal/None → float/NaN，与原 float(...)/None 行为等价）
-            for c in ("net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb"):
+            for c in ("net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb", "roe"):
                 fin_df[c] = pd.to_numeric(fin_df[c], errors="coerce")
             financials = fin_df.set_index(["ts_code", "report_period"])
             # 3b. pe_pb_history（B3-3 ValueStrategy 真实分位数）——从 fin_df 派生

@@ -263,8 +263,20 @@ class BacktestEngine:
                 adj_hist = adj_prices.loc[:td_ts].T
                 # B3-3：pe_pb_history 时点切片（publish_date <= trade_date）
                 pe_pb_t = self._slice_pe_pb_history_at(data.pe_pb_history, trade_date)
-                # B3-3：index_adj_prices 截至当日（HS300 累计 close）
-                idx_adj_t = self._slice_index_at(data.index_adj_prices, trade_date)
+                # B3-3：index_adj_prices 截至当日（HS300 累计 close）。
+                # MomentumStrategy 期望 wide DataFrame（index=index_code, columns=trade_date，
+                # 与 ScoringService._build_market_snapshot 的 pivot_table 同构），按
+                # `index_prices.columns` 取 rs_6m。data.index_adj_prices 是 Series →
+                # 必须转 1 行 wide DataFrame，否则 momentum 读 .columns 抛 AttributeError
+                # 被吞 → 整个 momentum 策略被跳过。
+                _idx_series = self._slice_index_at(data.index_adj_prices, trade_date)
+                if isinstance(_idx_series, pd.Series) and not _idx_series.empty:
+                    idx_adj_t = _idx_series.to_frame().T
+                    idx_adj_t.index = ["000300.SH"]
+                elif isinstance(_idx_series, pd.DataFrame):
+                    idx_adj_t = _idx_series
+                else:
+                    idx_adj_t = pd.DataFrame()
 
                 # §14-3：行业 dict（从 stock_info_t.sw_industry_l1 派生 PIT）
                 industry_map: dict[str, str] = {}
