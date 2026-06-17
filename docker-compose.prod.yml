@@ -84,6 +84,9 @@ services:
       WXPUSHER_APP_TOKEN: ${WXPUSHER_APP_TOKEN:-}
       WXPUSHER_UID: ${WXPUSHER_UID:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost"]}
+      # 回测护栏（2026-06-15）：超此日历跨度的回测在端点层 422 拒绝（默认 0=不限制）。
+      # 必须显式列在 environment 白名单，否则 .env.prod 设了也进不了容器（settings 默认 0）。
+      BACKTEST_MAX_WINDOW_DAYS: ${BACKTEST_MAX_WINDOW_DAYS:-0}
       DEBUG: "false"
       LOG_DIR: /app/logs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
