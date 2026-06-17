@@ -50,6 +50,7 @@ async def test_bt_02_run_ok(client: AsyncClient) -> None:
 
     mock_svc = AsyncMock()
     mock_svc.create_task = AsyncMock(return_value="some-uuid-5678")
+    mock_svc.has_active_task = AsyncMock(return_value=False)
 
     # Phase 10 §4.4：端点依赖 ConfigService.get_backtest_defaults / get_all_for_snapshot
     mock_cfg = AsyncMock()
@@ -146,6 +147,7 @@ async def test_bt_07_run_partial_overlay_uses_defaults(client: AsyncClient) -> N
 
     mock_svc = AsyncMock()
     mock_svc.create_task = AsyncMock(return_value="cfg-uuid-001")
+    mock_svc.has_active_task = AsyncMock(return_value=False)
 
     mock_cfg = AsyncMock()
     mock_cfg.get_backtest_defaults = AsyncMock(
@@ -301,6 +303,36 @@ async def test_bt_09_run_window_guard_rejects(
         app.state.calendar = original_calendar
 
 
+async def test_bt_15_run_concurrency_guard_rejects(client: AsyncClient) -> None:
+    """E2E-BT-15：并发护栏——已有 RUNNING/PENDING 回测时再提交 → 409，不进后台任务。
+
+    2GB 机同时跑两个回测必 OOM；端点检测到活跃任务即拒绝。
+    """
+    mock_svc = AsyncMock()
+    mock_svc.has_active_task = AsyncMock(return_value=True)
+    mock_svc.create_task = AsyncMock(return_value="should-not-be-called")
+
+    mock_calendar = MagicMock()
+    mock_calendar.get_trade_dates = MagicMock(return_value=["2026-04-03"])
+    original_calendar = getattr(app.state, "calendar", None)
+    app.state.calendar = mock_calendar
+
+    app.dependency_overrides[get_backtest_service] = lambda: mock_svc
+    try:
+        # 30 天窗口（护栏默认 0 不限），但已有活跃任务 → 409
+        resp = await client.post(
+            "/api/v1/backtest/run",
+            json={"start_date": "2026-04-01", "end_date": "2026-04-30", "initial_capital": 1000000},
+            headers=_auth(),
+        )
+        assert resp.status_code == 409
+        mock_svc.create_task.assert_not_awaited()
+        assert "已有回测" in resp.json()["msg"]
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+        app.state.calendar = original_calendar
+
+
 async def test_bt_08_run_partial_overlay_mixed(client: AsyncClient) -> None:
     """E2E-BT-08：body 显式指定 commission_rate，其余走 defaults。"""
     from quantpilot.api.deps import get_config_service
@@ -308,6 +340,7 @@ async def test_bt_08_run_partial_overlay_mixed(client: AsyncClient) -> None:
 
     mock_svc = AsyncMock()
     mock_svc.create_task = AsyncMock(return_value="cfg-uuid-002")
+    mock_svc.has_active_task = AsyncMock(return_value=False)
 
     mock_cfg = AsyncMock()
     mock_cfg.get_backtest_defaults = AsyncMock(

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,6 +67,19 @@ class BacktestService:
         await self._session.commit()
         logger.info("backtest_task_created task_id=%s", task_id)
         return task_id
+
+    async def has_active_task(self) -> bool:
+        """是否已有 RUNNING/PENDING 回测任务（并发护栏，2026-06-16）。
+
+        2GB 生产机同时跑两个回测必 OOM（无论窗口多短，daily_quotes 全量加载叠加）。
+        端点据此拒绝并发提交。PENDING 也计入——防止快速重复提交在 BG 任务起跑前漏判。
+        """
+        count = (await self._session.execute(
+            select(func.count()).select_from(BacktestTask).where(
+                BacktestTask.status.in_(("RUNNING", "PENDING"))
+            )
+        )).scalar() or 0
+        return count > 0
 
     async def get_task(self, task_id: str) -> BacktestTask | None:
         return (await self._session.execute(

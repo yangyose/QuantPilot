@@ -69,6 +69,14 @@ async def run_backtest(
                 ),
             )
 
+    # 并发护栏（2026-06-16）：2GB 机同时跑两个回测必 OOM（daily_quotes 全量叠加）。
+    # 已有 RUNNING/PENDING 任务则拒绝，提示等待。
+    if await svc.has_active_task():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="已有回测正在运行，请等待其完成后再提交（本服务器同时只允许一个回测）。",
+        )
+
     # Phase 10 §4.4：partial-overlay 成本率
     defaults = await cfg.get_backtest_defaults()
     commission_rate = (
