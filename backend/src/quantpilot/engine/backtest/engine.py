@@ -291,6 +291,23 @@ class BacktestEngine:
                     if not mc.empty:
                         market_cap_series = mc.astype(float)
 
+                # ValueStrategy 从 daily_quotes 读 pe_ttm/pb，但 daily_quote 表无此列——
+                # 它们在 financials（财报 PIT）。与 ScoringService._build_market_snapshot 一致，
+                # 把 pe_ttm/pb 从 financials_t 并入 quotes_t（否则 value 的 pe/pb 分位恒 NaN →
+                # value 策略整条被跳过）。
+                if not financials_t.empty and {"pe_ttm", "pb"}.issubset(financials_t.columns):
+                    quotes_t = quotes_t.join(
+                        financials_t[["pe_ttm", "pb"]].reindex(quotes_t.index), how="left",
+                    )
+                # MomentumStrategy 行业相对强度从 financials 读 sw_industry_l1，但 backtest
+                # 的 financials 无此列（行业在 stock_info）。与 live 一致，把 sw_industry_l1
+                # 从 stock_info_t 并入 financials_t（否则 industry_rs 恒中性回落 50）。
+                if not financials_t.empty and "sw_industry_l1" in stock_info_t.columns:
+                    financials_t = financials_t.copy()
+                    financials_t["sw_industry_l1"] = (
+                        stock_info_t["sw_industry_l1"].reindex(financials_t.index)
+                    )
+
                 from quantpilot.engine.strategies.base import MarketSnapshot
                 market_snap: MarketSnapshot = {
                     "trade_date": trade_date,
@@ -624,8 +641,11 @@ class BacktestEngine:
         try:
             td = pd.Timestamp(trade_date)
             if isinstance(pe_pb_history.index, pd.MultiIndex):
-                # MultiIndex(ts_code, publish_date)
-                pubs = pe_pb_history.index.get_level_values("publish_date")
+                # MultiIndex(ts_code, publish_date)。publish_date 来自 financial_data.publish_date，
+                # 可能是 Python date 对象（object dtype）→ 与 Timestamp 比较抛
+                # 'Cannot compare Timestamp with datetime.date' 被吞 → PIT 切片失效（每日报错）。
+                # 先 to_datetime 统一为 DatetimeIndex 再比较。
+                pubs = pd.to_datetime(pe_pb_history.index.get_level_values("publish_date"))
                 mask = pubs <= td
                 return pe_pb_history[mask]
         except Exception:

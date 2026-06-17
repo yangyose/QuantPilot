@@ -233,9 +233,13 @@ class BacktestService:
         from quantpilot.data.validators import DataValidator
         from quantpilot.models.market import DailyQuote, IndexHistory, StockInfo
 
-        # 前置历史窗口：TrendStrategy 需要 65 日 MA60，MomentumStrategy 需要 61 日 return_3m，
-        # 取 130 日历天（≈ 90 交易日）确保各策略均能计算有效因子值。
-        lookback_start = config.start_date - timedelta(days=130)
+        # 前置历史窗口（价格类）：MomentumStrategy 的 rs_6m 需要 **120 交易日** return_6m，
+        # 约 168 日历天——原 130 日历天（≈ 90 交易日）不足 → return_6m 全 NaN → rs_6m 全 NaN
+        # → 中性化 n_obs=0 退化。取 200 日历天（≈ 138 交易日）覆盖 120 交易日 + buffer。
+        lookback_start = config.start_date - timedelta(days=200)
+        # 财报 PIT 窗口更宽：某股「最近一期」财报可能已发布数月（季报间隔 + 披露延迟），
+        # 130/200 日窗口会漏掉 → financials_t 该股为空 → value/quality NaN。取 ~400 日历天。
+        fin_lookback_start = config.start_date - timedelta(days=400)
 
         # ── 1. daily_quotes 全字段加载（B3-1） ───────────────────────────────
         dq_rows = (await self._session.execute(
@@ -343,7 +347,7 @@ class BacktestService:
                 # 回测 value 策略 roe_quality 恒 NaN → 整个 value 策略被跳过。补回。
                 FinancialData.roe,
             )
-            .where(FinancialData.publish_date >= lookback_start)
+            .where(FinancialData.publish_date >= fin_lookback_start)
             .where(FinancialData.publish_date <= config.end_date)
         )).all()
         if fin_rows:
