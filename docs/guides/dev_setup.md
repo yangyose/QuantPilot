@@ -540,6 +540,10 @@ QP_SERVER_URL=https://quant.portableagi.com QP_SERVER_USER=admin QP_SERVER_PASSW
 
 > 算力库是纯临时工，可随时 `docker compose -f docker-compose.backtest-local.yml down -v`
 > 重建；权威数据始终在服务器。
+>
+> **数据新鲜度**：`run_backtest_local.py` 启动时会比对本地算力库已恢复的备份（sync 脚本写的
+> `backups/remote/.last_restore`）与最新拉回的备份——若本地落后则**警告**提示先跑
+> `sync_local_backtest_db.sh`（不阻断，可有意跑旧基线）。每次回测前先 sync 是好习惯。
 
 ---
 

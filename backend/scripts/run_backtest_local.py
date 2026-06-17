@@ -35,6 +35,7 @@ import logging
 import os
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 # Windows 控制台默认 ANSI 代码页（cp936/cp932）无法输出中文 → 重配 UTF-8。
 # 必须在 basicConfig 之前（StreamHandler 在 basicConfig 时捕获 sys.stderr）。
@@ -67,6 +68,34 @@ def _guard_local_db() -> None:
         sys.exit("❌ 未设置 DATABASE_URL（应指向本地算力库，如 localhost:5434）")
     if ":5433/" in url:
         sys.exit("❌ DATABASE_URL 指向 5433 测试库（集成测试会 DROP 所有表）；请用本地算力库")
+
+
+def _warn_if_stale() -> None:
+    """提醒：本地算力库是否落后于最新拉回的生产备份。
+
+    SessionStart 钩子每日把最新生产备份拉到 backups/remote/；sync_local_backtest_db.sh
+    恢复后写 marker `.last_restore`（已恢复的备份名）。若 backups/remote/ 里有比 marker
+    更新的备份，说明本地算力库数据已过期 → 警告（不阻断，用户可有意跑旧基线）。
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    remote_dir = repo_root / "backups" / "remote"
+    if not remote_dir.is_dir():
+        return
+    backups = sorted(remote_dir.glob("qp_*.sql.gz"), key=lambda p: p.name)
+    if not backups:
+        logger.warning("⚠️ 未发现拉回的生产备份（backups/remote/）；本地库可能很旧。")
+        return
+    latest = backups[-1].name
+    marker = remote_dir / ".last_restore"
+    restored = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+    if restored != latest:
+        logger.warning(
+            "⚠️ 本地算力库数据可能过期：已恢复=%s，最新备份=%s。"
+            "建议先同步最新生产数据：bash scripts/sync_local_backtest_db.sh",
+            restored or "(无记录)", latest,
+        )
+    else:
+        logger.info("本地算力库已是最新备份 %s（与生产同步）。", latest)
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -204,6 +233,7 @@ async def _push_to_server(task, result) -> None:
 def main() -> None:
     args = _parse_args()
     _guard_local_db()
+    _warn_if_stale()
     asyncio.run(_run(args))
 
 
