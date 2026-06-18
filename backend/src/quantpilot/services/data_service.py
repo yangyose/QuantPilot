@@ -202,6 +202,31 @@ class DataService:
                         )
                 raise
 
+    async def _build_current_st_codes(self, trade_date: date) -> set[str] | None:
+        """每日管线 is_st 自愈：拉 namechange（5y 回溯）→ 取 as-of trade_date 的 ST 码集合。
+
+        ingest_history 走 per-date 预建 st_map（显式传 _st_codes）不进本路径；仅每日
+        增量（_st_codes=None）调用，一天一次 namechange 调用。回溯 5 年与 ingest_history
+        同源（覆盖早年被 ST、公告日在几年前的票）。
+
+        【降级说明】namechange 拉取失败 → 返回 None（is_st 保持 tushare 默认 False），
+        但 logger.exception 记录；恢复条件 = Tushare namechange 接口恢复。返回 None 与
+        空 set 语义不同：None=未知（不覆盖），空 set=确认当日无 ST。
+        """
+        ns_lookback_start = trade_date - timedelta(days=365 * 5)
+        try:
+            namechange_df = await self._adapter.fetch_namechange(
+                ns_lookback_start, trade_date,
+            )
+        except Exception:
+            logger.exception(
+                "daily_is_st_namechange_fetch_failed trade_date=%s "
+                "(is_st 将保持 False，ST 过滤本日降级)", trade_date,
+            )
+            return None
+        st_map = _build_st_map(namechange_df, [trade_date])
+        return st_map.get(trade_date, set())
+
     @staticmethod
     async def _record_validation(
         repo: MarketDataRepository,
@@ -326,7 +351,12 @@ class DataService:
         daily_quote_exception_value = 0.0
         try:
             quote_df = await self._fetch_daily_quotes_with_fallback(trade_date)
-            # 历史回填时注入 namechange 缓存，按 PIT 还原 is_st（避免所有日期 is_st=False）
+            # is_st 还原：tushare 日线适配器默认 is_st=False，真实 ST 标记靠 namechange。
+            # - ingest_history（回填）：调用方预建 PIT st_map 显式传 _st_codes，避免 N 次调用
+            # - 每日管线（_st_codes=None）：本路径自建当日 ST 集合，否则回填用尽后每天写入
+            #   is_st 全 False → universe ST 过滤失效 → *ST 仙股混入信号（2026-06-18 真机发现）
+            if _st_codes is None:
+                _st_codes = await self._build_current_st_codes(trade_date)
             if _st_codes is not None and "is_st" in quote_df.columns:
                 quote_df["is_st"] = quote_df["ts_code"].isin(_st_codes)
             # RM-18 修复（2026-05-13 真机验收）：完整性校验必须用 PIT 活股数（截至
