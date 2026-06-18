@@ -685,6 +685,42 @@ def test_api_42_account_cashflow_missing_param(
     assert "errors" in body
 
 
+# ── 作废订正端点冒烟（API-104~107）─────────────────────────────────────────────
+
+def test_api_104_account_trades_list_no_auth(client: httpx.Client) -> None:
+    """API-104: GET /api/v1/account/trades 无鉴权 → 401"""
+    r = client.get("/api/v1/account/trades", params={"account_id": 1})
+    assert r.status_code == 401
+    _assert_error(r.json(), 401)
+
+
+def test_api_105_account_trades_list_ok(
+    client: httpx.Client, auth_headers: dict[str, str]
+) -> None:
+    """API-105: GET /api/v1/account/trades 有鉴权 → 200，含 items/total 分页结构"""
+    r = client.get(
+        "/api/v1/account/trades", params={"account_id": 1}, headers=auth_headers
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert "items" in data and "total" in data
+    assert isinstance(data["items"], list)
+
+
+def test_api_106_void_trade_no_auth(client: httpx.Client) -> None:
+    """API-106: POST /api/v1/account/trades/{id}/void 无鉴权 → 401"""
+    r = client.post("/api/v1/account/trades/1/void", json={})
+    assert r.status_code == 401
+    _assert_error(r.json(), 401)
+
+
+def test_api_107_void_cashflow_no_auth(client: httpx.Client) -> None:
+    """API-107: POST /api/v1/account/cashflow/{id}/void 无鉴权 → 401"""
+    r = client.post("/api/v1/account/cashflow/1/void", json={})
+    assert r.status_code == 401
+    _assert_error(r.json(), 401)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # API-43~45：持仓接口（Phase 6 新增）
 # ══════════════════════════════════════════════════════════════════════════════

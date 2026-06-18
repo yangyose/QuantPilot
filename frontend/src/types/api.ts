@@ -176,6 +176,9 @@ export interface TradeRecord {
   stamp_tax: number | null
   signal_id: number | null
   note: string | null
+  is_voided?: boolean
+  voided_at?: string | null
+  void_note?: string | null
   created_at: string | null
 }
 
@@ -184,7 +187,12 @@ export interface FundFlow {
   flow_type: string
   amount: number
   trade_date: string
+  ts_code?: string | null
+  related_trade_id?: number | null
   note: string | null
+  is_voided?: boolean
+  voided_at?: string | null
+  void_note?: string | null
   created_at: string
 }
 

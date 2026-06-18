@@ -13,6 +13,7 @@ from quantpilot.schemas.account import (
     FundFlowItem,
     TradeRecordCreate,
     TradeRecordItem,
+    VoidRequest,
 )
 from quantpilot.services.account_service import AccountService
 from quantpilot.services.signal_service import SignalService
@@ -103,6 +104,80 @@ async def record_trade(
     return {"code": 0, "data": TradeRecordItem.model_validate(trade), "msg": "ok"}
 
 
+@router.get("/trades")
+async def list_trades(
+    account_id: int,
+    include_voided: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    service: AccountService = Depends(get_account_service),
+    _: str = Depends(get_current_user),
+) -> dict:
+    """GET /account/trades → 成交记录列表（分页）。include_voided=true 显示已作废行。"""
+    trades, total = await service.list_trades(
+        account_id=account_id,
+        include_voided=include_voided,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "code": 0,
+        "data": {
+            "items": [TradeRecordItem.model_validate(t) for t in trades],
+            "total": total,
+        },
+        "msg": "ok",
+    }
+
+
+@router.post("/trades/{trade_id}/void")
+async def void_trade(
+    trade_id: int,
+    body: VoidRequest | None = None,
+    service: AccountService = Depends(get_account_service),
+    _: str = Depends(get_current_user),
+) -> dict:
+    """POST /account/trades/{id}/void → 作废成交（订正录入错误）。
+
+    联动作废费用流水 + 逆仕訳现金 + 按非作废成交重建持仓。撤销后会导致后续卖出
+    无券可卖时返回 400（请先撤销相关卖出）。
+    """
+    try:
+        trade = await service.void_trade(
+            trade_id, void_note=body.void_note if body else None,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    return {"code": 0, "data": TradeRecordItem.model_validate(trade), "msg": "ok"}
+
+
+@router.post("/cashflow/{flow_id}/void")
+async def void_cashflow(
+    flow_id: int,
+    body: VoidRequest | None = None,
+    service: AccountService = Depends(get_account_service),
+    _: str = Depends(get_current_user),
+) -> dict:
+    """POST /account/cashflow/{id}/void → 作废资金流水（入金/出金/分红）。
+
+    逆仕訳现金；分红作废额外重建持仓还原成本。交易费用流水（BUY_FEE/SELL_PROCEEDS）
+    不可单独作废 → 400（请作废对应成交）。
+    """
+    try:
+        flow = await service.void_fund_flow(
+            flow_id, void_note=body.void_note if body else None,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    return {"code": 0, "data": FundFlowItem.model_validate(flow), "msg": "ok"}
+
+
 @router.post("/deposit")
 async def deposit(
     body: FundFlowCreate,
@@ -169,12 +244,14 @@ async def get_cashflow(
     end_date: date | None = None,
     limit: int = 50,
     offset: int = 0,
+    include_voided: bool = False,
     service: AccountService = Depends(get_account_service),
     _: str = Depends(get_current_user),
 ) -> dict:
     """GET /account/cashflow → 资金流水查询（分页 + 过滤）。
 
     start_date / end_date 由 FastAPI 自动解析为 date 对象，格式错误返回 422。
+    include_voided=true 时显示已作废流水（默认隐藏）。
     """
     flows, total = await service.get_cashflow(
         account_id=account_id,
@@ -183,6 +260,7 @@ async def get_cashflow(
         end_date=end_date,
         limit=limit,
         offset=offset,
+        include_voided=include_voided,
     )
     return {
         "code": 0,

@@ -7,6 +7,7 @@ export const usePositionStore = defineStore('positions', () => {
   const account = ref<AccountSummary | null>(null)
   const positions = ref<PositionItem[]>([])
   const cashflows = ref<FundFlow[]>([])
+  const trades = ref<TradeRecord[]>([])
   const loading = ref(false)
 
   async function fetchAccount(): Promise<void> {
@@ -26,6 +27,10 @@ export const usePositionStore = defineStore('positions', () => {
     cashflows.value = await posApi.getCashflows(params)
   }
 
+  async function fetchTrades(includeVoided = false): Promise<void> {
+    trades.value = await posApi.getTrades(account.value?.id ?? 1, includeVoided)
+  }
+
   async function syncAccount(): Promise<void> {
     await posApi.syncAccount()
     await fetchAccount()
@@ -36,7 +41,23 @@ export const usePositionStore = defineStore('positions', () => {
     const record = await posApi.recordTrade(body)
     await fetchAccount()
     await fetchPositions()
+    await fetchTrades()
     return record
+  }
+
+  async function voidTrade(tradeId: number, voidNote?: string): Promise<void> {
+    await posApi.voidTrade(tradeId, voidNote)
+    await fetchAccount()
+    await fetchPositions()
+    await fetchTrades()
+    await fetchCashflows()
+  }
+
+  async function voidCashflow(flowId: number, voidNote?: string): Promise<void> {
+    await posApi.voidCashflow(flowId, voidNote)
+    await fetchAccount()
+    await fetchPositions()
+    await fetchCashflows()
   }
 
   async function addPosition(body: posApi.AddPositionBody): Promise<void> {
@@ -57,8 +78,9 @@ export const usePositionStore = defineStore('positions', () => {
   }
 
   return {
-    account, positions, cashflows, loading,
-    fetchAccount, fetchPositions, fetchCashflows,
+    account, positions, cashflows, trades, loading,
+    fetchAccount, fetchPositions, fetchCashflows, fetchTrades,
     syncAccount, recordTrade, addPosition, deposit, withdraw,
+    voidTrade, voidCashflow,
   }
 })

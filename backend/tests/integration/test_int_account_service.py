@@ -606,3 +606,183 @@ async def test_int_p14_1_06_concurrent_deposit_same_key(
                 delete(Account).where(Account.id == account_id),
             )
             await cleanup.commit()
+
+
+# ---------------------------------------------------------------------------
+# INT-VOID-01: 作废 BUY → 持仓订正 + 现金逆仕訳 + 费用流水联动作废
+# ---------------------------------------------------------------------------
+async def test_int_void_01_void_buy_reverses_all(db_session: AsyncSession) -> None:
+    """作废一笔建仓 BUY → 持仓删除、cash 还原、BUY_FEE 流水作废且默认列表不再展示。"""
+    account = await _make_account(db_session, cash=100000.0)
+    svc = AccountService(db_session)
+
+    trade = await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=10.0, shares=1000, commission=25.0,
+    )
+    assert float((await svc.get_account(account.id)).cash) == pytest.approx(89975.0)
+
+    voided = await svc.void_trade(trade.id, void_note="录入价格错误")
+    assert voided.is_voided is True
+    assert voided.voided_at is not None
+
+    # 现金完全还原
+    assert float((await svc.get_account(account.id)).cash) == pytest.approx(100000.0)
+    # 持仓删除（唯一建仓被撤）
+    assert await svc.get_positions(account.id) == []
+    # 关联 BUY_FEE 流水作废 → 默认列表为空，include_voided 可见
+    flows, total = await svc.get_cashflow(account.id)
+    assert total == 0
+    flows_all, total_all = await svc.get_cashflow(account.id, include_voided=True)
+    assert total_all == 1
+    assert flows_all[0].is_voided is True
+
+
+# ---------------------------------------------------------------------------
+# INT-VOID-02: 作废污染 WAC 的误买 → 成本还原（核心订正场景）
+# ---------------------------------------------------------------------------
+async def test_int_void_02_void_polluting_buy_restores_cost(
+    db_session: AsyncSession,
+) -> None:
+    """正确持仓 200@12，误买 100@50 污染 WAC；作废误买后成本还原为 12（非冲正残留）。"""
+    account = await _make_account(db_session, cash=1_000_000.0)
+    svc = AccountService(db_session)
+
+    await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=12.0, shares=200, commission=0.0,
+    )
+    wrong = await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=50.0, shares=100, commission=0.0,
+    )
+    polluted = float((await svc.get_positions(account.id))[0].cost_price)
+    assert polluted == pytest.approx(7400 / 300, abs=1e-3)  # 24.667（NUMERIC(10,3) 丸め）
+
+    await svc.void_trade(wrong.id, void_note="买错价格")
+
+    pos = (await svc.get_positions(account.id))[0]
+    assert pos.shares == 200
+    assert float(pos.cost_price) == pytest.approx(12.0)  # SELL 冲正无法做到，replay 可以
+
+
+# ---------------------------------------------------------------------------
+# INT-VOID-03: 作废已被后续卖出依赖的买入 → OversellError，不改动数据
+# ---------------------------------------------------------------------------
+async def test_int_void_03_void_buy_with_later_sell_rejected(
+    db_session: AsyncSession,
+) -> None:
+    """买 1000 后卖 600；作废该买入会使卖出无券 → 拒绝且数据不变。"""
+    account = await _make_account(db_session, cash=100000.0)
+    svc = AccountService(db_session)
+
+    buy = await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=10.0, shares=1000, commission=0.0,
+    )
+    await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="SELL",
+        trade_date=_TRADE_DATE, price=11.0, shares=600, commission=0.0,
+    )
+
+    with pytest.raises(ValueError, match="超过当时持仓"):
+        await svc.void_trade(buy.id)
+
+    # 未改动：买入仍有效，持仓 400 不变
+    fresh_buy = await svc.list_trades(account.id, include_voided=True)
+    assert all(not t.is_voided for t in fresh_buy[0])
+    assert (await svc.get_positions(account.id))[0].shares == 400
+
+
+# ---------------------------------------------------------------------------
+# INT-VOID-04: 作废分红 → 成本回升 + 现金逆仕訳
+# ---------------------------------------------------------------------------
+async def test_int_void_04_void_dividend_restores_cost(
+    db_session: AsyncSession,
+) -> None:
+    """录入分红摊低成本后作废 → cost_price 回升、cash 扣回。"""
+    account = await _make_account(db_session, cash=100000.0)
+    svc = AccountService(db_session)
+
+    await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=10.0, shares=1000, commission=0.0,
+    )
+    div = await svc.record_dividend(
+        account_id=account.id, ts_code=_TS_A, amount=500.0, trade_date=_TRADE_DATE,
+    )
+    assert float((await svc.get_positions(account.id))[0].cost_price) == pytest.approx(9.5)
+    cash_with_div = float((await svc.get_account(account.id)).cash)
+
+    await svc.void_fund_flow(div.id, void_note="分红录错")
+
+    assert float((await svc.get_positions(account.id))[0].cost_price) == pytest.approx(10.0)
+    assert float((await svc.get_account(account.id)).cash) == pytest.approx(
+        cash_with_div - 500.0
+    )
+
+
+# ---------------------------------------------------------------------------
+# INT-VOID-05: 作废入金 → 现金逆仕訳；默认列表不展示 / include_voided 可见
+# ---------------------------------------------------------------------------
+async def test_int_void_05_void_deposit_reverses_cash(
+    db_session: AsyncSession,
+) -> None:
+    """入金后作废 → cash 扣回；作废行默认不在流水列表，include_voided 才可见。"""
+    account = await _make_account(db_session, cash=1000.0)
+    svc = AccountService(db_session)
+
+    flow = await svc.deposit(account_id=account.id, amount=50000.0, trade_date=_TRADE_DATE)
+    assert float((await svc.get_account(account.id)).cash) == pytest.approx(51000.0)
+
+    await svc.void_fund_flow(flow.id)
+    assert float((await svc.get_account(account.id)).cash) == pytest.approx(1000.0)
+
+    _, total = await svc.get_cashflow(account.id)
+    assert total == 0
+    _, total_all = await svc.get_cashflow(account.id, include_voided=True)
+    assert total_all == 1
+
+
+# ---------------------------------------------------------------------------
+# INT-VOID-06: BUY_FEE / SELL_PROCEEDS 不可单独作废
+# ---------------------------------------------------------------------------
+async def test_int_void_06_cannot_void_trade_fee_flow_directly(
+    db_session: AsyncSession,
+) -> None:
+    """直接作废 BUY_FEE 流水 → 拒绝（须经成交作废联动）。"""
+    account = await _make_account(db_session, cash=100000.0)
+    svc = AccountService(db_session)
+
+    await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=10.0, shares=1000, commission=0.0,
+    )
+    flows, _ = await svc.get_cashflow(account.id, flow_type="BUY_FEE")
+    with pytest.raises(ValueError, match="不可单独作废"):
+        await svc.void_fund_flow(flows[0].id)
+
+
+# ---------------------------------------------------------------------------
+# INT-VOID-07: 重复作废 / list_trades 过滤
+# ---------------------------------------------------------------------------
+async def test_int_void_07_double_void_and_list_filter(
+    db_session: AsyncSession,
+) -> None:
+    """已作废成交再次作废 → 拒绝；list_trades 默认过滤作废行。"""
+    account = await _make_account(db_session, cash=100000.0)
+    svc = AccountService(db_session)
+
+    trade = await svc.record_trade(
+        account_id=account.id, ts_code=_TS_A, trade_type="BUY",
+        trade_date=_TRADE_DATE, price=10.0, shares=1000, commission=0.0,
+    )
+    await svc.void_trade(trade.id)
+
+    with pytest.raises(ValueError, match="已作废"):
+        await svc.void_trade(trade.id)
+
+    active, total = await svc.list_trades(account.id)
+    assert total == 0
+    _, total_all = await svc.list_trades(account.id, include_voided=True)
+    assert total_all == 1

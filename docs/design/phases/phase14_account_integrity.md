@@ -1,6 +1,6 @@
 # Phase 14：账户资金链 + 5y candidate_pool 回填 + ICIR 历史回算 + BacktestEngine 真 5 步 + 日级 IC 生产者 + 评审推迟项收口
 
-> 版本：v1.3-r1（2026-06-02 新增 §14-9 日级 IC 生产者 + 设计评审 P1/P2/P3 + 补充 S 项收口）
+> 版本：v1.4（2026-06-18 新增 §14-10 成交/资金流水作废订正 B 方案 void + replay）
 > 状态：设计完成 + 评审通过（v1.0 P1×3 + P2×4 + P3×6 + v1.1 短复审 C-1×3 + C-2×4 + C-3×1 + v1.3 §14-9 评审 P1×1 + P2×2 + P3×3 + 补充自审 S-01/02/03 全收口） → TDD 实施
 > 估算：~7-12 pd（V1.0 收尾批次第 4 个 phase；v1.3 新增 §14-9 日级 IC 生产者 ~2-4 pd）
 > 依据文档：
@@ -24,6 +24,7 @@
 | v1.2 | 2026-05-25 | §5 短复审收口（详见 `docs/reviews/phase14_design_review_v1_1_short_2026-05-25.md`）：C-1×3 删除冗余抽象——v1.1 §5.2 设计 "新增 engine/scoring/pipeline.py + Scorer.aggregate_pipeline + InsufficientUniverseError" 是 3 项已存在轮子的误判，既有 `engine/factor_pipeline.py::FactorPipeline` + `engine/orthogonalizer.py` + `engine/scorer.py::Scorer.aggregate` 已完整覆盖 5 步管线 engine 层纯函数；v1.2 §5.2 重写为 "BacktestEngine 直接复用既有 Scorer.aggregate"。C-2×4 补实施细节——(1) BacktestService `_load_data_bundle` 补加载 `daily_quote.float_mkt_cap` 列；(2) 新增 `BacktestDataBundle.active_weights_history` 字段 + 加载 `strategy_weights_history` 全表；(3) BacktestEngine 主循环 3 处改造（MarketSnapshot 补 industry/market_cap/beta + s.score → compute_strategy_factors + aggregate_legacy/aggregate 分支二选）；(4) `WINSORIZE_MIN_SAMPLES=30` 常量定义在 `engine/scorer.py` 顶部（既有代码 grep 无此常量）+ 新增 `_lookup_active_weights` helper（PIT 前向查找）。C-3 §1.2 §14-3 估算 1-1.5 pd → 0.6-1 pd（5-8 pd 总估算不变 → system_design 无需再次同步）。R14-OPEN-3 + P3-4 引用路径同步修正 |
 | v1.3 | 2026-06-02 | **新增 §14-9 日级 IC 生产者（ICIR 历史回算补全 + 实盘续算）**：迁移准备期实跑 `backfill_icir_rebalance.py` 发现 §14-2 ICIR 历史回算只产 `default_matrix`、`factor_ic_window_state` 0 行，根因是日级 IC 时序 `IC_daily(s,f,t)`（SDD §7.4 全 universe Spearman Rank IC）**无任何生产者**（`upsert_ic_daily` 仅测试调用，CP2 只读权重不写日级 IC）→ `rolling_icir_state` 恒 < 60 样本回退冷启动。§14-9 落地：engine 纯函数 `compute_daily_ic`（复用 `FactorMonitorEngine.calc_ic`）+ `scripts/backfill_daily_ic.py`（5y 全 universe 逐日 `score_universe` 抽 `score_breakdown_raw[strategy]["z_raw"]` × 前向收益 → 写 `row_type='daily'`，trade_date=因子值日 d、state=state[d]）+ 实盘 CP2 续算接线（20 日 lag，z 源方案 (a)/(b) 待定）+ 重跑 §14-2 月末批 `--force` 切 `icir`；解锁 §14-4 ICIR 校准。同步 system_design §9 Phase 14 行 item (9) + 估算 ~5-8 → ~7-12 pd |
 | v1.3-r1 | 2026-06-02 | §14-9 设计评审收口（`docs/reviews/phase14_design_review_v1_3_2026-06-02.md` 6 项 + 补充自审 3 项）：**P1-1** 文档头版本 v1.2→v1.3-r1 + 估算 ~5-8→~7-12 pd 同步；**P2-1** system_design §9 累计估算脚注 rollup 同步（Phase 14 ~7-12 pd + 合计 ~40-59 pd）；**P2-2** §14-9 daily/aggregate 同 4-tuple 碰撞 → `get_ic_daily_window` 增 `row_type='daily'` 谓词 + INT-P14-9-02；**P3-1** `calc_ic -> float\|None` + None 不写占位行；**P3-2** 修订历史行序；**P3-3** 实盘续算 z 源消费节点闭合 §11.1；**S-01** §11.3.3 显式禁止复用缺陷版前向收益（`_calc_forward_returns`/`_calc_forward_returns_panel` 原始 close+日历近似+无剔除）改用 adj+严格交易日 + R14-OPEN-8 V1.5 统一项；**S-02** `_DAILY_IC_MIN_XS=30` 每日最小横截面；**S-03** INT-P14-9-01 fixture 去 candidate_pool 改 daily_quote/financial/market_state |
+| v1.4 | 2026-06-18 | **新增 §14-10 成交/资金流水作废订正（B 方案 void + replay 再计算）**：用户实测前台发现持仓/交易明细/资金流水 append-only、录错无订正经路（且 WAC 增量上写不可逆、前端「交易明细」误按不存在的 `flow_type==='TRADE'` 过滤致成交不展示）。落地：alembic 0016 加 `is_voided/voided_at/void_note`（trade_record+fund_flow）+ 纯函数 `replay_position`（持仓=非作废成交+分红的派生视图）+ `void_trade`（dry-run 校验超卖→联动作废费用流水+现金逆仕訳+replay 重建）+ `void_fund_flow`（费用流水禁止单独作废）+ `GET /account/trades` 修复成交明细 + `void` 端点 + 前端撤销/订正/voided 灰显。UT replay 10 例 + INT-VOID-01~07 + E2E aapi-19~26 + 冒烟 API-104~107 |
 
 ---
 
@@ -770,6 +771,37 @@ SDD §7.4（line 460）：`IC_daily(s,f,t) = Spearman corr(factor_value_{t-20}, 
 ### 11.6 实施顺序
 
 §14-9 依赖 §14-2 candidate_pool 5y 在库（✅ 已完成）。顺序：engine 纯函数 + 脚本（TDD RED→GREEN）→ 单日计时（R14-OPEN-6）→ 5y daily IC 回填（**prod 5432，需用户单独确认**）→ 重跑 §14-2 月末批 `--force`（icir 覆盖 default_matrix）→ 真机验证 → 实盘续算接线（CP2，方案定夺后）→ 全回归。关键路径插 §14-2 之后、§14-4 之前（§14-4 ICIR 校准依赖真 IC 时序）。
+
+---
+
+## 11b. §14-10：成交 / 资金流水作废订正（录入错误的可逆订正）
+
+### 问题
+前台「持仓 / 交易明细 / 资金流水」原为 **append-only**：`record_trade` 只 INSERT，无编辑 / 删除端点，`PATCH /positions/{id}` 仅改 current_price / phase。用户录错（价格、股数、股票、日期）后**无任何订正经路**。更深层缺陷：持仓 `cost_price` 由 WAC **增量上写、且 SELL 不还原**，因此即便用会计冲正（反向卖出）也无法还原被误买污染的 WAC——是一个潜在不可逆 bug。前端「交易明细」Tab 还误按不存在的 `flow_type==='TRADE'` 过滤，导致成交根本不展示。
+
+### 方案（B：软删除 void + replay 再计算，混合现金增量逆仕訳）
+持仓改为**成交流水的派生视图**：
+
+- **软删除三列**（alembic 0016）：`trade_record` / `fund_flow` 各加 `is_voided` / `voided_at` / `void_note`；所有面向用户查询默认 `is_voided = false`，`include_voided=true` 可见审计行。
+- **纯函数 `replay_position(events)`**（account_service.py，DB 无关、单测覆盖）：按时间重放 BUY（WAC 累积）/ SELL（减仓，成本不变，归零复位）/ DIVIDEND（摊低成本）；任一步持仓为负 → `OversellError`。
+- **`void_trade`**：先 dry-run replay（排除本笔）校验超卖 → 通过后标记作废 + 联动作废其 `related_trade_id` 费用流水 + `cash -= Σ(flow.amount)` 逆仕訳（amount 已含符号，一律 `-=` 还原）+ replay 重建持仓。撤销会使后续卖出无券 → 400 拒绝（先撤销相关卖出）。
+- **`void_fund_flow`**：DEPOSIT/WITHDRAW/DIVIDEND 才可单独作废（BUY_FEE/SELL_PROCEEDS 须经成交联动）；`cash -= amount`；DIVIDEND 额外 replay 还原成本。
+- **现金为增量逆仕訳非整体重算**：因 seed 直接设 `account.cash`（≠ Σfund_flow），无 Σ 重算锚点，故按被作废行精确逆仕訳。
+- **订正流程**：前端「订正」= 作废原成交 + 预填重新录入（作废失败则不打开录入框）；非新增「编辑」语义，保留审计。
+
+### 端点
+- `GET /account/trades`（修复成交明细展示，分页 + `include_voided`）
+- `POST /account/trades/{id}/void`（body `{void_note?}`；404 / 400 / 200）
+- `POST /account/cashflow/{id}/void`（同上；费用流水 400）
+- `GET /account/cashflow` 增 `include_voided` 查询参数
+
+### 测试
+- UT：`replay_position` 10 例（空 / 单买 / WAC / 部分卖 / 误买还原 / 平仓复位 / 分红 / 同日买卖 / 超卖）
+- INT-VOID-01~07：作废买入全还原 / 误买还原成本 / 后续卖出依赖拒绝 / 作废分红还原成本 / 作废入金逆仕訳 / 费用流水拒绝 / 重复作废 + list 过滤
+- E2E aapi-19~26 + 冒烟 API-104~107
+
+### 归属说明
+账户资金链完整性属 Phase 14 范畴（C-5 唯一归属，不新建 phase）；起因为用户实测前台发现 append-only 无订正经路。
 
 ---
 

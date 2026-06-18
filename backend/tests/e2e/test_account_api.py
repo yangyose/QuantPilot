@@ -42,6 +42,9 @@ def _mock_trade(trade_id: int = 1) -> TradeRecord:
     t.stamp_tax = 0.0
     t.signal_id = None
     t.note = None
+    t.is_voided = False
+    t.voided_at = None
+    t.void_note = None
     t.created_at = None
     return t
 
@@ -57,6 +60,9 @@ def _mock_flow(flow_id: int = 1, flow_type: str = "DEPOSIT") -> FundFlow:
     f.related_trade_id = None
     f.note = None
     f.idempotency_key = None
+    f.is_voided = False
+    f.voided_at = None
+    f.void_note = None
     f.created_at = None
     return f
 
@@ -394,3 +400,112 @@ async def test_aapi_18_cashflow_invalid_date(client: AsyncClient) -> None:
     body = resp.json()
     assert body.get("code") == 422
     assert "errors" in body
+
+
+# ---------------------------------------------------------------------------
+# GET /account/trades + 作废订正端点
+# ---------------------------------------------------------------------------
+
+async def test_aapi_19_list_trades_no_auth(client: AsyncClient) -> None:
+    """GET /account/trades 无鉴权 → 401。"""
+    resp = await client.get("/api/v1/account/trades", params={"account_id": 1})
+    assert resp.status_code == 401
+
+
+async def test_aapi_20_list_trades_ok(client: AsyncClient) -> None:
+    """GET /account/trades 有鉴权 → 200，含 items/total 分页结构。"""
+    mock = AsyncMock()
+    mock.list_trades = AsyncMock(return_value=([_mock_trade()], 1))
+    app.dependency_overrides[get_account_service] = lambda: mock
+    try:
+        resp = await client.get(
+            "/api/v1/account/trades", params={"account_id": 1}, headers=_auth()
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["ts_code"] == "000001.SZ"
+        assert data["items"][0]["is_voided"] is False
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)
+
+
+async def test_aapi_21_void_trade_no_auth(client: AsyncClient) -> None:
+    """POST /account/trades/{id}/void 无鉴权 → 401。"""
+    resp = await client.post("/api/v1/account/trades/1/void", json={})
+    assert resp.status_code == 401
+
+
+async def test_aapi_22_void_trade_ok(client: AsyncClient) -> None:
+    """POST /account/trades/{id}/void → 200，返回已作废 TradeRecordItem。"""
+    voided = _mock_trade()
+    voided.is_voided = True
+    voided.void_note = "录入错误"
+    mock = AsyncMock()
+    mock.void_trade = AsyncMock(return_value=voided)
+    app.dependency_overrides[get_account_service] = lambda: mock
+    try:
+        resp = await client.post(
+            "/api/v1/account/trades/1/void",
+            json={"void_note": "录入错误"}, headers=_auth(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["is_voided"] is True
+        assert mock.void_trade.await_args.kwargs["void_note"] == "录入错误"
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)
+
+
+async def test_aapi_23_void_trade_not_found(client: AsyncClient) -> None:
+    """POST /account/trades/{id}/void 不存在 → 404。"""
+    mock = AsyncMock()
+    mock.void_trade = AsyncMock(side_effect=ValueError("成交 99 not found"))
+    app.dependency_overrides[get_account_service] = lambda: mock
+    try:
+        resp = await client.post("/api/v1/account/trades/99/void", json={}, headers=_auth())
+        assert resp.status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)
+
+
+async def test_aapi_24_void_trade_oversell_400(client: AsyncClient) -> None:
+    """POST /account/trades/{id}/void 撤销致后续超卖 → 400。"""
+    mock = AsyncMock()
+    mock.void_trade = AsyncMock(
+        side_effect=ValueError("撤销后 2026-04-11 卖出 600 股超过当时持仓")
+    )
+    app.dependency_overrides[get_account_service] = lambda: mock
+    try:
+        resp = await client.post("/api/v1/account/trades/1/void", json={}, headers=_auth())
+        assert resp.status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)
+
+
+async def test_aapi_25_void_cashflow_ok(client: AsyncClient) -> None:
+    """POST /account/cashflow/{id}/void → 200，返回已作废 FundFlowItem。"""
+    voided = _mock_flow(flow_type="DEPOSIT")
+    voided.is_voided = True
+    mock = AsyncMock()
+    mock.void_fund_flow = AsyncMock(return_value=voided)
+    app.dependency_overrides[get_account_service] = lambda: mock
+    try:
+        resp = await client.post("/api/v1/account/cashflow/1/void", json={}, headers=_auth())
+        assert resp.status_code == 200
+        assert resp.json()["data"]["is_voided"] is True
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)
+
+
+async def test_aapi_26_void_cashflow_fee_rejected_400(client: AsyncClient) -> None:
+    """POST /account/cashflow/{id}/void 作废交易费用流水 → 400。"""
+    mock = AsyncMock()
+    mock.void_fund_flow = AsyncMock(
+        side_effect=ValueError("交易费用流水不可单独作废，请作废对应成交记录")
+    )
+    app.dependency_overrides[get_account_service] = lambda: mock
+    try:
+        resp = await client.post("/api/v1/account/cashflow/5/void", json={}, headers=_auth())
+        assert resp.status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)

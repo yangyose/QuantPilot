@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import func, select
@@ -41,6 +42,78 @@ def compute_wac(
     """
     total_shares = old_shares + new_shares
     return (old_shares * old_cost + new_shares * new_price + commission) / total_shares
+
+
+class OversellError(ValueError):
+    """replay 过程中卖出超过持仓（撤销某买入后导致后续卖出无券可卖）。"""
+
+
+@dataclass(frozen=True)
+class ReplayEvent:
+    """持仓 replay 的单个事件（成交 BUY/SELL 或分红 DIVIDEND）。"""
+
+    kind: str  # "BUY" | "SELL" | "DIVIDEND"
+    trade_date: date
+    seq: int  # 同日内的稳定排序键（一般用主键 id）
+    shares: int = 0  # BUY/SELL 股数；DIVIDEND 传 0
+    price: float = 0.0  # BUY/SELL 价格
+    commission: float = 0.0  # BUY 佣金（摊入成本）
+    amount: float = 0.0  # DIVIDEND 现金总额（用于摊低成本）
+
+
+@dataclass(frozen=True)
+class ReplayResult:
+    """replay 后的持仓状态。shares == 0 表示已平仓（不应有持仓行）。"""
+
+    shares: int
+    cost_price: float
+    open_date: date | None
+    phase: str | None  # BUILD/HOLD/REDUCE；平仓时 None
+
+
+# 同日内事件处理次序：BUY 先于 DIVIDEND（分红依赖当时持股），SELL 最后。
+_KIND_ORDER = {"BUY": 0, "DIVIDEND": 1, "SELL": 2}
+
+
+def replay_position(events: list[ReplayEvent]) -> ReplayResult:
+    """从成交/分红事件序列重建持仓（纯函数，无 IO）。
+
+    将持仓视为成交流水的派生视图：按时间重放 BUY（WAC 累积）、SELL（减仓，成本不变）、
+    DIVIDEND（摊低成本）。任何一步持仓为负 → 抛 OversellError（撤销会破坏后续卖出）。
+    平仓（shares 归零）后 cost/open_date 复位，使后续重新建仓从干净状态起算。
+    """
+    ordered = sorted(events, key=lambda e: (e.trade_date, _KIND_ORDER.get(e.kind, 9), e.seq))
+    shares = 0
+    cost = 0.0
+    open_date: date | None = None
+    phase: str | None = None
+
+    for ev in ordered:
+        if ev.kind == "BUY":
+            cost = compute_wac(shares, cost, ev.shares, ev.price, ev.commission)
+            shares += ev.shares
+            if open_date is None:
+                open_date = ev.trade_date
+            phase = "BUILD"
+        elif ev.kind == "SELL":
+            shares -= ev.shares
+            if shares < 0:
+                raise OversellError(
+                    f"撤销后 {ev.trade_date} 卖出 {ev.shares} 股超过当时持仓"
+                )
+            if shares == 0:
+                cost = 0.0
+                open_date = None
+                phase = None
+            else:
+                phase = "REDUCE"
+        elif ev.kind == "DIVIDEND":
+            if shares > 0 and ev.amount:
+                cost -= ev.amount / shares
+        else:  # pragma: no cover - 防御性
+            raise ValueError(f"未知 replay 事件类型：{ev.kind}")
+
+    return ReplayResult(shares=shares, cost_price=cost, open_date=open_date, phase=phase)
 
 
 class AccountService:
@@ -292,6 +365,197 @@ class AccountService:
         await self._session.refresh(trade)
         return trade
 
+    async def list_trades(
+        self,
+        account_id: int,
+        include_voided: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[TradeRecord], int]:
+        """成交记录列表（分页）。include_voided=False 时过滤已作废行。"""
+        stmt = select(TradeRecord).where(TradeRecord.account_id == account_id)
+        if not include_voided:
+            stmt = stmt.where(TradeRecord.is_voided.is_(False))
+
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total: int = (await self._session.execute(count_stmt)).scalar_one()
+
+        stmt = stmt.order_by(
+            TradeRecord.trade_date.desc(), TradeRecord.id.desc()
+        ).offset(offset).limit(limit)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all()), total
+
+    # ------------------------------------------------------------------ 作废订正
+
+    async def _gather_replay_events(
+        self, account_id: int, ts_code: str, exclude_trade_id: int | None = None,
+    ) -> list[ReplayEvent]:
+        """收集某 ts_code 的非作废成交 + 非作废分红，转为 replay 事件序列。
+
+        持仓视为成交流水的派生视图：撤销 = 排除某行后重放。exclude_trade_id 用于
+        「先校验后落库」（在标记作废前先 dry-run replay 检测超卖）。
+        """
+        trade_stmt = select(TradeRecord).where(
+            TradeRecord.account_id == account_id,
+            TradeRecord.ts_code == ts_code,
+            TradeRecord.is_voided.is_(False),
+        )
+        if exclude_trade_id is not None:
+            trade_stmt = trade_stmt.where(TradeRecord.id != exclude_trade_id)
+        trades = (await self._session.execute(trade_stmt)).scalars().all()
+
+        div_stmt = select(FundFlow).where(
+            FundFlow.account_id == account_id,
+            FundFlow.ts_code == ts_code,
+            FundFlow.flow_type == "DIVIDEND",
+            FundFlow.is_voided.is_(False),
+        )
+        dividends = (await self._session.execute(div_stmt)).scalars().all()
+
+        events: list[ReplayEvent] = []
+        for t in trades:
+            events.append(ReplayEvent(
+                kind=t.trade_type,
+                trade_date=t.trade_date,
+                seq=t.id,
+                shares=int(t.shares or 0),
+                price=float(t.price or 0),
+                commission=float(t.commission or 0),
+            ))
+        for f in dividends:
+            events.append(ReplayEvent(
+                kind="DIVIDEND",
+                trade_date=f.trade_date,
+                seq=f.id,
+                amount=float(f.amount or 0),
+            ))
+        return events
+
+    async def _apply_position_result(
+        self, account_id: int, ts_code: str, result: ReplayResult,
+    ) -> None:
+        """把 replay 结果落到 position 表：平仓删除、否则 upsert（价格字段待下次盯市刷新）。"""
+        pos_result = await self._session.execute(
+            select(Position).where(
+                Position.account_id == account_id,
+                Position.ts_code == ts_code,
+            )
+        )
+        position = pos_result.scalar_one_or_none()
+
+        if result.shares == 0:
+            if position is not None:
+                await self._session.delete(position)
+            return
+
+        if position is None:
+            position = Position(account_id=account_id, ts_code=ts_code, shares=result.shares)
+            self._session.add(position)
+
+        position.shares = result.shares
+        position.cost_price = result.cost_price
+        position.open_date = result.open_date
+        position.phase = result.phase
+        # 价格相关字段失效 → 置空，待下次 sync_account / mark_to_market 刷新
+        position.current_price = None
+        position.market_value = None
+        position.pnl_pct = None
+
+    async def void_trade(
+        self, trade_id: int, void_note: str | None = None,
+    ) -> TradeRecord:
+        """作废一笔成交（软删除）：联动作废费用流水 + 逆仕訳现金 + 重建持仓。
+
+        先 dry-run replay（排除本笔）检测超卖——若撤销会导致后续卖出无券可卖则抛
+        OversellError，不改动任何数据。校验通过后落库。
+        """
+        trade = (await self._session.execute(
+            select(TradeRecord).where(TradeRecord.id == trade_id)
+        )).scalar_one_or_none()
+        if trade is None:
+            raise ValueError(f"成交 {trade_id} not found")
+        if trade.is_voided:
+            raise ValueError("该成交已作废，不可重复作废")
+
+        # 先校验：排除本笔后 replay（可能抛 OversellError，此时未改动数据）
+        events = await self._gather_replay_events(
+            trade.account_id, trade.ts_code, exclude_trade_id=trade_id,
+        )
+        result = replay_position(events)
+
+        now = dt.datetime.now(tz=dt.timezone.utc)
+        trade.is_voided = True
+        trade.voided_at = now
+        trade.void_note = void_note
+
+        # 联动作废本笔产生的资金流水（BUY_FEE / SELL_PROCEEDS）并逆仕訳现金
+        account = await self.get_account(trade.account_id)
+        if account is None:  # pragma: no cover - FK 保证存在
+            raise ValueError(f"Account {trade.account_id} not found")
+        flows = (await self._session.execute(
+            select(FundFlow).where(
+                FundFlow.related_trade_id == trade_id,
+                FundFlow.is_voided.is_(False),
+            )
+        )).scalars().all()
+        for f in flows:
+            account.cash = float(account.cash or 0) - float(f.amount or 0)
+            f.is_voided = True
+            f.voided_at = now
+            f.void_note = void_note or "成交作废联动"
+
+        await self._apply_position_result(trade.account_id, trade.ts_code, result)
+        await self._session.flush()
+        await self._session.refresh(trade)
+        logger.info(
+            "trade_voided id=%d account=%d ts_code=%s flows_voided=%d",
+            trade_id, trade.account_id, trade.ts_code, len(flows),
+        )
+        return trade
+
+    async def void_fund_flow(
+        self, flow_id: int, void_note: str | None = None,
+    ) -> FundFlow:
+        """作废一笔资金流水（DEPOSIT/WITHDRAW/DIVIDEND）：逆仕訳现金；分红则重建持仓。
+
+        BUY_FEE / SELL_PROCEEDS 不可单独作废（须经对应成交的 void_trade 联动），
+        否则会与成交状态脱节。
+        """
+        flow = (await self._session.execute(
+            select(FundFlow).where(FundFlow.id == flow_id)
+        )).scalar_one_or_none()
+        if flow is None:
+            raise ValueError(f"资金流水 {flow_id} not found")
+        if flow.is_voided:
+            raise ValueError("该资金流水已作废，不可重复作废")
+        if flow.flow_type in ("BUY_FEE", "SELL_PROCEEDS"):
+            raise ValueError("交易费用流水不可单独作废，请作废对应成交记录")
+
+        account = await self.get_account(flow.account_id)
+        if account is None:  # pragma: no cover - FK 保证存在
+            raise ValueError(f"Account {flow.account_id} not found")
+
+        now = dt.datetime.now(tz=dt.timezone.utc)
+        account.cash = float(account.cash or 0) - float(flow.amount or 0)
+        flow.is_voided = True
+        flow.voided_at = now
+        flow.void_note = void_note
+
+        # 分红作废 → 撤销其对成本的摊低，重建持仓（标记作废后 gather 自动排除本笔）
+        if flow.flow_type == "DIVIDEND" and flow.ts_code:
+            events = await self._gather_replay_events(flow.account_id, flow.ts_code)
+            result = replay_position(events)
+            await self._apply_position_result(flow.account_id, flow.ts_code, result)
+
+        await self._session.flush()
+        await self._session.refresh(flow)
+        logger.info(
+            "fund_flow_voided id=%d account=%d type=%s amount=%s",
+            flow_id, flow.account_id, flow.flow_type, flow.amount,
+        )
+        return flow
+
     # ------------------------------------------------------------------ 资金流水
 
     async def find_fund_flow_by_idempotency(
@@ -521,9 +785,16 @@ class AccountService:
         end_date: date | None = None,
         limit: int = 100,
         offset: int = 0,
+        include_voided: bool = False,
     ) -> tuple[list[FundFlow], int]:
-        """返回 (流水列表, total_count)，支持分页与过滤。"""
+        """返回 (流水列表, total_count)，支持分页与过滤。
+
+        include_voided=False（默认）过滤已作废流水——已作废行的现金影响已在
+        account.cash 逆仕訳，列表默认不展示以免误导余额对账。
+        """
         stmt = select(FundFlow).where(FundFlow.account_id == account_id)
+        if not include_voided:
+            stmt = stmt.where(FundFlow.is_voided.is_(False))
         if flow_type:
             stmt = stmt.where(FundFlow.flow_type == flow_type)
         if start_date:

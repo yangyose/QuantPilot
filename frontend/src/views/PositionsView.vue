@@ -29,11 +29,76 @@ const fundForm = ref({ amount: 0, trade_date: new Date().toISOString().slice(0, 
 const cashflowStart = ref<string | undefined>()
 const cashflowEnd = ref<string | undefined>()
 
+const tradesIncludeVoided = ref(false)
+const cashflowIncludeVoided = ref(false)
+
+// 作废订正 Modal
+const voidModalOpen = ref(false)
+const voidTarget = ref<{ kind: 'trade' | 'cashflow'; id: number; label: string } | null>(null)
+const voidNote = ref('')
+
 onMounted(() => {
   store.fetchAccount()
   store.fetchPositions()
   store.fetchCashflows()
+  store.fetchTrades()
 })
+
+function openVoid(kind: 'trade' | 'cashflow', id: number, label: string) {
+  voidTarget.value = { kind, id, label }
+  voidNote.value = ''
+  voidModalOpen.value = true
+}
+
+async function submitVoid() {
+  if (!voidTarget.value) return
+  const { kind, id } = voidTarget.value
+  try {
+    if (kind === 'trade') {
+      await store.voidTrade(id, voidNote.value || undefined)
+    } else {
+      await store.voidCashflow(id, voidNote.value || undefined)
+    }
+    message.success('已作废，持仓/现金已订正')
+    voidModalOpen.value = false
+  } catch (err: unknown) {
+    const e = err as { response?: { data?: { msg?: string; detail?: string } } }
+    const detail = e.response?.data?.msg || e.response?.data?.detail || '作废失败'
+    message.error(detail, 6)
+  }
+}
+
+async function correctTrade(record: { id: number; ts_code: string; trade_type: 'BUY' | 'SELL'; price: number; shares: number; trade_date: string }) {
+  // 订正 = 作废原成交 + 预填重新录入。作废失败（如超卖）则不打开录入框。
+  try {
+    await store.voidTrade(record.id, '订正：重新录入')
+  } catch (err: unknown) {
+    const e = err as { response?: { data?: { msg?: string; detail?: string } } }
+    message.error(e.response?.data?.msg || e.response?.data?.detail || '作废失败', 6)
+    return
+  }
+  message.success('原成交已作废，请修改后重新录入')
+  tradeForm.value = {
+    ts_code: record.ts_code,
+    trade_type: record.trade_type,
+    price: record.price,
+    shares: record.shares,
+    trade_date: record.trade_date,
+  }
+  addTradeOpen.value = true
+}
+
+async function toggleTradesVoided() {
+  await store.fetchTrades(tradesIncludeVoided.value)
+}
+
+async function toggleCashflowVoided() {
+  await store.fetchCashflows({
+    start_date: cashflowStart.value,
+    end_date: cashflowEnd.value,
+    include_voided: cashflowIncludeVoided.value,
+  })
+}
 
 async function submitAddPosition() {
   try {
@@ -102,7 +167,11 @@ async function submitFund() {
 }
 
 async function queryCashflows() {
-  await store.fetchCashflows({ start_date: cashflowStart.value, end_date: cashflowEnd.value })
+  await store.fetchCashflows({
+    start_date: cashflowStart.value,
+    end_date: cashflowEnd.value,
+    include_voided: cashflowIncludeVoided.value,
+  })
 }
 
 function openFundModal(type: 'deposit' | 'withdraw') {
@@ -134,7 +203,29 @@ const cashflowColumns = [
     customRender: ({ value }: { value: number }) => fmtAmount(value) },
   { title: '备注', dataIndex: 'note', key: 'note',
     customRender: ({ value }: { value: string | null }) => value ?? '—' },
+  { title: '操作', key: 'action', width: 90 },
 ]
+
+const tradeColumns = [
+  { title: '日期', dataIndex: 'trade_date', key: 'trade_date',
+    customRender: ({ value }: { value: string }) => fmtDate(value) },
+  { title: '代码', dataIndex: 'ts_code', key: 'ts_code' },
+  { title: '方向', dataIndex: 'trade_type', key: 'trade_type' },
+  { title: '价格', dataIndex: 'price', key: 'price',
+    customRender: ({ value }: { value: number | null }) => fmtAmount(value) },
+  { title: '数量', dataIndex: 'shares', key: 'shares' },
+  { title: '金额', dataIndex: 'amount', key: 'amount',
+    customRender: ({ value }: { value: number | null }) => fmtAmount(value) },
+  { title: '操作', key: 'action', width: 150 },
+]
+
+// 已作废行整行置灰
+function voidedRowClass(record: { is_voided?: boolean }): string {
+  return record.is_voided ? 'voided-row' : ''
+}
+
+// 资金流水中交易费用类型不可单独作废（须经成交作废联动）
+const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
 </script>
 
 <template>
@@ -185,14 +276,36 @@ const cashflowColumns = [
       </a-tab-pane>
 
       <!-- 交易录入 Tab -->
-      <a-tab-pane key="trades" tab="交易录入">
-        <a-button type="primary" style="margin-bottom: 12px" @click="addTradeOpen = true">录入交易</a-button>
+      <a-tab-pane key="trades" tab="交易明细">
+        <a-space style="margin-bottom: 12px">
+          <a-button type="primary" @click="addTradeOpen = true">录入交易</a-button>
+          <a-checkbox v-model:checked="tradesIncludeVoided" @change="toggleTradesVoided">
+            显示已作废
+          </a-checkbox>
+        </a-space>
         <a-table
-          :columns="cashflowColumns"
-          :data-source="store.cashflows.filter(f => f.flow_type === 'TRADE')"
+          :columns="tradeColumns"
+          :data-source="store.trades"
+          :row-class-name="voidedRowClass"
           row-key="id"
           size="small"
-        />
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'trade_type'">
+              <a-tag :color="record.trade_type === 'BUY' ? 'red' : 'green'">
+                {{ record.trade_type === 'BUY' ? '买入' : '卖出' }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'action'">
+              <span v-if="record.is_voided" style="color: #999">已作废</span>
+              <a-space v-else>
+                <a @click="correctTrade(record)">订正</a>
+                <a style="color: #ff4d4f" @click="openVoid('trade', record.id, `${record.ts_code} ${record.trade_type} ${record.shares}股`)">撤销</a>
+              </a-space>
+            </template>
+          </template>
+        </a-table>
+        <EmptyState v-if="store.trades.length === 0" title="暂无成交记录" />
       </a-tab-pane>
 
       <!-- 资金流水 Tab -->
@@ -213,14 +326,30 @@ const cashflowColumns = [
           <a-button type="primary" @click="queryCashflows">查询</a-button>
           <a-button @click="openFundModal('deposit')">入金</a-button>
           <a-button @click="openFundModal('withdraw')">出金</a-button>
+          <a-checkbox v-model:checked="cashflowIncludeVoided" @change="toggleCashflowVoided">
+            显示已作废
+          </a-checkbox>
         </a-space>
         <a-table
           :columns="cashflowColumns"
           :data-source="store.cashflows"
           :loading="store.loading"
+          :row-class-name="voidedRowClass"
           row-key="id"
           size="small"
-        />
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'action'">
+              <span v-if="record.is_voided" style="color: #999">已作废</span>
+              <a-tooltip v-else-if="FEE_FLOW_TYPES.includes(record.flow_type)"
+                title="交易费用随成交作废，请在交易明细中撤销对应成交">
+                <span style="color: #ccc">—</span>
+              </a-tooltip>
+              <a v-else style="color: #ff4d4f"
+                @click="openVoid('cashflow', record.id, `${record.flow_type} ${fmtAmount(record.amount)}`)">撤销</a>
+            </template>
+          </template>
+        </a-table>
       </a-tab-pane>
     </a-tabs>
 
@@ -292,5 +421,25 @@ const cashflowColumns = [
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <!-- 作废订正 Modal -->
+    <a-modal v-model:open="voidModalOpen" title="确认作废" ok-text="确认作废"
+      :ok-button-props="{ danger: true }" @ok="submitVoid">
+      <a-alert type="warning" show-icon style="margin-bottom: 12px"
+        :message="`将作废：${voidTarget?.label ?? ''}`"
+        description="作废保留审计痕迹，并按剩余有效记录自动订正持仓与现金。" />
+      <a-form layout="vertical">
+        <a-form-item label="作废原因（可选）">
+          <a-input v-model:value="voidNote" placeholder="如：价格录入错误 / 股数填错" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
+
+<style scoped>
+:deep(.voided-row) {
+  color: #bbb;
+  text-decoration: line-through;
+}
+</style>

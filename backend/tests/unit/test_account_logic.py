@@ -7,7 +7,116 @@ import pytest
 from pydantic import ValidationError
 
 from quantpilot.schemas.account import FundFlowCreate
-from quantpilot.services.account_service import compute_wac
+from quantpilot.services.account_service import (
+    OversellError,
+    ReplayEvent,
+    compute_wac,
+    replay_position,
+)
+
+
+def _buy(d: date, seq: int, shares: int, price: float, commission: float = 0.0) -> ReplayEvent:
+    return ReplayEvent("BUY", d, seq, shares=shares, price=price, commission=commission)
+
+
+def _sell(d: date, seq: int, shares: int, price: float = 0.0) -> ReplayEvent:
+    return ReplayEvent("SELL", d, seq, shares=shares, price=price)
+
+
+def _div(d: date, seq: int, amount: float) -> ReplayEvent:
+    return ReplayEvent("DIVIDEND", d, seq, amount=amount)
+
+
+class TestReplayPosition:
+    """replay_position：持仓 = 非作废成交+分红的派生视图（订正机制核心纯函数）。"""
+
+    def test_empty_is_flat(self) -> None:
+        r = replay_position([])
+        assert r.shares == 0
+        assert r.cost_price == 0.0
+        assert r.open_date is None
+        assert r.phase is None
+
+    def test_single_buy(self) -> None:
+        r = replay_position([_buy(date(2026, 1, 5), 1, 1000, 10.0, commission=25.0)])
+        assert r.shares == 1000
+        assert r.cost_price == pytest.approx(10.025)
+        assert r.open_date == date(2026, 1, 5)
+        assert r.phase == "BUILD"
+
+    def test_two_buys_wac(self) -> None:
+        """两次买入 → WAC 累积，open_date 取首笔。"""
+        r = replay_position([
+            _buy(date(2026, 1, 5), 1, 1000, 10.0),
+            _buy(date(2026, 1, 8), 2, 1000, 12.0),
+        ])
+        assert r.shares == 2000
+        assert r.cost_price == pytest.approx(11.0)
+        assert r.open_date == date(2026, 1, 5)
+
+    def test_partial_sell_keeps_cost(self) -> None:
+        """部分卖出：成本不变，phase=REDUCE。"""
+        r = replay_position([
+            _buy(date(2026, 1, 5), 1, 1000, 10.0),
+            _sell(date(2026, 1, 9), 2, 400),
+        ])
+        assert r.shares == 600
+        assert r.cost_price == pytest.approx(10.0)
+        assert r.phase == "REDUCE"
+
+    def test_void_polluting_buy_restores_cost(self) -> None:
+        """订正核心场景：误买污染 WAC，删掉该买入后 replay 还原原成本。
+
+        正确持仓 200 股@12（seq1）；误买 100 股@50（seq2）已被排除（不在事件里）。
+        replay 仅剩 seq1 → 成本回到 12，而非 SELL 冲正残留的 24.67。
+        """
+        r = replay_position([_buy(date(2026, 1, 5), 1, 200, 12.0)])
+        assert r.shares == 200
+        assert r.cost_price == pytest.approx(12.0)
+
+    def test_flatten_then_rebuy_resets(self) -> None:
+        """清仓后再建仓：成本/open_date 复位，新建仓从干净状态起算。"""
+        r = replay_position([
+            _buy(date(2026, 1, 5), 1, 1000, 10.0),
+            _sell(date(2026, 1, 9), 2, 1000),
+            _buy(date(2026, 2, 3), 3, 500, 20.0),
+        ])
+        assert r.shares == 500
+        assert r.cost_price == pytest.approx(20.0)
+        assert r.open_date == date(2026, 2, 3)
+        assert r.phase == "BUILD"
+
+    def test_dividend_lowers_cost(self) -> None:
+        """分红摊低成本：1000 股，分红 500 元 → 成本 -0.5。"""
+        r = replay_position([
+            _buy(date(2026, 1, 5), 1, 1000, 10.0),
+            _div(date(2026, 3, 1), 2, 500.0),
+        ])
+        assert r.shares == 1000
+        assert r.cost_price == pytest.approx(9.5)
+
+    def test_dividend_after_flat_ignored(self) -> None:
+        """已平仓后的分红事件不影响成本（无持股可摊）。"""
+        r = replay_position([
+            _buy(date(2026, 1, 5), 1, 1000, 10.0),
+            _sell(date(2026, 1, 9), 2, 1000),
+            _div(date(2026, 3, 1), 3, 500.0),
+        ])
+        assert r.shares == 0
+        assert r.cost_price == 0.0
+
+    def test_same_day_buy_before_sell(self) -> None:
+        """同日买卖：BUY 先于 SELL 处理（否则会误判超卖）。"""
+        r = replay_position([
+            _sell(date(2026, 1, 5), 2, 500),
+            _buy(date(2026, 1, 5), 1, 1000, 10.0),
+        ])
+        assert r.shares == 500
+
+    def test_oversell_raises(self) -> None:
+        """撤销买入导致后续卖出无券 → OversellError。"""
+        with pytest.raises(OversellError):
+            replay_position([_sell(date(2026, 1, 9), 1, 400)])
 
 
 class TestComputeWac:

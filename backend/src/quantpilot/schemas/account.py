@@ -76,6 +76,9 @@ class TradeRecordItem(BaseModel):
     stamp_tax: float | None
     signal_id: int | None
     note: str | None
+    is_voided: bool = False
+    voided_at: datetime | None = None
+    void_note: str | None = None
     created_at: datetime | None
 
 
@@ -112,9 +115,18 @@ class FundFlowItem(BaseModel):
     related_trade_id: int | None
     note: str | None
     idempotency_key: str | None = None
+    is_voided: bool = False
+    voided_at: datetime | None = None
+    void_note: str | None = None
     created_at: datetime | None
 
 
 class CashflowResponse(BaseModel):
     items: list[FundFlowItem]
     total: int
+
+
+class VoidRequest(BaseModel):
+    """作废成交 / 资金流水的请求体。void_note 为订正说明（可选但建议填写）。"""
+
+    void_note: str | None = Field(None, max_length=500)

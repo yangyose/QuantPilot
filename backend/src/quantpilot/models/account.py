@@ -3,6 +3,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
+    Boolean,
     Date,
     ForeignKey,
     Index,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -80,6 +82,11 @@ class TradeRecord(Base):
         BigInteger, ForeignKey("signal.id")
     )
     note: Mapped[str | None] = mapped_column(Text)
+    is_voided: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false()
+    )
+    voided_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    void_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default="NOW()"
     )
@@ -109,6 +116,11 @@ class FundFlow(Base):
     )
     note: Mapped[str | None] = mapped_column(Text)
     idempotency_key: Mapped[str | None] = mapped_column(String(36))
+    is_voided: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false()
+    )
+    voided_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    void_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default="NOW()"
     )
