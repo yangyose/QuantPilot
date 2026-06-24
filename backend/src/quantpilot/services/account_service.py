@@ -198,31 +198,6 @@ class AccountService:
         result = await self._session.execute(select(Position))
         return list(result.scalars().all())
 
-    async def add_position(
-        self,
-        account_id: int,
-        ts_code: str,
-        shares: int,
-        cost_price: float,
-        open_date: date | None = None,
-        phase: str | None = "BUILD",
-    ) -> Position:
-        if await self.get_account(account_id) is None:
-            raise ValueError(f"Account {account_id} not found")
-
-        position = Position(
-            account_id=account_id,
-            ts_code=ts_code,
-            shares=shares,
-            cost_price=cost_price,
-            open_date=open_date,
-            phase=phase,
-        )
-        self._session.add(position)
-        await self._session.flush()
-        await self._session.refresh(position)
-        return position
-
     async def update_position(
         self,
         position_id: int,

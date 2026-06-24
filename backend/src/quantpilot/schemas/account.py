@@ -34,15 +34,6 @@ class PositionItem(BaseModel):
     phase: Literal["BUILD", "HOLD", "REDUCE"] | None
 
 
-class PositionCreate(BaseModel):
-    account_id: int
-    ts_code: str
-    shares: int
-    cost_price: float
-    open_date: date | None = None
-    phase: Literal["BUILD", "HOLD", "REDUCE"] | None = "BUILD"
-
-
 class PositionUpdate(BaseModel):
     current_price: float | None = None
     phase: Literal["BUILD", "HOLD", "REDUCE"] | None = None

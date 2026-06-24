@@ -10,15 +10,8 @@ const store = usePositionStore()
 const activeTab = ref('positions')
 const syncLoading = ref(false)
 const addTradeOpen = ref(false)
-const addPositionOpen = ref(false)
 const fundModalOpen = ref(false)
 const fundModalType = ref<'deposit' | 'withdraw'>('deposit')
-
-const addPositionForm = ref({
-  ts_code: '', shares: 100, cost_price: 0,
-  open_date: new Date().toISOString().slice(0, 10),
-  phase: 'BUILD' as 'BUILD' | 'HOLD' | 'REDUCE',
-})
 
 const tradeForm = ref({
   ts_code: '', trade_type: 'BUY' as 'BUY' | 'SELL',
@@ -98,26 +91,6 @@ async function toggleCashflowVoided() {
     end_date: cashflowEnd.value,
     include_voided: cashflowIncludeVoided.value,
   })
-}
-
-async function submitAddPosition() {
-  try {
-    await store.addPosition({
-      account_id: store.account?.id ?? 1,
-      ...addPositionForm.value,
-    })
-    message.success('持仓录入成功')
-    addPositionOpen.value = false
-    addPositionForm.value = {
-      ts_code: '', shares: 100, cost_price: 0,
-      open_date: new Date().toISOString().slice(0, 10),
-      phase: 'BUILD',
-    }
-  } catch (err: unknown) {
-    const e = err as { response?: { data?: { msg?: string; detail?: string } } }
-    const detail = e.response?.data?.msg || e.response?.data?.detail || '持仓录入失败'
-    message.error(detail, 6)
-  }
 }
 
 async function syncAccount() {
@@ -255,7 +228,9 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
       <a-tab-pane key="positions" tab="持仓明细">
         <a-space style="margin-bottom: 12px">
           <a-button type="primary" :loading="syncLoading" @click="syncAccount">同步盯市</a-button>
-          <a-button @click="addPositionOpen = true">手动录入持仓</a-button>
+          <span style="color: #999; font-size: 12px">
+            持仓由成交流水自动派生；建仓 / 导入已有持仓请到「交易明细」录入开仓买入。
+          </span>
         </a-space>
         <a-table
           :columns="positionColumns"
@@ -393,31 +368,6 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
         </a-form-item>
         <a-form-item label="备注">
           <a-input v-model:value="fundForm.note" />
-        </a-form-item>
-      </a-form>
-    </a-modal>
-
-    <!-- 手动录入持仓 Modal -->
-    <a-modal v-model:open="addPositionOpen" title="录入持仓" @ok="submitAddPosition">
-      <a-form layout="vertical">
-        <a-form-item label="股票代码">
-          <a-input v-model:value="addPositionForm.ts_code" placeholder="如 600519.SH" />
-        </a-form-item>
-        <a-form-item label="持仓数量（股）">
-          <a-input-number v-model:value="addPositionForm.shares" :min="100" :step="100" style="width: 100%" />
-        </a-form-item>
-        <a-form-item label="成本价（元）">
-          <a-input-number v-model:value="addPositionForm.cost_price" :min="0" :precision="2" style="width: 100%" />
-        </a-form-item>
-        <a-form-item label="建仓日期">
-          <a-date-picker v-model:value="addPositionForm.open_date" value-format="YYYY-MM-DD" style="width: 100%" />
-        </a-form-item>
-        <a-form-item label="阶段">
-          <a-radio-group v-model:value="addPositionForm.phase">
-            <a-radio value="BUILD">建仓</a-radio>
-            <a-radio value="HOLD">持有</a-radio>
-            <a-radio value="REDUCE">减仓</a-radio>
-          </a-radio-group>
         </a-form-item>
       </a-form>
     </a-modal>

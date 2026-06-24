@@ -800,6 +800,16 @@ SDD §7.4（line 460）：`IC_daily(s,f,t) = Spearman corr(factor_value_{t-20}, 
 - INT-VOID-01~07：作废买入全还原 / 误买还原成本 / 后续卖出依赖拒绝 / 作废分红还原成本 / 作废入金逆仕訳 / 费用流水拒绝 / 重复作废 + list 过滤
 - E2E aapi-19~26 + 冒烟 API-104~107
 
+### 一致性收口：废除手工录入持仓（2026-06-24）
+作废订正把持仓正式定义为「成交流水的派生视图」（持仓 = `replay_position`(非作废成交 + 分红)）。
+原 `POST /positions` + `AccountService.add_position`（手工直插 Position 行）与该不变式冲突：
+手工持仓**无 trade_record 支撑、不扣现金**，一旦 void/replay 触及该 ts_code，重建逻辑只从
+成交流水算出持仓 → 手工股数被丢弃（或分红作废后整仓被删），且总资产含未付现金的市值致
+NAV 恒错。故**删除** `POST /positions` + `add_position` + `PositionCreate` schema + 前端
+「手动录入持仓」按钮/弹窗；建仓 / 导入已有持仓改走 `POST /account/trades` 录开仓 BUY（先入金
+总本金，BUY 扣投入部分，余额=当前现金，账务一致）。`PATCH /positions` 仅改 current_price/phase
+（会被盯市/replay 刷新，无害）保留。E2E test_papi_04 改断言 POST → 405。
+
 ### 归属说明
 账户资金链完整性属 Phase 14 范畴（C-5 唯一归属，不新建 phase）；起因为用户实测前台发现 append-only 无订正经路。
 

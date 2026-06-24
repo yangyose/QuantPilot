@@ -81,50 +81,18 @@ async def test_papi_03_get_positions_with_data(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# POST /positions
+# POST /positions —— 已废除（持仓=成交流水派生视图，手工录入会破坏一致性，
+# 2026-06-24）。建仓走 POST /account/trades 开仓 BUY。
 # ---------------------------------------------------------------------------
 
-async def test_papi_04_create_position_no_auth(client: AsyncClient) -> None:
-    """POST /positions 无鉴权 → 401。"""
-    resp = await client.post("/api/v1/positions", json={
-        "account_id": 1, "ts_code": "000001.SZ", "shares": 1000, "cost_price": 10.0,
-    })
-    assert resp.status_code == 401
-
-
-async def test_papi_05_create_position_ok(client: AsyncClient) -> None:
-    """POST /positions 有鉴权 → 200，返回 PositionItem。"""
-    mock = AsyncMock()
-    mock.add_position = AsyncMock(return_value=_mock_position())
-    app.dependency_overrides[get_account_service] = lambda: mock
-    try:
-        resp = await client.post(
-            "/api/v1/positions",
-            json={"account_id": 1, "ts_code": "000001.SZ", "shares": 1000, "cost_price": 10.0},
-            headers=_auth(),
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["code"] == 0
-        assert body["data"]["ts_code"] == "000001.SZ"
-    finally:
-        app.dependency_overrides.pop(get_account_service, None)
-
-
-async def test_papi_06_create_position_invalid_account(client: AsyncClient) -> None:
-    """POST /positions account 不存在 → 404。"""
-    mock = AsyncMock()
-    mock.add_position = AsyncMock(side_effect=ValueError("Account 999 not found"))
-    app.dependency_overrides[get_account_service] = lambda: mock
-    try:
-        resp = await client.post(
-            "/api/v1/positions",
-            json={"account_id": 999, "ts_code": "000001.SZ", "shares": 1000, "cost_price": 10.0},
-            headers=_auth(),
-        )
-        assert resp.status_code == 404
-    finally:
-        app.dependency_overrides.pop(get_account_service, None)
+async def test_papi_04_create_position_removed(client: AsyncClient) -> None:
+    """POST /positions 端点已下线 → 405（路由不存在该方法）。"""
+    resp = await client.post(
+        "/api/v1/positions",
+        json={"account_id": 1, "ts_code": "000001.SZ", "shares": 1000, "cost_price": 10.0},
+        headers=_auth(),
+    )
+    assert resp.status_code == 405
 
 
 # ---------------------------------------------------------------------------

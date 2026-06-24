@@ -20,20 +20,6 @@ export async function getPositions(account_id = 1): Promise<PositionItem[]> {
   return res.data.data as PositionItem[]
 }
 
-export interface AddPositionBody {
-  account_id: number
-  ts_code: string
-  shares: number
-  cost_price?: number
-  open_date?: string
-  phase?: string
-}
-
-export async function addPosition(body: AddPositionBody): Promise<PositionItem> {
-  const res = await client.post('/api/v1/positions', body)
-  return res.data.data as PositionItem
-}
-
 export async function patchPosition(
   id: number,
   body: { phase?: string },

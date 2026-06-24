@@ -60,11 +60,6 @@ export const usePositionStore = defineStore('positions', () => {
     await fetchCashflows()
   }
 
-  async function addPosition(body: posApi.AddPositionBody): Promise<void> {
-    await posApi.addPosition(body)
-    await fetchPositions()
-  }
-
   async function deposit(body: posApi.DepositBody): Promise<void> {
     await posApi.deposit(body)
     await fetchAccount()
@@ -80,7 +75,7 @@ export const usePositionStore = defineStore('positions', () => {
   return {
     account, positions, cashflows, trades, loading,
     fetchAccount, fetchPositions, fetchCashflows, fetchTrades,
-    syncAccount, recordTrade, addPosition, deposit, withdraw,
+    syncAccount, recordTrade, deposit, withdraw,
     voidTrade, voidCashflow,
   }
 })
