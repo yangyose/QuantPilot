@@ -835,12 +835,12 @@ SDD §7.4（line 460）：`IC_daily(s,f,t) = Spearman corr(factor_value_{t-20}, 
 
 | 项 | 验收标准 |
 |---|---------|
-| 单元测试 | UT-P14-1-* / UT-P14-2-* / UT-P14-3-* / UT-P14-4-01~02 / UT-P14-5-01 / UT-P14-9-01~04 全部 PASS |
-| 集成测试 | INT-P14-1-01/02 / INT-P14-2-01 / INT-P14-3-01 / INT-P14-5-01 / INT-P14-6-01/02 / INT-P14-8-01 / INT-P14-9-01 全部 PASS（测试 DB 5433）|
-| E2E | E2E-P14-1-01（deposit 幂等）PASS |
+| 单元测试 | UT-P14-1-* / UT-P14-2-* / UT-P14-3-* / UT-P14-4-01~02 / UT-P14-5-01 / UT-P14-9-01~04 + **§14-10 replay_position 10 例 + _build_current_st_codes 4 例** 全部 PASS |
+| 集成测试 | INT-P14-1-01/02 / INT-P14-2-01 / INT-P14-3-01 / INT-P14-5-01 / INT-P14-6-01/02 / INT-P14-8-01 / INT-P14-9-01 + **§14-10 INT-VOID-01~07** 全部 PASS（测试 DB 5433）|
+| E2E | E2E-P14-1-01（deposit 幂等）+ **§14-10 aapi-19~26（list/void 端点 200/401/404/400）** PASS |
 | 真机验收 | 5y candidate_pool 全量在库（≥ 60k 行）+ **§14-9 `factor_ic_window_state` daily 行 ≈ 4700**（~1180 trade_date × 4 strategy）+ 重跑月末批 `--force` 后 `strategy_weights_history.weights_source='icir'` 行 **> 0**（dominant state UPTREND；稀疏 state < 60 样本仍 `default_matrix` 属 SDD §7.4 合规，故不设 ≥700 绝对门槛）+ attribution_history ≥ 200 行 + 真机-P14-4-1/2/3 三项量化阈值全部 PASS |
 | ruff | 0 error |
-| 冒烟 | 现 deposit/dividend 冒烟扩展幂等用例（同 key 调用 2 次 → 200 + 同 flow_id），编号续接 API-102（具体编号实施时确认）+ Phase 13 冒烟仍 PASS |
+| 冒烟 | deposit/dividend 幂等用例 API-102/103 + **§14-10 作废订正端点 API-104~107（list trades 401/200 + void trade/cashflow 401）** + Phase 13 冒烟仍 PASS |
 | 文档同步 | system_design v1.9 §9 Phase 14 行标 "完成 ✓"；CLAUDE.md §9；Phase 13 评审报告 §8 R13-P2-* 6 项勾选；Phase 12 评审报告 §4 R12-P2-2/P2-3 勾选（R12-P1-2 已在 Phase 13 启动核查勾选，不重复）|
 | 评审 | 本设计文档 v1.1 评审通过 + Phase 14 实施评审报告产出（建议 P0/P1 当批修） |
 

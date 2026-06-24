@@ -326,10 +326,12 @@ class BacktestService:
         # 内存优化（2026-06-12）：原实现 `select(FinancialData)` 全表（631 万行）×
         # 两次 list-of-dicts materialize（financials + pe_pb_history），在 2GB 机上
         # 跑长区间回测必爆内存。改为：
-        #   (1) 按 [lookback_start, end_date] 切界 publish_date——financial_data 是日级
+        #   (1) 按 [fin_lookback_start, end_date] 切界 publish_date——financial_data 是日级
         #       （每股每交易日一行），PIT 在 trade_date 取 publish_date<=trade_date 的最近
-        #       一行，必落在 [start-130d, start] 内，故下界 lookback_start 安全保留 PIT 行；
-        #       上界 end_date 本就排除未来数据。回测 [start,end] 永不引用窗口外行。
+        #       一行；年报发布滞后可达近一年，最近一期有效报表可能早于 start 数百天，故
+        #       下界放宽到 start-400d 才能保住这些票的 PIT 行（2026-06-17 回测健康修复：
+        #       原 130 天界过紧会漏掉 → value pe/pb 全 NaN 退化）；上界 end_date 本就排除
+        #       未来数据。回测 [start,end] 永不引用窗口外行。
         #   (2) 列裁剪 select（只取 8 列、返回轻量 Row 元组，不进 identity map）；
         #   (3) pe_pb_history 从 fin_df 列子集派生，不再二次 materialize 全量。
         from quantpilot.models.market import FinancialData

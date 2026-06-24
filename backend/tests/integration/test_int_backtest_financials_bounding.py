@@ -1,9 +1,11 @@
 """INT：BacktestService._load_data_bundle financials 按回测窗口切界（内存优化 2026-06-12）。
 
 原实现 `select(FinancialData)` 全表（生产 631 万行）→ 2GB 机长区间回测内存爆。改为按
-[start-130d, end] 切 publish_date。financial_data 日级粒度下，PIT 在 trade_date 取
-publish_date<=trade_date 的最近一行，必落在 [start-130d, start] 内，故下界安全；窗口外
-行（start-130d 之前 / end 之后）永不被 PIT 引用，应被排除。
+[start-400d, end] 切 publish_date（fin_lookback_start = start - 400 天）。financial_data
+日级粒度下，PIT 在 trade_date 取 publish_date<=trade_date 的最近一行；年报发布滞后可达
+近一年（最近一期有效报表可能早于 start 数百天），故下界放宽到 400 天才能保住这些票的
+PIT 行（2026-06-17 回测健康修复：原 130 天界过紧会漏掉 → value pe/pb 全 NaN 退化）；
+窗口外行（start-400d 之前 / end 之后）永不被 PIT 引用，应被排除。
 
 本测试验证切界正确性 + pe_pb_history 从同一窗口派生（不再二次全量 materialize）。
 """
@@ -20,9 +22,9 @@ from quantpilot.services.backtest_service import BacktestService
 
 _TS = ["000001.SZ", "000002.SZ"]
 
-# 回测窗口 [2024-06-03, 2024-06-04] → lookback_start = 2024-01-25
-_IN_WINDOW = date(2024, 3, 15)      # 在 [2024-01-25, 2024-06-04] 内 → 保留
-_BEFORE_WINDOW = date(2023, 6, 1)   # < lookback_start → 排除
+# 回测窗口 [2024-06-03, 2024-06-04] → fin_lookback_start = start-400d = 2023-04-30
+_IN_WINDOW = date(2024, 3, 15)      # 在 [2023-04-30, 2024-06-04] 内 → 保留
+_BEFORE_WINDOW = date(2023, 1, 1)   # < fin_lookback_start(2023-04-30) → 排除
 _AFTER_WINDOW = date(2024, 12, 1)   # > end_date → 排除
 
 

@@ -229,6 +229,6 @@ DEBUG=false
 
 ## 6. 当前进度
 
-V1.0 收尾批次：Phase 11 / 12 / 13 ✓ | **Phase 14 进行中**（§14-1/3/4/5/6/7/8 ✓；§14-2 5y 真机回填运行中）| Phase 15 待启动
+V1.0 收尾批次：Phase 11 / 12 / 13 / **14 ✓**（§14-1~§14-10 全交付：账户幂等 + 5y candidate_pool 回填 + 日级 IC/ICIR 历史回算 + BacktestEngine 真 5 步 + 共表拆分 + Phase 13/12 评审 P2 + 交易日历持久化 CAL-1~6 + §14-10 成交/资金流水作废订正）| **Phase 15 待启动**（V1.0 RC 验收 + 文档校核）
 
 详细 phase 表 + 历史里程碑（V1.0 整改 3 批次 / V1.0 真机验收 15 bug / Phase 11~13 实施细节）→ `docs/design/system_design.md §9`。
