@@ -416,6 +416,7 @@ async def test_aapi_20_list_trades_ok(client: AsyncClient) -> None:
     """GET /account/trades 有鉴权 → 200，含 items/total 分页结构。"""
     mock = AsyncMock()
     mock.list_trades = AsyncMock(return_value=([_mock_trade()], 1))
+    mock.get_stock_names = AsyncMock(return_value={"000001.SZ": "平安银行"})
     app.dependency_overrides[get_account_service] = lambda: mock
     try:
         resp = await client.get(
@@ -425,6 +426,7 @@ async def test_aapi_20_list_trades_ok(client: AsyncClient) -> None:
         data = resp.json()["data"]
         assert data["total"] == 1
         assert data["items"][0]["ts_code"] == "000001.SZ"
+        assert data["items"][0]["name"] == "平安银行"  # 股票名称富化
         assert data["items"][0]["is_voided"] is False
     finally:
         app.dependency_overrides.pop(get_account_service, None)

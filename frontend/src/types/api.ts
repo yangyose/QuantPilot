@@ -154,6 +154,7 @@ export interface PositionItem {
   id: number
   account_id: number
   ts_code: string
+  name: string | null
   shares: number
   cost_price: number | null
   current_price: number | null
@@ -167,6 +168,7 @@ export interface TradeRecord {
   id: number
   account_id: number
   ts_code: string
+  name: string | null
   trade_type: string
   trade_date: string
   price: number | null

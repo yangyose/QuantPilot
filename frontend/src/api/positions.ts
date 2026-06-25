@@ -35,6 +35,7 @@ export interface TradeBody {
   price: number
   trade_date: string
   commission?: number
+  stamp_tax?: number
   note?: string
 }
 
@@ -43,12 +44,15 @@ export async function recordTrade(body: TradeBody): Promise<TradeRecord> {
   return res.data.data as TradeRecord
 }
 
+// 单账户个人场景成交/流水总量有限，一次性拉全（后端默认 limit=50 会截断分页）。
+const LIST_FETCH_LIMIT = 5000
+
 export async function getTrades(
   account_id = 1,
   include_voided = false,
 ): Promise<TradeRecord[]> {
   const res = await client.get('/api/v1/account/trades', {
-    params: { account_id, include_voided },
+    params: { account_id, include_voided, limit: LIST_FETCH_LIMIT },
   })
   return (res.data.data?.items ?? []) as TradeRecord[]
 }
@@ -88,7 +92,7 @@ export interface CashflowParams {
 
 export async function getCashflows(params?: CashflowParams): Promise<FundFlow[]> {
   const res = await client.get('/api/v1/account/cashflow', {
-    params: { account_id: 1, ...params },
+    params: { account_id: 1, limit: LIST_FETCH_LIMIT, ...params },
   })
   return (res.data.data?.items ?? []) as FundFlow[]
 }

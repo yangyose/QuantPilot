@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { usePositionStore } from '@/stores/positions'
+import type { PositionItem, TradeRecord } from '@/types/api'
 import EmptyState from '@/components/EmptyState.vue'
 import { fmtAmount, fmtPct, fmtDate } from '@/utils/format'
 import { message } from 'ant-design-vue'
@@ -13,11 +14,47 @@ const addTradeOpen = ref(false)
 const fundModalOpen = ref(false)
 const fundModalType = ref<'deposit' | 'withdraw'>('deposit')
 
+// ── A 股交易成本费率（与回测引擎 SDD §10.5 口径一致；个人券商实际费率可在录入时手改）──
+const COMMISSION_RATE = 0.00025   // 佣金 万2.5（双向）
+const MIN_COMMISSION = 5          // 单笔最低佣金 5 元
+const STAMP_TAX_RATE = 0.0005     // 印花税 千0.5（仅卖出，2023-08 起减半）
+const TRANSFER_FEE_RATE = 0.00001 // 过户费 万0.1（双向，并入佣金列展示）
+
+const round2 = (x: number): number => Math.round(x * 100) / 100
+
 const tradeForm = ref({
   ts_code: '', trade_type: 'BUY' as 'BUY' | 'SELL',
   price: 0, shares: 0,
+  commission: 0, stamp_tax: 0,
   trade_date: new Date().toISOString().slice(0, 10),
 })
+
+// 成交额（不含费用）
+const tradeGross = computed(() => (tradeForm.value.price || 0) * (tradeForm.value.shares || 0))
+// 预计实付（买）/ 实收（卖）= 成交额 ± 费用
+const tradeNet = computed(() => {
+  const fee = (tradeForm.value.commission || 0) + (tradeForm.value.stamp_tax || 0)
+  return tradeForm.value.trade_type === 'BUY' ? tradeGross.value + fee : tradeGross.value - fee
+})
+
+// 价格 / 数量 / 方向变化时自动重算费用（用户随后可手动覆盖，直到下次改价量）
+function recalcFees(): void {
+  const gross = tradeGross.value
+  tradeForm.value.commission = gross > 0
+    ? round2(Math.max(gross * (COMMISSION_RATE + TRANSFER_FEE_RATE), MIN_COMMISSION))
+    : 0
+  tradeForm.value.stamp_tax = tradeForm.value.trade_type === 'SELL' ? round2(gross * STAMP_TAX_RATE) : 0
+}
+watch(
+  () => [tradeForm.value.price, tradeForm.value.shares, tradeForm.value.trade_type],
+  recalcFees,
+)
+
+// 持仓盈亏值 =（现价 − 成本价）× 股数；任一缺失返回 null
+function pnlAmount(r: PositionItem): number | null {
+  if (r.current_price == null || r.cost_price == null) return null
+  return (r.current_price - r.cost_price) * r.shares
+}
 const fundForm = ref({ amount: 0, trade_date: new Date().toISOString().slice(0, 10), note: '' })
 const cashflowStart = ref<string | undefined>()
 const cashflowEnd = ref<string | undefined>()
@@ -76,22 +113,34 @@ async function correctTrade(record: { id: number; ts_code: string; trade_type: '
     trade_type: record.trade_type,
     price: record.price,
     shares: record.shares,
+    commission: 0,
+    stamp_tax: 0,
     trade_date: record.trade_date,
+  }
+  recalcFees()  // 按预填价/量重算费用
+  addTradeOpen.value = true
+}
+
+function openAddTrade(): void {
+  tradeForm.value = {
+    ts_code: '', trade_type: 'BUY',
+    price: 0, shares: 0, commission: 0, stamp_tax: 0,
+    trade_date: new Date().toISOString().slice(0, 10),
   }
   addTradeOpen.value = true
 }
 
-async function toggleTradesVoided() {
-  await store.fetchTrades(tradesIncludeVoided.value)
-}
-
-async function toggleCashflowVoided() {
-  await store.fetchCashflows({
+// 「显示已作废」勾选用 watch 驱动刷新（比 @change 更可靠，不依赖事件/v-model 时序）
+watch(tradesIncludeVoided, (v) => {
+  store.fetchTrades(v)
+})
+watch(cashflowIncludeVoided, (v) => {
+  store.fetchCashflows({
     start_date: cashflowStart.value,
     end_date: cashflowEnd.value,
-    include_voided: cashflowIncludeVoided.value,
+    include_voided: v,
   })
-}
+})
 
 async function syncAccount() {
   syncLoading.value = true
@@ -153,16 +202,28 @@ function openFundModal(type: 'deposit' | 'withdraw') {
   fundModalOpen.value = true
 }
 
+// 数值排序：null 永远排在后面（升降序皆然由 antd 处理方向）
+const numSorter = (key: keyof PositionItem) => (a: PositionItem, b: PositionItem) =>
+  ((a[key] as number) ?? -Infinity) - ((b[key] as number) ?? -Infinity)
+
 const positionColumns = [
-  { title: '代码', dataIndex: 'ts_code', key: 'ts_code' },
+  { title: '代码', dataIndex: 'ts_code', key: 'ts_code',
+    sorter: (a: PositionItem, b: PositionItem) => a.ts_code.localeCompare(b.ts_code) },
+  { title: '名称', dataIndex: 'name', key: 'name',
+    customRender: ({ value }: { value: string | null }) => value ?? '—' },
   { title: '数量（股）', dataIndex: 'shares', key: 'shares' },
   { title: '成本价', dataIndex: 'cost_price', key: 'cost_price',
     customRender: ({ value }: { value: number | null }) => fmtAmount(value) },
   { title: '当前价', dataIndex: 'current_price', key: 'current_price',
     customRender: ({ value }: { value: number | null }) => fmtAmount(value) },
   { title: '市值', dataIndex: 'market_value', key: 'market_value',
+    sorter: numSorter('market_value'),
     customRender: ({ value }: { value: number | null }) => fmtAmount(value) },
+  { title: '盈亏值', key: 'pnl_amount',
+    sorter: (a: PositionItem, b: PositionItem) =>
+      (pnlAmount(a) ?? -Infinity) - (pnlAmount(b) ?? -Infinity) },
   { title: '盈亏率', dataIndex: 'pnl_pct', key: 'pnl_pct',
+    sorter: numSorter('pnl_pct'),
     customRender: ({ value }: { value: number | null }) => fmtPct(value) },
   { title: '阶段', dataIndex: 'phase', key: 'phase',
     customRender: ({ value }: { value: string | null }) => value ?? '—' },
@@ -183,14 +244,35 @@ const tradeColumns = [
   { title: '日期', dataIndex: 'trade_date', key: 'trade_date',
     customRender: ({ value }: { value: string }) => fmtDate(value) },
   { title: '代码', dataIndex: 'ts_code', key: 'ts_code' },
+  { title: '名称', dataIndex: 'name', key: 'name',
+    customRender: ({ value }: { value: string | null }) => value ?? '—' },
   { title: '方向', dataIndex: 'trade_type', key: 'trade_type' },
   { title: '价格', dataIndex: 'price', key: 'price',
     customRender: ({ value }: { value: number | null }) => fmtAmount(value) },
   { title: '数量', dataIndex: 'shares', key: 'shares' },
-  { title: '金额', dataIndex: 'amount', key: 'amount',
+  { title: '成交额', dataIndex: 'amount', key: 'amount',
     customRender: ({ value }: { value: number | null }) => fmtAmount(value) },
+  { title: '费用', key: 'fee' },        // 佣金 + 印花税
+  { title: '实际金额', key: 'net' },    // 买:成交额+费用 / 卖:成交额−费用
   { title: '操作', key: 'action', width: 150 },
 ]
+
+// 单笔成交费用合计 / 实际现金影响
+function tradeFee(r: TradeRecord): number {
+  return (r.commission ?? 0) + (r.stamp_tax ?? 0)
+}
+function tradeNetOf(r: TradeRecord): number | null {
+  if (r.amount == null) return null
+  return r.trade_type === 'BUY' ? r.amount + tradeFee(r) : r.amount - tradeFee(r)
+}
+
+// 成交/流水分页配置（可选 20/50/100，显示总数）
+const listPagination = {
+  pageSize: 20,
+  showSizeChanger: true,
+  pageSizeOptions: ['20', '50', '100'],
+  showTotal: (t: number) => `共 ${t} 条`,
+}
 
 // 已作废行整行置灰
 function voidedRowClass(record: { is_voided?: boolean }): string {
@@ -236,11 +318,17 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
           :columns="positionColumns"
           :data-source="store.positions"
           :loading="store.loading"
+          :pagination="false"
           row-key="id"
           size="small"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'pnl_pct'">
+            <template v-if="column.key === 'pnl_amount'">
+              <span :style="{ color: (pnlAmount(record) ?? 0) >= 0 ? '#52c41a' : '#ff4d4f' }">
+                {{ pnlAmount(record) == null ? '—' : fmtAmount(pnlAmount(record)) }}
+              </span>
+            </template>
+            <template v-else-if="column.key === 'pnl_pct'">
               <span :style="{ color: (record.pnl_pct ?? 0) >= 0 ? '#52c41a' : '#ff4d4f' }">
                 {{ fmtPct(record.pnl_pct) }}
               </span>
@@ -253,15 +341,17 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
       <!-- 交易录入 Tab -->
       <a-tab-pane key="trades" tab="交易明细">
         <a-space style="margin-bottom: 12px">
-          <a-button type="primary" @click="addTradeOpen = true">录入交易</a-button>
-          <a-checkbox v-model:checked="tradesIncludeVoided" @change="toggleTradesVoided">
+          <a-button type="primary" @click="openAddTrade">录入交易</a-button>
+          <a-checkbox v-model:checked="tradesIncludeVoided">
             显示已作废
           </a-checkbox>
         </a-space>
         <a-table
           :columns="tradeColumns"
           :data-source="store.trades"
+          :loading="store.loading"
           :row-class-name="voidedRowClass"
+          :pagination="listPagination"
           row-key="id"
           size="small"
         >
@@ -270,6 +360,12 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
               <a-tag :color="record.trade_type === 'BUY' ? 'red' : 'green'">
                 {{ record.trade_type === 'BUY' ? '买入' : '卖出' }}
               </a-tag>
+            </template>
+            <template v-else-if="column.key === 'fee'">
+              {{ fmtAmount(tradeFee(record)) }}
+            </template>
+            <template v-else-if="column.key === 'net'">
+              {{ tradeNetOf(record) == null ? '—' : fmtAmount(tradeNetOf(record)) }}
             </template>
             <template v-else-if="column.key === 'action'">
               <span v-if="record.is_voided" style="color: #999">已作废</span>
@@ -301,7 +397,7 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
           <a-button type="primary" @click="queryCashflows">查询</a-button>
           <a-button @click="openFundModal('deposit')">入金</a-button>
           <a-button @click="openFundModal('withdraw')">出金</a-button>
-          <a-checkbox v-model:checked="cashflowIncludeVoided" @change="toggleCashflowVoided">
+          <a-checkbox v-model:checked="cashflowIncludeVoided">
             显示已作废
           </a-checkbox>
         </a-space>
@@ -310,6 +406,7 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
           :data-source="store.cashflows"
           :loading="store.loading"
           :row-class-name="voidedRowClass"
+          :pagination="listPagination"
           row-key="id"
           size="small"
         >
@@ -346,9 +443,34 @@ const FEE_FLOW_TYPES = ['BUY_FEE', 'SELL_PROCEEDS']
         <a-form-item label="成交数量">
           <a-input-number v-model:value="tradeForm.shares" :min="100" :step="100" style="width: 100%" />
         </a-form-item>
+        <a-row :gutter="12">
+          <a-col :span="12">
+            <a-form-item label="佣金（含过户费，可改）">
+              <a-input-number v-model:value="tradeForm.commission" :min="0" :precision="2" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="印花税（仅卖出，可改）">
+              <a-input-number v-model:value="tradeForm.stamp_tax" :min="0" :precision="2" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
         <a-form-item label="交易日期">
           <a-date-picker v-model:value="tradeForm.trade_date" value-format="YYYY-MM-DD" style="width: 100%" />
         </a-form-item>
+        <a-descriptions :column="1" size="small" bordered>
+          <a-descriptions-item label="成交额">{{ fmtAmount(tradeGross) }}</a-descriptions-item>
+          <a-descriptions-item label="费用合计">
+            {{ fmtAmount((tradeForm.commission || 0) + (tradeForm.stamp_tax || 0)) }}
+          </a-descriptions-item>
+          <a-descriptions-item :label="tradeForm.trade_type === 'BUY' ? '预计实付' : '预计实收'">
+            <strong>{{ fmtAmount(tradeNet) }}</strong>
+          </a-descriptions-item>
+        </a-descriptions>
+        <div style="color: #999; font-size: 12px; margin-top: 8px">
+          费用按 A 股标准费率（佣金万2.5+过户费万0.1，最低 5 元；印花税千0.5 仅卖出）自动估算，
+          可按你的券商实际费率手动修改。
+        </div>
       </a-form>
     </a-modal>
 

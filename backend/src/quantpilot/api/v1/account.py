@@ -120,12 +120,22 @@ async def list_trades(
         limit=limit,
         offset=offset,
     )
+    # 富化股票名称（best-effort：失败/无数据 → 仅展示 ts_code）
+    try:
+        names = await service.get_stock_names([t.ts_code for t in trades])
+        if not isinstance(names, dict):
+            names = {}
+    except Exception:
+        logger.exception("stock name enrichment failed (trades)")
+        names = {}
+    items = []
+    for t in trades:
+        item = TradeRecordItem.model_validate(t)
+        item.name = names.get(t.ts_code)
+        items.append(item)
     return {
         "code": 0,
-        "data": {
-            "items": [TradeRecordItem.model_validate(t) for t in trades],
-            "total": total,
-        },
+        "data": {"items": items, "total": total},
         "msg": "ok",
     }
 

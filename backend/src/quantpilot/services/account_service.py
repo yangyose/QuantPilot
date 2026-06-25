@@ -189,9 +189,27 @@ class AccountService:
 
     async def get_positions(self, account_id: int) -> list[Position]:
         result = await self._session.execute(
-            select(Position).where(Position.account_id == account_id)
+            select(Position)
+            .where(Position.account_id == account_id)
+            .order_by(Position.ts_code)  # 确定性默认排序（前端可再按市值/盈亏排序）
         )
         return list(result.scalars().all())
+
+    async def get_stock_names(self, ts_codes: list[str]) -> dict[str, str]:
+        """批量查询 stock_info.name → {ts_code: name}。供持仓/成交列表富化展示名称。
+
+        名称为展示性富化（ts_code 始终在），故缺失不报错；空入参直接返回 {}。
+        """
+        if not ts_codes:
+            return {}
+        from quantpilot.models.market import StockInfo
+
+        result = await self._session.execute(
+            select(StockInfo.ts_code, StockInfo.name).where(
+                StockInfo.ts_code.in_(ts_codes)
+            )
+        )
+        return {row.ts_code: row.name for row in result}
 
     async def get_all_positions(self) -> list[Position]:
         """供 Phase 7 DailyPipeline 获取全部活跃持仓（跨账户）。"""

@@ -24,11 +24,21 @@ export const usePositionStore = defineStore('positions', () => {
   }
 
   async function fetchCashflows(params?: posApi.CashflowParams): Promise<void> {
-    cashflows.value = await posApi.getCashflows(params)
+    loading.value = true
+    try {
+      cashflows.value = await posApi.getCashflows(params)
+    } finally {
+      loading.value = false
+    }
   }
 
   async function fetchTrades(includeVoided = false): Promise<void> {
-    trades.value = await posApi.getTrades(account.value?.id ?? 1, includeVoided)
+    loading.value = true
+    try {
+      trades.value = await posApi.getTrades(account.value?.id ?? 1, includeVoided)
+    } finally {
+      loading.value = false
+    }
   }
 
   async function syncAccount(): Promise<void> {

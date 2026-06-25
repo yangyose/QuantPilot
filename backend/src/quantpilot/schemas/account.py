@@ -25,6 +25,7 @@ class PositionItem(BaseModel):
     id: int
     account_id: int
     ts_code: str
+    name: str | None = None  # 股票名称（端点从 stock_info 富化；ORM 无此列故默认 None）
     shares: int
     cost_price: float | None
     current_price: float | None
@@ -58,6 +59,7 @@ class TradeRecordItem(BaseModel):
     id: int
     account_id: int
     ts_code: str
+    name: str | None = None  # 股票名称（端点从 stock_info 富化；ORM 无此列故默认 None）
     trade_type: str
     trade_date: date
     price: float | None

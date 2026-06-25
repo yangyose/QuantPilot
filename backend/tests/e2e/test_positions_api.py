@@ -65,6 +65,7 @@ async def test_papi_03_get_positions_with_data(client: AsyncClient) -> None:
     """GET /positions 有鉴权 → 200，返回持仓列表结构。"""
     mock = AsyncMock()
     mock.get_positions = AsyncMock(return_value=[_mock_position()])
+    mock.get_stock_names = AsyncMock(return_value={"000001.SZ": "平安银行"})
     app.dependency_overrides[get_account_service] = lambda: mock
     try:
         resp = await client.get("/api/v1/positions", params={"account_id": 1}, headers=_auth())
@@ -74,6 +75,7 @@ async def test_papi_03_get_positions_with_data(client: AsyncClient) -> None:
         assert len(data) == 1
         item = data[0]
         assert item["ts_code"] == "000001.SZ"
+        assert item["name"] == "平安银行"  # 股票名称富化
         assert item["shares"] == 1000
         assert item["phase"] == "BUILD"
     finally:

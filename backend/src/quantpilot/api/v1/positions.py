@@ -1,13 +1,27 @@
 """REST API：持仓管理 /positions（Phase 6）。"""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from quantpilot.api.deps import get_account_service, get_current_user
 from quantpilot.schemas.account import PositionItem, PositionUpdate
 from quantpilot.services.account_service import AccountService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+async def _resolve_names(service: AccountService, ts_codes: list[str]) -> dict[str, str]:
+    """从 stock_info 富化股票名称（best-effort）。失败/无数据返回 {}，ts_code 始终在。"""
+    try:
+        names = await service.get_stock_names(ts_codes)
+    except Exception:
+        logger.exception("stock name enrichment failed (positions)")
+        return {}
+    return names if isinstance(names, dict) else {}
 
 # 注：持仓是成交流水的派生视图（持仓 = replay(非作废成交 + 分红)）。故**不提供**直接
 # 录入/插入持仓的端点——绕过成交流水的手工持仓没有 trade_record 支撑，一旦 void/replay
@@ -21,9 +35,15 @@ async def get_positions(
     service: AccountService = Depends(get_account_service),
     _: str = Depends(get_current_user),
 ) -> dict:
-    """GET /positions?account_id=1 → 持仓列表。"""
+    """GET /positions?account_id=1 → 持仓列表（含股票名称富化）。"""
     positions = await service.get_positions(account_id)
-    return {"code": 0, "data": [PositionItem.model_validate(p) for p in positions], "msg": "ok"}
+    names = await _resolve_names(service, [p.ts_code for p in positions])
+    items = []
+    for p in positions:
+        item = PositionItem.model_validate(p)
+        item.name = names.get(p.ts_code)
+        items.append(item)
+    return {"code": 0, "data": items, "msg": "ok"}
 
 
 @router.patch("/{position_id}")
