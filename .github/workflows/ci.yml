@@ -22,7 +22,8 @@ jobs:
           --health-interval 5s
           --health-retries 5
         ports:
-          - 5432:5432
+          # 测试库约定端口 :5433（tests/conftest.py 红线护栏只放行 :5433，:5432 会 pytest.exit(2)）
+          - 5433:5432
 
       redis:
         image: redis:7-alpine
@@ -58,7 +59,7 @@ jobs:
       - name: Run tests
         working-directory: backend
         env:
-          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/quantpilot_test
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5433/quantpilot_test
           REDIS_URL: redis://localhost:6379/0
           ADMIN_USERNAME: admin
           ADMIN_PASSWORD_HASH: ${{ steps.gen_hash.outputs.value }}
