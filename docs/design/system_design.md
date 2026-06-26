@@ -1,8 +1,8 @@
 # QuantPilot 系统设计文档
 
-> **版本：** v1.10
+> **版本：** v1.11
 > **基线依据：** QuantPilot_SDD（规范文档，专家审定版）
-> **日期：** 2026-06-01
+> **日期：** 2026-06-26
 > **说明：** 本文档为顶层架构基线，保持稳定。各开发阶段的详细设计见 `docs/design/phases/` 目录，按需创建。
 
 ---
@@ -25,6 +25,7 @@
 | **v1.8** | 2026-04-20 | **Phase 10 评审同步**（来自 `docs/reviews/phase10_design_review_2026-04-20.md` 驱动 Phase 10 v1.1 修订）：§9 Phase 10 行精化——①config_key 数由 11 改为 12（新增 `factor_monitor_params`，对齐 SDD 附录 B "IC 下期收益窗口"默认参数）；②消费端新增 FactorMonitorService（IC 窗口参数化）；③`pipeline_run.config_snapshot` 显式标注"启动时一次性写入"语义（禁 CP 内再访问 ConfigService）；④WxPusherAdapter 路径由 `data/adapters/` 迁至 `notification/`（与 §3 / §5.10 目录规划一致），新增 `NotificationChannel` ABC；⑤通知端点数 3 → 5（含 wx-status / read-all）；⑥NotificationService 日志级别三级（单次失败 WARN / 链路降级 ERROR / 兜底失败 ERROR）。评审同步推迟项：WS 前端消费 G-1（Pipeline WS 后端未实装，Backtest WS 后端已实装但前端推迟 V1.5）、AKShare 自动降级 G-2（`akshare.py::AKShareAdapter` 已存在但 DataService 未接降级路径，推迟 V1.5）、多账户 UI 切换 G-4（推迟 V1.5） |
 | **v1.9** | 2026-05-25 | **Phase 14 估算同步**（来自 `docs/reviews/phase14_design_review_2026-05-25.md` v1.0 P2-3 + Phase 14 设计 v1.1 修订）：§9 Phase 14 行 `~3-5 pd` → `~5-8 pd`（2026-05-14 V1.0 重新定位时锁定 8 子项，原估算仅含 RM-13 + 回测 IC 验证，未含 5y 回填 + ICIR 历史回算 + BacktestEngine 真 5 步 + Phase 13 P2 6 项 + Phase 12 P2 2 项）；§9 注尾 Phase 11~15 估算合计 ~38-55 pd 中 Phase 14 拆分同步；§9 Phase 14 文件名引用更新为 `phase14_account_integrity.md v1.1`（评审 P1×3 + P2×4 + P3×6 全收口）；R12-P1-2 标注「已在 Phase 13 启动核查交付，不重列入本 phase」 |
 | **v1.10** | 2026-06-01 | **交易日历持久化 + 完整性核验基准 + 集成测试红线护栏**（V1.0 收尾期数据基础设施加固，对齐 SDD v1.4-r1）：§4.1 新增 `trade_calendar` 表（全历法日 + is_open，alembic 0015）；§9 注新增日历持久化条目（落地件清单：repo 三方法 + `TradingCalendar.from_repo` + `bootstrap_trade_calendar` 自愈 + main.py 启动 DB 优先 + APScheduler 月度刷新 Job + `scripts/audit_data_integrity.py`）。动机：`TradingCalendar` 原纯内存 + 启动实时拉数据源 + 不落库 → 数据完整性核验缺权威参照（只能假日交叉验证启发式）、离线不可用。附带红线加固：`tests/conftest.py::_guard_test_db_or_abort()` 阻止集成测试误对非 `:5433` 库跑 `alembic downgrade base`（CLAUDE.md C-1）；`auto_test.sh` 钩子改为仅 `DATABASE_URL` 含 `:5433` 才跑集成测试。回归 736 passed + ruff 0 error |
+| **v1.11** | 2026-06-26 | **V1.5-G 多用户化 + L1/L2/L3 分层兑现（仅设计登记，实现排 RC 后）**：§9 Phase 6 行④「user_level…V1.5 实现分层」推迟标记翻转，指向新设计文档 `docs/design/phases/v1_5_g_multiuser.md` §6 + roadmap §2.2。V1.5-G = 开放自助注册 + 账户层数据完整隔离（新增 `user` 表 + `account.user_id` + JWT 带真实身份 + ownership 强制）+ 兑现 SDD §2/§9.3/§14 被 V1.0 折衷推迟的 L1/L2/L3 分层（`user.level` 自选偏好，默认 L1）。per-user/shared 边界：账户层（account 及其派生）隔离，市场/信号/评分计算层共享。env admin 迁移为首个 DB 用户后废弃。本条仅范围登记（C-5 先回写后实现），不触发任何 V1.0 §9 表变更——V1.5-G 权威登记在 roadmap §2.2/§6 V1.5-G 行 |
 
 ---
 
@@ -1368,7 +1369,7 @@ curl http://localhost:8000/health
 | **Phase 3** | 市场状态识别 | MarketStateEngine（ADX/MA 三态 + 防抖动）、MarketStateService、REST API ✅ | phase3_market_state.md |
 | **Phase 4** | 因子计算引擎 | UniverseFilter（含基本面底线过滤）、四大策略（BaseStrategy + 四实现）、Scorer（三状态权重矩阵）、CandidatePoolManager（含持仓保护）、**`/watchlist/*` API**（3 端点，CandidatePoolManager 依赖白名单数据） | phase4_factor_engine.md |
 | **Phase 5** | 信号生成 | **【前置：P5-PRE-1/2/3/4】** 将行业数据/财务指标/资产负债表三类数据的补录逻辑内化到 DataService（退役手动脚本 `backfill_td123.py`）、新增季度财务调度任务、恢复 UniverseFilter F-5/F-7 降级实现；SignalGenerator（含买入价区间、加仓条件、signal_strength 分类）、PositionSizer（固定比例法）、RiskChecker、SignalService（含过期扫描）、**`/signals/*` API**（4端点） | phase5_signals.md |
-| **Phase 6** | 账户持仓管理 | Account/Position/Trade CRUD、**FundFlow CRUD**（入金/出金/分红手动录入）、手动录入、一键从信号录入（`update_status(signal_id,"ACTED")`）、**`/positions/*` API**（3 端点）、**`/account/*` API**（6 端点）、**`/settings/*` API**（4 端点，含配置历史回溯）；四项设计决策详见 phase6_account.md §2：①position.phase 逻辑（BUY→BUILD/SELL 部分→REDUCE/清仓→删除行）②PE/PB 降级（不存储，按需查 daily_basic）③分红降级（手动录入，auto 推迟 Phase 7）④user_level 降级（V1.0 全量可见，V1.5 实现分层） | phase6_account.md |
+| **Phase 6** | 账户持仓管理 | Account/Position/Trade CRUD、**FundFlow CRUD**（入金/出金/分红手动录入）、手动录入、一键从信号录入（`update_status(signal_id,"ACTED")`）、**`/positions/*` API**（3 端点）、**`/account/*` API**（6 端点）、**`/settings/*` API**（4 端点，含配置历史回溯）；四项设计决策详见 phase6_account.md §2：①position.phase 逻辑（BUY→BUILD/SELL 部分→REDUCE/清仓→删除行）②PE/PB 降级（不存储，按需查 daily_basic）③分红降级（手动录入，auto 推迟 Phase 7）④user_level 降级（V1.0 全量可见；分层兑现移交 V1.5-G，见 `docs/design/phases/v1_5_g_multiuser.md` §6 + roadmap §2.2） | phase6_account.md |
 | **Phase 7** | DailyPipeline + 因子监控 + 报告 | 串联 Phase 2–6、APScheduler 调度（日级 + 月末）、CP1/CP2/CP3 检查点、LineageService（信号-快照绑定）、**FactorMonitorEngine**（IC/IR 计算）、**MonthlyScheduler**（月末因子监控 + 月报）；`notifier` 以 **no-op stub** 占位，Phase 10 替换为真实 WxPusher；**`/pipeline/*` API**（2端点）、**`/factor-quality/*` API**（2端点）、**`/reports/*` API**（3端点）；**另接收 Phase 6 推迟项**：`AccountService.mark_to_market(trade_date)` 实现（Phase 6 不实现）、`fetch_dividends()` 自动分红处理（除权日触发 + 批量成本价调整）；**【设计待定：启动前须在设计文档中明确以下五项】** ①DailyPipeline 每日盯市步骤——CP3 之后新增 `account_service.mark_to_market(trade_date)` 遍历持仓更新当日收盘价/市值/盈亏；②净值曲线快照存储方案——推荐盯市步骤后写入 `daily_portfolio_value(account_id, trade_date, total_value, cash, position_value)` 以满足 Phase 8 `/performance/history` P95≤500ms 要求（若改为实时计算需定义 Redis 缓存失效策略）；③周报 APScheduler Job 配置——触发时间、数据加载流程、与 MonthlyScheduler 的关系；④CP1 `data_snapshot_version` 生成算法——时间戳/哈希/UUID 三选一，并说明重跑时同版本判断逻辑；⑤因子半衰期计算算法及数据不足时的降级策略（返回 NULL 或报错） | phase7_pipeline.md |
 | **Phase 8** | 绩效归因 + 回测引擎 | **BacktestEngine**（共用 Engine 层 + 交易成本）、PerformanceService（SDD §12）、行为分析、全链路集成测试、**`/performance/*` API**（4端点）、**`/backtest/*` API**（3端点）；**【设计待定：启动前须在设计文档中明确以下一项】** ①`backtest_task` / `backtest_result` 表定义——任务 ID 生成方式、状态字段（PENDING/RUNNING/SUCCESS/FAILED）、结果持久化（daily_nav / daily_positions / performance） | phase8_backtest.md |
 | **Phase 9** | 前端 | Vue 3 仪表盘、信号列表、持仓管理、因子监控面板、报告中心、回测入口、设置页（含配置历史） | phase9_frontend.md |
