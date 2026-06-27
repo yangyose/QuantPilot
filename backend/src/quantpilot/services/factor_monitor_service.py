@@ -4,8 +4,10 @@
 1. 从 candidate_pool 取 calc_month 当日五列策略评分（作为因子值）
 2. 从 daily_quote 取 calc_month 和 calc_month+return_window 日收盘价，计算前向收益率
 3. 逐（strategy, factor）调用 FactorMonitorEngine.calc_ic()
-4. 从 factor_ic_history 取历史 IC 序列，计算 IC_mean/IC_std/IR/half_life
-5. upsert factor_ic_history（ON CONFLICT DO UPDATE）
+4. 取历史月度 IC 序列（factor_ic_window_state row_type='monthly_quality'），
+   计算 IC_mean/IC_std/IR/half_life
+5. upsert 月度质量行（Phase 15 §15-7：写 factor_ic_window_state row_type='monthly_quality'，
+   归并自旧表 factor_ic_history）
 6. 告警通知（NotificationService no-op stub）
 
 【降级说明】IC 因子值来源为 candidate_pool 策略评分（trend/reversion/momentum/value/composite），
@@ -21,8 +23,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 import numpy as np
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.core.config_defaults import DEFAULT_STRATEGY_WEIGHTS
@@ -30,12 +31,13 @@ from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import (
     FactorICRepository,
     ICAggregateRow,
+    MonthlyQualityRow,
     StrategyWeightsRow,
 )
 from quantpilot.engine.factor_monitor import FactorMonitorEngine
 from quantpilot.engine.hysteresis import HysteresisStateMachine
 from quantpilot.engine.market_state import MarketStateEnum
-from quantpilot.models.business import CandidatePool, FactorIcHistory
+from quantpilot.models.business import CandidatePool, FactorICWindowState
 from quantpilot.models.market import DailyQuote
 
 logger = logging.getLogger(__name__)
@@ -149,15 +151,15 @@ class FactorMonitorService:
         return_window: int = 20,
         notifier: object | None = None,
     ) -> int:
-        """计算并存储当月所有策略因子 IC/IR/半衰期。返回写入行数。
+        """计算并存储当月所有策略因子（strategy-composite）IC/IR/半衰期 + 告警。返回写入行数。
 
-        .. deprecated:: Phase 11
-            Phase 11 起改用 :meth:`apply_monthly_rebalance`（写新表
-            ``factor_ic_window_state`` + ``strategy_weights_history``）；本方法
-            仍由 MonthlyScheduler 在 ``run_factor_monitoring`` 路径继续写入旧表
-            ``factor_ic_history``，仅作 Phase 7~10 baseline 兼容（5y 真机历史
-            数据已在旧表中累积）。Phase 14 决策是否归并到新表后 stop 调用。
-            **不要在新代码中调用本方法。**
+        这是**月度因子质量监控**路径（Phase 7，支撑 /factor-quality 仪表盘 + 月报告警），
+        与 :meth:`apply_monthly_rebalance`（Phase 11 ICIR 校准，per-state 子因子日级）是
+        **两个不同功能**，并列由 MonthlyScheduler 调度。
+
+        Phase 15 §15-7：写入目标由旧表 ``factor_ic_history`` 归并为
+        ``factor_ic_window_state`` 的 ``row_type='monthly_quality'`` 行（state='ALL' 哨兵），
+        旧表已 DROP。对外 /factor-quality 响应字段名不变。
 
         Args:
             calc_month:    月末最后一个交易日
@@ -165,13 +167,11 @@ class FactorMonitorService:
             notifier:      NotificationService 实例（可选，no-op stub 或 None 均可）
 
         Returns:
-            写入 factor_ic_history 的行数（0 表示数据不足，未写入）。
+            写入月度质量行的行数（0 表示数据不足，未写入）。
         """
-        logger.warning(
-            "factor_monitor.run_monthly_deprecated: Phase 11 起改用 apply_monthly_rebalance"
-            "（写 factor_ic_window_state + strategy_weights_history）；旧表"
-            " factor_ic_history 仅作 Phase 7~10 baseline 兼容继续写入。Phase 14"
-            " 决定是否归并 + 停写。calc_month=%s",
+        logger.info(
+            "factor_monitor.run_monthly: 月度因子质量监控 → factor_ic_window_state"
+            " row_type='monthly_quality'（Phase 15 §15-7 归并）。calc_month=%s",
             calc_month,
         )
         import pandas as pd
@@ -210,8 +210,8 @@ class FactorMonitorService:
             logger.info("factor_monitor_skip: no forward return data for %s", calc_month)
             return 0
 
-        # 3. 逐因子计算 IC，upsert factor_ic_history
-        written = 0
+        # 3. 逐因子计算 IC，累积归并行（Phase 15 §15-7：写 factor_ic_window_state）
+        quality_rows: list[MonthlyQualityRow] = []
         for col, (strategy_name, factor_name) in _FACTOR_MAP.items():
             if col not in pool_df.columns:
                 continue
@@ -226,20 +226,10 @@ class FactorMonitorService:
                 )
                 continue
 
-            # 4. 取历史 IC 序列（最近 12 个月）
-            hist_rows = await self._session.execute(
-                select(FactorIcHistory.ic_value)
-                .where(
-                    FactorIcHistory.strategy_name == strategy_name,
-                    FactorIcHistory.factor_name == factor_name,
-                    FactorIcHistory.return_window == return_window,
-                )
-                .order_by(FactorIcHistory.calc_month.desc())
-                .limit(12)
+            # 4. 取历史 IC 序列（最近 12 个月；严格 < calc_month，本月行尚未写入）
+            past_ics: list[float] = await self._repo.get_monthly_quality_ic_series(
+                self._session, strategy_name, factor_name, as_of=calc_month, limit=12,
             )
-            past_ics: list[float] = [
-                float(row.ic_value) for row in hist_rows if row.ic_value is not None
-            ]
             if ic is not None:
                 past_ics = [ic] + past_ics  # 本月 IC 加入序列（时间降序）
 
@@ -251,35 +241,20 @@ class FactorMonitorService:
             half_life = self._engine.calc_half_life(all_ics)
             alert = self._engine.detect_alert(ic_mean, ir, half_life, recent_3)
 
-            # 5. upsert
-            stmt = (
-                pg_insert(FactorIcHistory)
-                .values(
-                    calc_month=calc_month,
-                    strategy_name=strategy_name,
-                    factor_name=factor_name,
+            # 5. 累积归并行（Phase 15 §15-7：写 factor_ic_window_state row_type='monthly_quality'）
+            quality_rows.append(
+                MonthlyQualityRow(
+                    strategy=strategy_name,
+                    factor=factor_name,
+                    trade_date=calc_month,
                     ic_value=ic,
                     ic_mean_3m=ic_mean,
                     ic_std_3m=ic_std,
                     ir_3m=ir,
                     half_life_days=half_life,
-                    return_window=return_window,
                     alert_status=alert,
                 )
-                .on_conflict_do_update(
-                    constraint="uq_ic_history_month_strategy_factor_window",
-                    set_={
-                        "ic_value": ic,
-                        "ic_mean_3m": ic_mean,
-                        "ic_std_3m": ic_std,
-                        "ir_3m": ir,
-                        "half_life_days": half_life,
-                        "alert_status": alert,
-                    },
-                )
             )
-            await self._session.execute(stmt)
-            written += 1
 
             # 6. 告警通知（best-effort，Phase 10 §7.3：接入 NotificationService/WxPusher）
             if alert and notifier is not None:
@@ -293,6 +268,7 @@ class FactorMonitorService:
                         strategy_name, factor_name, exc_info=True,
                     )
 
+        written = await self._repo.upsert_monthly_quality(self._session, quality_rows)
         await self._session.flush()
         return written
 
@@ -356,56 +332,24 @@ class FactorMonitorService:
     async def get_latest(
         self,
         strategy_name: str | None = None,
-    ) -> list[FactorIcHistory]:
-        """取每个（strategy, factor）最新一条记录。"""
-        # 子查询：每组最大 calc_month
-        subq = (
-            select(
-                FactorIcHistory.strategy_name,
-                FactorIcHistory.factor_name,
-                FactorIcHistory.return_window,
-                func.max(FactorIcHistory.calc_month).label("max_month"),
-            )
-            .group_by(
-                FactorIcHistory.strategy_name,
-                FactorIcHistory.factor_name,
-                FactorIcHistory.return_window,
-            )
+    ) -> list[FactorICWindowState]:
+        """取每个（strategy, factor）最新一条月度质量记录（Phase 15 §15-7：
+        repoint 到 factor_ic_window_state row_type='monthly_quality'）。"""
+        return await self._repo.get_latest_monthly_quality(
+            self._session, strategy=strategy_name,
         )
-        if strategy_name:
-            subq = subq.where(FactorIcHistory.strategy_name == strategy_name)
-        subq = subq.subquery()
-
-        stmt = select(FactorIcHistory).join(
-            subq,
-            (FactorIcHistory.strategy_name == subq.c.strategy_name)
-            & (FactorIcHistory.factor_name == subq.c.factor_name)
-            & (FactorIcHistory.return_window == subq.c.return_window)
-            & (FactorIcHistory.calc_month == subq.c.max_month),
-        ).order_by(FactorIcHistory.strategy_name, FactorIcHistory.factor_name)
-
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
 
     async def get_history(
         self,
         strategy_name: str | None = None,
         factor_name: str | None = None,
         limit: int = 12,
-    ) -> tuple[list[FactorIcHistory], int]:
-        """取历史 IC 趋势（按 calc_month DESC）。返回 (records, total_count)。"""
-        stmt = select(FactorIcHistory)
-        if strategy_name:
-            stmt = stmt.where(FactorIcHistory.strategy_name == strategy_name)
-        if factor_name:
-            stmt = stmt.where(FactorIcHistory.factor_name == factor_name)
-
-        count_stmt = select(func.count()).select_from(stmt.subquery())
-        total: int = (await self._session.execute(count_stmt)).scalar_one()
-
-        stmt = stmt.order_by(FactorIcHistory.calc_month.desc()).limit(limit)
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all()), total
+    ) -> tuple[list[FactorICWindowState], int]:
+        """取月度质量历史趋势（trade_date DESC）。返回 (records, total_count)。
+        Phase 15 §15-7：repoint 到 factor_ic_window_state row_type='monthly_quality'。"""
+        return await self._repo.list_monthly_quality(
+            self._session, strategy=strategy_name, factor=factor_name, limit=limit,
+        )
 
     # ============================================================
     # Phase 11 §4.1：rolling_icir_state（state 子集 ICIR 估计）

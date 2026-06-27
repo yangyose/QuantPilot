@@ -24,7 +24,8 @@ EXPECTED_TABLES = {
     "candidate_pool",
     "signal",
     "signal_score_snapshot",
-    "factor_ic_history",
+    # Phase 15 §15-7：factor_ic_history 已归并进 factor_ic_window_state 并 DROP（0017）
+    "factor_ic_window_state",
     "report",
     "user_watchlist",
     # 账户数据

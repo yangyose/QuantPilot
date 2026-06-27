@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict
 
 
 class FactorIcHistoryItem(BaseModel):
-    """GET /factor-quality 和 /factor-quality/history 的 item 结构（Phase 7 旧表）。"""
+    """GET /factor-quality 和 /factor-quality/history 的 item 结构。
+
+    Phase 15 §15-7：底层表已由 factor_ic_history 归并进 factor_ic_window_state
+    （row_type='monthly_quality'），但**对外响应字段名保持不变**（前端零改动）；
+    经 ``from_window_state`` 从复用列映射。
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -22,6 +27,31 @@ class FactorIcHistoryItem(BaseModel):
     half_life_days: float | None
     return_window: int
     alert_status: str | None
+
+    @classmethod
+    def from_window_state(cls, row: object) -> FactorIcHistoryItem:
+        """从 FactorICWindowState monthly_quality 行映射（复用列还原旧语义）。
+
+        trade_date→calc_month / strategy→strategy_name / factor→factor_name /
+        ic_mean_state→ic_mean_3m / ic_std_state→ic_std_3m / icir→ir_3m /
+        half_life→half_life_days；return_window 月度路径恒 20。
+        """
+        def _f(v: object) -> float | None:
+            return float(v) if v is not None else None  # type: ignore[arg-type]
+
+        return cls(
+            id=row.id,
+            calc_month=row.trade_date,
+            strategy_name=row.strategy,
+            factor_name=row.factor,
+            ic_value=_f(row.ic_value),
+            ic_mean_3m=_f(row.ic_mean_state),
+            ic_std_3m=_f(row.ic_std_state),
+            ir_3m=_f(row.icir),
+            half_life_days=_f(row.half_life),
+            return_window=20,
+            alert_status=row.alert_status,
+        )
 
 
 class ICRollingHistoryItem(BaseModel):

@@ -1,8 +1,9 @@
 """FactorICRepository：Phase 11 因子 ICIR 监控持久化（§4 / §2.1）。
 
-新表 ``factor_ic_window_state``（IC_daily + ICIR 状态维度）+ 配套
-``strategy_weights_history``（每月生效权重审计）的 CRUD 封装。Phase 7
-既有 ``factor_ic_history`` 表保留 readonly 不在此 repo 管辖范围内。
+``factor_ic_window_state``（IC_daily + ICIR 状态维度 + Phase 15 §15-7 归并的
+月度因子质量 row_type='monthly_quality'）+ 配套 ``strategy_weights_history``
+（每月生效权重审计）的 CRUD 封装。Phase 7 旧表 ``factor_ic_history`` 已归并
+进本表并 DROP（alembic 0017）。
 
 约定：
 - ``trade_date`` = IC 观察日 t（也即 IC 实现日，对应 ``return_{t-20→t}`` 已完成）
@@ -17,11 +18,17 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.models.business import FactorICWindowState, StrategyWeightsHistory
+
+# Phase 15 §15-7：月度因子质量行（归并自旧表 factor_ic_history）的 row_type 与
+# state 哨兵。monthly_quality 行 state 无关，用 'ALL' 哨兵占位（state 列无 CHECK
+# 约束）；与 daily/aggregate 读路径（按各自 row_type 过滤）天然隔离。
+MONTHLY_QUALITY_ROW_TYPE = "monthly_quality"
+AGNOSTIC_STATE = "ALL"
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,26 @@ class ICAggregateRow:
     ic_ci_high: float | None
     t_stat: float | None
     half_life: int | None
+
+
+@dataclass(frozen=True)
+class MonthlyQualityRow:
+    """月度因子质量行（写入 factor_ic_window_state，row_type='monthly_quality'）。
+
+    Phase 15 §15-7：归并自旧表 factor_ic_history。state 无关（写 'ALL' 哨兵），
+    trade_date = 月末交易日（旧 calc_month）。复用列：ic_mean_state=3 月滚动均值、
+    ic_std_state=3 月滚动 std、icir=ir_3m、half_life=半衰期日数取整。
+    """
+
+    strategy: str
+    factor: str
+    trade_date: date            # 月末交易日（旧 calc_month）
+    ic_value: float | None
+    ic_mean_3m: float | None
+    ic_std_3m: float | None
+    ir_3m: float | None
+    half_life_days: float | None
+    alert_status: str | None
 
 
 @dataclass(frozen=True)
@@ -326,6 +353,165 @@ class FactorICRepository:
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
+
+    # ============================================================
+    # factor_ic_window_state monthly_quality CRUD（Phase 15 §15-7）
+    # ============================================================
+
+    async def upsert_monthly_quality(
+        self,
+        session: AsyncSession,
+        rows: list[MonthlyQualityRow],
+    ) -> int:
+        """批量 upsert 月度因子质量行（row_type='monthly_quality'）。
+
+        ON CONFLICT (strategy, factor, state='ALL', trade_date) DO UPDATE 刷新
+        统计列 + alert_status + row_type。half_life_days 取整写 half_life；
+        sample_size 月度路径不记，置 0 占位（【降级说明】见 0017 迁移）。
+        """
+        if not rows:
+            return 0
+        values = [
+            {
+                "strategy": r.strategy,
+                "factor": r.factor,
+                "state": AGNOSTIC_STATE,
+                "trade_date": r.trade_date,
+                "ic_value": r.ic_value,
+                "ic_mean_state": r.ic_mean_3m,
+                "ic_std_state": r.ic_std_3m,
+                "icir": r.ir_3m,
+                "half_life": (
+                    round(r.half_life_days) if r.half_life_days is not None else None
+                ),
+                "sample_size": 0,
+                "alert_status": r.alert_status,
+                "row_type": MONTHLY_QUALITY_ROW_TYPE,
+            }
+            for r in rows
+        ]
+        stmt = pg_insert(FactorICWindowState).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["strategy", "factor", "state", "trade_date"],
+            set_={
+                "ic_value": stmt.excluded.ic_value,
+                "ic_mean_state": stmt.excluded.ic_mean_state,
+                "ic_std_state": stmt.excluded.ic_std_state,
+                "icir": stmt.excluded.icir,
+                "half_life": stmt.excluded.half_life,
+                "alert_status": stmt.excluded.alert_status,
+                "row_type": stmt.excluded.row_type,
+            },
+        )
+        await session.execute(stmt)
+        return len(values)
+
+    async def get_monthly_quality_ic_series(
+        self,
+        session: AsyncSession,
+        strategy: str,
+        factor: str,
+        as_of: date,
+        limit: int = 12,
+    ) -> list[float]:
+        """取某 (strategy, factor) 在 ``trade_date < as_of`` 的历史月度 IC 序列
+        （trade_date 降序，最多 ``limit`` 条，剔除 NULL）。
+
+        供 ``FactorMonitorService.run_monthly`` 计算 3 月滚动 IC_mean/IR/half_life。
+        严格 ``< as_of``——本月行尚未写入时取的是历史；调用方再把本月 IC 拼到序列头。
+        """
+        stmt = (
+            select(FactorICWindowState.ic_value)
+            .where(
+                FactorICWindowState.strategy == strategy,
+                FactorICWindowState.factor == factor,
+                FactorICWindowState.state == AGNOSTIC_STATE,
+                FactorICWindowState.row_type == MONTHLY_QUALITY_ROW_TYPE,
+                FactorICWindowState.trade_date < as_of,
+            )
+            .order_by(FactorICWindowState.trade_date.desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return [float(v) for (v,) in result.all() if v is not None]
+
+    async def get_latest_monthly_quality(
+        self,
+        session: AsyncSession,
+        strategy: str | None = None,
+    ) -> list[FactorICWindowState]:
+        """取每个 (strategy, factor) 最新一条月度质量行（GET /factor-quality）。
+
+        DISTINCT ON (strategy, factor) ORDER BY ..., trade_date DESC。strategy
+        可选过滤。
+        """
+        stmt = (
+            select(FactorICWindowState)
+            .where(
+                FactorICWindowState.row_type == MONTHLY_QUALITY_ROW_TYPE,
+                FactorICWindowState.state == AGNOSTIC_STATE,
+            )
+            .distinct(FactorICWindowState.strategy, FactorICWindowState.factor)
+            .order_by(
+                FactorICWindowState.strategy.asc(),
+                FactorICWindowState.factor.asc(),
+                FactorICWindowState.trade_date.desc(),
+            )
+        )
+        if strategy:
+            stmt = stmt.where(FactorICWindowState.strategy == strategy)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_monthly_quality(
+        self,
+        session: AsyncSession,
+        strategy: str | None = None,
+        factor: str | None = None,
+        limit: int = 12,
+    ) -> tuple[list[FactorICWindowState], int]:
+        """月度质量历史趋势（GET /factor-quality/history），trade_date 降序分页。
+
+        返回 ``(rows, total)``；total 为过滤后总行数（不受 limit 约束）。
+        """
+        base = select(FactorICWindowState).where(
+            FactorICWindowState.row_type == MONTHLY_QUALITY_ROW_TYPE,
+            FactorICWindowState.state == AGNOSTIC_STATE,
+        )
+        if strategy:
+            base = base.where(FactorICWindowState.strategy == strategy)
+        if factor:
+            base = base.where(FactorICWindowState.factor == factor)
+
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total = (await session.execute(count_stmt)).scalar_one()
+
+        stmt = base.order_by(FactorICWindowState.trade_date.desc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all()), int(total)
+
+    async def get_monthly_quality_alerts(
+        self,
+        session: AsyncSession,
+        start: date,
+        end: date,
+    ) -> list[FactorICWindowState]:
+        """取 ``trade_date ∈ [start, end]`` 且 ``alert_status IS NOT NULL`` 的月度
+        质量告警行（供 ``report_service`` 月报告警段），trade_date 升序。
+        """
+        stmt = (
+            select(FactorICWindowState)
+            .where(
+                FactorICWindowState.row_type == MONTHLY_QUALITY_ROW_TYPE,
+                FactorICWindowState.state == AGNOSTIC_STATE,
+                FactorICWindowState.trade_date >= start,
+                FactorICWindowState.trade_date <= end,
+                FactorICWindowState.alert_status.isnot(None),
+            )
+            .order_by(FactorICWindowState.trade_date.asc())
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
 
     # ============================================================
     # strategy_weights_history CRUD

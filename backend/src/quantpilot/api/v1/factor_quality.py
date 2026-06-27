@@ -50,7 +50,7 @@ async def get_factor_quality(
     return {
         "code": 0,
         "data": {
-            "items": [FactorIcHistoryItem.model_validate(r).model_dump() for r in records],
+            "items": [FactorIcHistoryItem.from_window_state(r).model_dump() for r in records],
         },
         "msg": "ok",
     }
@@ -73,7 +73,7 @@ async def get_factor_quality_history(
     return {
         "code": 0,
         "data": {
-            "items": [FactorIcHistoryItem.model_validate(r).model_dump() for r in records],
+            "items": [FactorIcHistoryItem.from_window_state(r).model_dump() for r in records],
             "total": total,
         },
         "msg": "ok",

@@ -67,7 +67,8 @@ class MonthlyScheduler:
 
         需要 session_factory 和 factor_monitor_engine 已注入（若缺失则 skip）。
         已注入 notification_channel 时构造真实 NotificationService 推送因子告警；
-        否则以 None 传入，FactorMonitorService 只写 factor_ic_history 不推送。
+        否则以 None 传入，FactorMonitorService 只写月度质量行（factor_ic_window_state
+        row_type='monthly_quality'）不推送。
         """
         if self._session_factory is None or self._factor_monitor_engine is None:
             logger.warning("run_factor_monitoring_skipped: missing session_factory or engine")
@@ -222,9 +223,9 @@ class MonthlyScheduler:
         await self.run_quarterly_financial_refresh(calc_month)
         await self.run_factor_monitoring(calc_month)
         # Phase 11 §6.1：ICIR 月度 rebalance Job 在月报前执行（生效日 = calc_month+1）。
-        # 与 run_factor_monitoring 并列：前者写 factor_ic_history（Phase 7 旧表，readonly
-        # 保留作 baseline），后者写 factor_ic_window_state + strategy_weights_history（Phase 11
-        # 新表，月初生效用于 next-month scoring）。
+        # 与 run_factor_monitoring 并列：前者写月度因子质量（factor_ic_window_state
+        # row_type='monthly_quality'，Phase 15 §15-7 归并自旧表 factor_ic_history），后者写
+        # 同表 daily/aggregate 行 + strategy_weights_history（月初生效用于 next-month scoring）。
         await self.run_icir_rebalance(calc_month)
         # Phase 12 §3.2.2：多因子归因 Job（与 icir_rebalance / monthly_report 并列，
         # 无依赖；只读 candidate_pool；best-effort 失败不阻塞 monthly_report）。

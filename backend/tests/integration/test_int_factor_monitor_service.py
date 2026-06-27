@@ -7,9 +7,30 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.engine.factor_monitor import FactorMonitorEngine
-from quantpilot.models.business import CandidatePool, FactorIcHistory
+from quantpilot.models.business import CandidatePool, FactorICWindowState
 from quantpilot.models.market import DailyQuote
 from quantpilot.services.factor_monitor_service import FactorMonitorService
+
+
+def _monthly_quality_row(
+    *,
+    trade_date: date,
+    strategy: str,
+    factor: str,
+    ic_value: float | None = None,
+    alert_status: str | None = None,
+) -> FactorICWindowState:
+    """Phase 15 §15-7：构造月度质量行（row_type='monthly_quality'，state='ALL'）。"""
+    return FactorICWindowState(
+        strategy=strategy,
+        factor=factor,
+        state="ALL",
+        trade_date=trade_date,
+        ic_value=ic_value,
+        sample_size=0,
+        row_type="monthly_quality",
+        alert_status=alert_status,
+    )
 
 # ---------------------------------------------------------------------------
 # 测试常量（使用独特前缀避免与其他测试数据冲突）
@@ -125,16 +146,19 @@ async def test_int_fm_02_run_monthly_writes_history(db_session: AsyncSession) ->
     # 5 个因子列（composite/trend/reversion/momentum/value）均应写入
     assert written == 5
 
-    # 验证 FactorIcHistory 已写入（IC 应为非 None，因为评分与收益正相关）
+    # 验证月度质量行已写入（IC 应为非 None，因为评分与收益正相关）
     from sqlalchemy import select
     rows = list((await db_session.execute(
-        select(FactorIcHistory).where(FactorIcHistory.calc_month == base_date)
+        select(FactorICWindowState).where(
+            FactorICWindowState.trade_date == base_date,
+            FactorICWindowState.row_type == "monthly_quality",
+        )
     )).scalars().all())
 
     assert len(rows) == 5
     # composite_score 对应的 IC 应为正值（高分股涨多）
     composite_row = next(
-        (r for r in rows if r.factor_name == "composite_score"), None
+        (r for r in rows if r.factor == "composite_score"), None
     )
     assert composite_row is not None
     assert composite_row.ic_value is not None
@@ -149,14 +173,13 @@ async def test_int_fm_03_get_latest(db_session: AsyncSession) -> None:
     month1 = date(2026, 1, 31)
     month2 = date(2026, 2, 28)
 
-    # 直接插入 FactorIcHistory（不经过 run_monthly）
+    # 直接插入月度质量行（不经过 run_monthly）
     for calc_month, ic_val in [(month1, 0.05), (month2, 0.12)]:
-        db_session.add(FactorIcHistory(
-            calc_month=calc_month,
-            strategy_name="TrendStrategy",
-            factor_name="trend_score",
+        db_session.add(_monthly_quality_row(
+            trade_date=calc_month,
+            strategy="TrendStrategy",
+            factor="trend_score",
             ic_value=ic_val,
-            return_window=20,
         ))
     await db_session.flush()
 
@@ -164,9 +187,9 @@ async def test_int_fm_03_get_latest(db_session: AsyncSession) -> None:
     records = await svc.get_latest(strategy_name="TrendStrategy")
 
     # 应只返回 month2 的记录（最新）
-    trend_records = [r for r in records if r.factor_name == "trend_score"]
+    trend_records = [r for r in records if r.factor == "trend_score"]
     assert len(trend_records) == 1
-    assert trend_records[0].calc_month == month2
+    assert trend_records[0].trade_date == month2
     assert float(trend_records[0].ic_value) == pytest.approx(0.12)
 
 
@@ -179,12 +202,11 @@ async def test_int_fm_04_alert_decay_triggered(db_session: AsyncSession) -> None
     strategy = "MomentumStrategy"
     factor = "momentum_score"
     for i, ic_val in enumerate([-0.1, -0.08, -0.12]):
-        db_session.add(FactorIcHistory(
-            calc_month=date(2026, 1 + i, 28 if i == 1 else 31),
-            strategy_name=strategy,
-            factor_name=factor,
+        db_session.add(_monthly_quality_row(
+            trade_date=date(2026, 1 + i, 28 if i == 1 else 31),
+            strategy=strategy,
+            factor=factor,
             ic_value=ic_val,
-            return_window=_RETURN_WINDOW,
         ))
     await db_session.flush()
 
@@ -227,16 +249,17 @@ async def test_int_fm_04_alert_decay_triggered(db_session: AsyncSession) -> None
     # 检查 composite_score 对应记录（因为包含 3 个月负 IC 历史，可能触发 DECAY）
     from sqlalchemy import select
     rows = list((await db_session.execute(
-        select(FactorIcHistory).where(
-            FactorIcHistory.calc_month == base_date,
-            FactorIcHistory.strategy_name == strategy,
+        select(FactorICWindowState).where(
+            FactorICWindowState.trade_date == base_date,
+            FactorICWindowState.strategy == strategy,
+            FactorICWindowState.row_type == "monthly_quality",
         )
     )).scalars().all())
 
     # 至少有记录写入
     assert len(rows) > 0
     # momentum_score 对应行若 IC 也为负 → alert_status = DECAY
-    momentum_row = next((r for r in rows if r.factor_name == factor), None)
+    momentum_row = next((r for r in rows if r.factor == factor), None)
     if momentum_row and momentum_row.ic_value is not None and float(momentum_row.ic_value) < 0:
         assert momentum_row.alert_status == "DECAY"
 
@@ -252,12 +275,11 @@ async def test_int_fm_05_get_history_pagination(db_session: AsyncSession) -> Non
     month_last_days = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31}
     for i in range(5):
         month = 1 + i
-        db_session.add(FactorIcHistory(
-            calc_month=date(2025, month, month_last_days[month]),
-            strategy_name=strategy,
-            factor_name=factor,
+        db_session.add(_monthly_quality_row(
+            trade_date=date(2025, month, month_last_days[month]),
+            strategy=strategy,
+            factor=factor,
             ic_value=0.05 + i * 0.01,
-            return_window=20,
         ))
     await db_session.flush()
 
@@ -266,5 +288,5 @@ async def test_int_fm_05_get_history_pagination(db_session: AsyncSession) -> Non
 
     assert total == 5
     assert len(records) == 3
-    # 结果按 calc_month DESC 排序
-    assert records[0].calc_month >= records[-1].calc_month
+    # 结果按 trade_date DESC 排序
+    assert records[0].trade_date >= records[-1].trade_date

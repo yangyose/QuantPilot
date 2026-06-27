@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from quantpilot.core.database import AsyncSessionLocal
 from quantpilot.models.account import Account, DailyPortfolioValue, FundFlow, Position, TradeRecord
 from quantpilot.models.business import (
-    FactorIcHistory,
+    FactorICWindowState,
     MarketStateHistory,
     Report,
     Signal,
@@ -97,7 +97,7 @@ async def seed():
             for model in [
                 SignalScoreSnapshot, Signal, MarketStateHistory,
                 DailyPortfolioValue, FundFlow, TradeRecord, Position,
-                Account, FactorIcHistory, Report, UserConfig, IndexHistory,
+                Account, FactorICWindowState, Report, UserConfig, IndexHistory,
                 DailyQuote,  # 清除 Tushare 历史数据，确保回测宇宙仅含演示股票
             ]:
                 await s.execute(delete(model))
@@ -376,16 +376,20 @@ async def seed():
                     ir = ic_mean / ic_std if ic_std > 0 else None
                     # rsi_reversal 连续为负触发 DECAY 告警
                     alert = "DECAY" if factor == "rsi_reversal" and i >= 1 else None
-                    s.add(FactorIcHistory(
-                        calc_month=month,
-                        strategy_name=strategy,
-                        factor_name=factor,
-                        ic_value=round(ic_val, 6),
-                        ic_mean_3m=round(ic_mean, 6),
-                        ic_std_3m=round(ic_std, 6) if ic_std > 0 else None,
-                        ir_3m=round(ir, 6) if ir else None,
-                        half_life_days=round(15.0 + i * 2.5, 1),
-                        return_window=20,
+                    # Phase 15 §15-7：月度因子质量归并进 factor_ic_window_state
+                    # （row_type='monthly_quality'，state='ALL' 哨兵，复用统计列）
+                    s.add(FactorICWindowState(
+                        strategy=strategy,
+                        factor=factor,
+                        state="ALL",
+                        trade_date=month,
+                        ic_value=round(ic_val, 4),
+                        ic_mean_state=round(ic_mean, 4),
+                        ic_std_state=round(ic_std, 4) if ic_std > 0 else None,
+                        icir=round(ir, 4) if ir else None,
+                        half_life=round(15 + i * 2),
+                        sample_size=0,
+                        row_type="monthly_quality",
                         alert_status=alert,
                     ))
 

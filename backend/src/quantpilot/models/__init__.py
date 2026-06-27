@@ -2,7 +2,6 @@ from quantpilot.models.account import Account, FundFlow, Position, TradeRecord
 from quantpilot.models.base import Base
 from quantpilot.models.business import (
     CandidatePool,
-    FactorIcHistory,
     InAppNotification,
     MarketStateHistory,
     Report,
@@ -34,7 +33,6 @@ __all__ = [
     "CandidatePool",
     "Signal",
     "SignalScoreSnapshot",
-    "FactorIcHistory",
     "Report",
     "UserWatchlist",
     "InAppNotification",

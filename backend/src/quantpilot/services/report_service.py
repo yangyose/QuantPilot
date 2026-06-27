@@ -7,7 +7,11 @@ from datetime import date, datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from quantpilot.models.business import FactorIcHistory, Report
+from quantpilot.data.factor_ic_repository import (
+    AGNOSTIC_STATE,
+    MONTHLY_QUALITY_ROW_TYPE,
+)
+from quantpilot.models.business import FactorICWindowState, Report
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +87,7 @@ class ReportService:
 
         数据结构：
         - trade_count：月内成交笔数
-        - factor_alerts：当月因子告警（从 factor_ic_history 取）
+        - factor_alerts：当月因子告警（factor_ic_window_state row_type='monthly_quality'）
         - top_holdings：当前持仓股票列表
         V1.0 不含图表数据，仅输出结构化 JSON。
         """
@@ -100,20 +104,23 @@ class ReportService:
             )
         ).scalar_one()
 
+        # Phase 15 §15-7：月度因子告警 repoint 到 factor_ic_window_state monthly_quality
         alerts_rows = await self._session.execute(
             select(
-                FactorIcHistory.strategy_name,
-                FactorIcHistory.factor_name,
-                FactorIcHistory.alert_status,
+                FactorICWindowState.strategy,
+                FactorICWindowState.factor,
+                FactorICWindowState.alert_status,
             ).where(
-                FactorIcHistory.calc_month == month_end,
-                FactorIcHistory.alert_status.isnot(None),
+                FactorICWindowState.row_type == MONTHLY_QUALITY_ROW_TYPE,
+                FactorICWindowState.state == AGNOSTIC_STATE,
+                FactorICWindowState.trade_date == month_end,
+                FactorICWindowState.alert_status.isnot(None),
             )
         )
         factor_alerts = [
             {
-                "strategy": row.strategy_name,
-                "factor": row.factor_name,
+                "strategy": row.strategy,
+                "factor": row.factor,
                 "alert": row.alert_status,
             }
             for row in alerts_rows
@@ -141,7 +148,7 @@ class ReportService:
     async def generate_custom(self, start: date, end: date) -> Report:
         """用户触发的自定义时间段报告（含持仓快照、交易明细、信号统计、因子告警）。"""
         from quantpilot.models.account import Position, TradeRecord
-        from quantpilot.models.business import FactorIcHistory, Signal
+        from quantpilot.models.business import Signal
 
         # ── 交易统计 ────────────────────────────────────────────────────
         trade_rows = await self._session.execute(
@@ -221,23 +228,27 @@ class ReportService:
         ]
 
         # ── 因子告警 ────────────────────────────────────────────────────
+        # Phase 15 §15-7：月度因子告警 repoint 到 factor_ic_window_state monthly_quality
+        #（ic_mean_3m 复用列 ic_mean_state）
         alert_rows = await self._session.execute(
             select(
-                FactorIcHistory.strategy_name,
-                FactorIcHistory.factor_name,
-                FactorIcHistory.ic_mean_3m,
-                FactorIcHistory.alert_status,
+                FactorICWindowState.strategy,
+                FactorICWindowState.factor,
+                FactorICWindowState.ic_mean_state,
+                FactorICWindowState.alert_status,
             ).where(
-                FactorIcHistory.calc_month >= start,
-                FactorIcHistory.calc_month <= end,
-                FactorIcHistory.alert_status.isnot(None),
+                FactorICWindowState.row_type == MONTHLY_QUALITY_ROW_TYPE,
+                FactorICWindowState.state == AGNOSTIC_STATE,
+                FactorICWindowState.trade_date >= start,
+                FactorICWindowState.trade_date <= end,
+                FactorICWindowState.alert_status.isnot(None),
             )
         )
         factor_alerts = [
             {
-                "strategy": r.strategy_name,
-                "factor": r.factor_name,
-                "ic_mean_3m": float(r.ic_mean_3m) if r.ic_mean_3m else None,
+                "strategy": r.strategy,
+                "factor": r.factor,
+                "ic_mean_3m": float(r.ic_mean_state) if r.ic_mean_state else None,
                 "alert": r.alert_status,
             }
             for r in alert_rows

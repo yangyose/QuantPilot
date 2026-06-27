@@ -159,36 +159,8 @@ class SignalScoreSnapshot(Base):
     )
 
 
-class FactorIcHistory(Base):
-    """因子质量监控历史（每月末计算，SDD §7.4，V1.0 必需）。
-
-    【Phase 11 状态】Phase 7~10 baseline 表，保留 readonly 供回归对照。
-    Phase 11（v1.0-r6）起 MonthlyScheduler dispatch 切换到 apply_monthly_rebalance，
-    写入新表 FactorICWindowState；本表不再被写入但行保留（5y 真机数据）。
-    详见 docs/design/phases/phase11_scoring_industrialization.md §2.1 + §4.0。
-    """
-
-    __tablename__ = "factor_ic_history"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    calc_month: Mapped[date] = mapped_column(Date, nullable=False)
-    strategy_name: Mapped[str] = mapped_column(String(30), nullable=False)
-    factor_name: Mapped[str] = mapped_column(String(50), nullable=False)
-    ic_value: Mapped[float | None] = mapped_column(Numeric(8, 6))
-    ic_mean_3m: Mapped[float | None] = mapped_column(Numeric(8, 6))
-    ic_std_3m: Mapped[float | None] = mapped_column(Numeric(8, 6))
-    ir_3m: Mapped[float | None] = mapped_column(Numeric(8, 6))
-    half_life_days: Mapped[float | None] = mapped_column(Numeric(6, 1))
-    return_window: Mapped[int] = mapped_column(Integer, default=20)
-    alert_status: Mapped[str | None] = mapped_column(String(20))  # DECAY/INEFFICIENT/FAST_DECAY
-
-    __table_args__ = (
-        UniqueConstraint(
-            "calc_month", "strategy_name", "factor_name", "return_window",
-            name="uq_ic_history_month_strategy_factor_window",
-        ),
-        Index("idx_ic_history_strategy", "strategy_name", "calc_month"),
-    )
+# Phase 15 §15-7（2026-06-27）：旧表 factor_ic_history 已归并进 FactorICWindowState
+# （row_type='monthly_quality'）并 DROP（alembic 0017）。原 FactorIcHistory ORM 类删除。
 
 
 class FactorICWindowState(Base):
@@ -222,9 +194,19 @@ class FactorICWindowState(Base):
     # 新行：upsert_ic_daily → 'daily'；upsert_ic_aggregate → 'aggregate'。
     # partial unique index uq_factor_ic_window_state_aggregate 在 'aggregate' 行
     # 强制 (strategy, factor, state, trade_date) 唯一；daily 行仍受全表 UNIQUE 约束。
+    # Phase 15 §15-7：row_type 取值扩展为 daily / aggregate / monthly_quality。
+    # 'monthly_quality'（归并自旧表 factor_ic_history，2026-06-27）：月度
+    # strategy-composite 因子质量行，state='ALL' 哨兵、trade_date=calc_month。
+    # 复用列双语义：ic_mean_state=3 月滚动均值、ic_std_state=3 月滚动 std、
+    # icir=ir_3m（IR=mean/std）、half_life=半衰期日数取整、sample_size=0 占位
+    # （月度路径不记样本数）；alert_status 仅此类行非 NULL。仅由 /factor-quality
+    # + /factor-quality/history + 月报告警消费，与 daily/aggregate 读路径隔离。
     row_type: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="daily",
     )
+    # Phase 15 §15-7：因子质量告警状态（DECAY/INEFFICIENT/FAST_DECAY），
+    # 仅 row_type='monthly_quality' 行非 NULL。
+    alert_status: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default="NOW()"
     )

@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from quantpilot.api.deps import get_factor_monitor_service
 from quantpilot.core.security import create_token
 from quantpilot.main import app
-from quantpilot.models.business import FactorIcHistory
+from quantpilot.models.business import FactorICWindowState
 
 
 def _auth() -> dict:
@@ -21,18 +21,19 @@ def _mock_ic_record(
     factor: str = "trend_score",
     ic: float = 0.12,
     alert: str | None = None,
-) -> FactorIcHistory:
-    r = MagicMock(spec=FactorIcHistory)
+) -> FactorICWindowState:
+    """Phase 15 §15-7：service.get_latest/get_history 现返回 FactorICWindowState
+    monthly_quality 行（NEW 列名）；API 经 from_window_state 映射为旧响应字段名。"""
+    r = MagicMock(spec=FactorICWindowState)
     r.id = 1
-    r.calc_month = date(2026, 3, 31)
-    r.strategy_name = strategy
-    r.factor_name = factor
+    r.trade_date = date(2026, 3, 31)
+    r.strategy = strategy
+    r.factor = factor
     r.ic_value = ic
-    r.ic_mean_3m = 0.09
-    r.ic_std_3m = 0.03
-    r.ir_3m = 3.0
-    r.half_life_days = 15.0
-    r.return_window = 20
+    r.ic_mean_state = 0.09
+    r.ic_std_state = 0.03
+    r.icir = 3.0
+    r.half_life = 15
     r.alert_status = alert
     return r
 
