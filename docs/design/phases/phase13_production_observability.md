@@ -2,7 +2,7 @@
 
 > **版本：** v1.1
 > **日期：** 2026-05-21
-> **依据文档：** QuantPilot_SDD.md v1.4 §15.4（部署）/ §15.5（日志）/ §16（V1.5+ 路线图：可观测性栈 V1.5-H 已升级 V1.0 Phase 13）；system_design.md §9 Phase 13 行；docs/reviews/v1_overall_review_2026-04-27.md §6.5（S5-GAP-01/02/03）+ §6.2（S2-GAP-01）+ §8.3（D4-GAP-03 + V1.5-H 主题汇总）；docs/reviews/phase10_design_review_2026-04-20.md §3.4（G-1 WebSocket 前端消费 / G-2 AKShare 自动降级）；docs/design/v1_5_roadmap.md §1.x（V1.5-H 5 项 + G-1/G-2 升级 V1.0 Phase 13）；docs/design/phases/phase10_deployment.md §8（生产 Docker / 日志 / 通知降级现状）
+> **依据文档：** QuantPilot_SDD.md v1.4 §15.4（部署）/ §15.5（日志）/ §16（V1.5+ 路线图：可观测性栈 V1.5-H 已升级 V1.0 Phase 13）；system_design.md §9 Phase 13 行；docs/reviews/v1_overall_review_2026-04-27.md §6.5（S5-GAP-01/02/03）+ §6.2（S2-GAP-01）+ §8.3（D4-GAP-03 + V1.5-H 主题汇总）；docs/reviews/phase10_design_review_2026-04-20.md §3.4（G-1 WebSocket 前端消费 / G-2 AKShare 自动降级）；docs/design/v1_post_release_roadmap.md §1.x（V1.5-H 5 项 + G-1/G-2 升级 V1.0 Phase 13）；docs/design/phases/phase10_deployment.md §8（生产 Docker / 日志 / 通知降级现状）
 
 ---
 

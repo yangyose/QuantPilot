@@ -2,7 +2,7 @@
 
 > **版本：** v1.2
 > **日期：** 2026-05-20
-> **依据文档：** QuantPilot_SDD.md v1.4 §12.3（因子归因）/ §15.6（数据血缘）/ §16（V1.5+ 路线图：完整因子级溯源 + 多因子回归归因已升级 V1.0 Phase 12）；system_design.md §9 Phase 12 行；docs/design/phases/phase11_scoring_industrialization.md v1.4（P1-7 lineage 后端字段扩展已落地 / 前端分层视图归 Phase 12）；docs/design/phases/phase12_factor_lineage.md v1.0 评审报告 `docs/reviews/phase12_design_review_2026-05-19.md`（4 P1 + 5 P2 + R12-P2 9 项动作）；docs/design/v1_5_roadmap.md §1.x 升级清单（V1.5-B S1-GAP-01 + D1-GAP-02 + V1.5-E 多因子回归 → Phase 12）
+> **依据文档：** QuantPilot_SDD.md v1.4 §12.3（因子归因）/ §15.6（数据血缘）/ §16（V1.5+ 路线图：完整因子级溯源 + 多因子回归归因已升级 V1.0 Phase 12）；system_design.md §9 Phase 12 行；docs/design/phases/phase11_scoring_industrialization.md v1.4（P1-7 lineage 后端字段扩展已落地 / 前端分层视图归 Phase 12）；docs/design/phases/phase12_factor_lineage.md v1.0 评审报告 `docs/reviews/phase12_design_review_2026-05-19.md`（4 P1 + 5 P2 + R12-P2 9 项动作）；docs/design/v1_post_release_roadmap.md §1.x 升级清单（V1.5-B S1-GAP-01 + D1-GAP-02 + V1.5-E 多因子回归 → Phase 12）
 
 ---
 

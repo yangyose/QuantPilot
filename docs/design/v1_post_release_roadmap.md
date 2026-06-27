@@ -7,7 +7,7 @@
 > **配套文档：**
 > - V1.0 收尾批次（Phase 11~15）见 `docs/design/system_design.md` §9 进度表 + 各 phase 设计文档
 > - SDD §7-10 修订草案（Phase 11 评分工业化前置）见 `docs/design/sdd_7_10_revision_draft_2026-05-14.md`（v1.3 已锁定）
-> - 文件名保留为 `v1_5_roadmap.md` 以避免引用断裂；Phase 15 V1.0 RC 验收时统一改名 `v1_post_release_roadmap.md`
+> - 本文件 2026-06-26（Phase 15 §15-5）由 `v1_5_roadmap.md` 改名为 `v1_post_release_roadmap.md` 以匹配"V1.0 发布后路线"实际语义。历史文档（评审报告 / 各设计文档修订历史）中的旧名 `v1_5_roadmap.md` 即指本文件，未逐一回改（带日期的历史记录保持原样）。
 
 ## 修订历史
 

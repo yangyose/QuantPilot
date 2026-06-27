@@ -67,7 +67,7 @@ Phase 14 是 V1.0 收尾批次（Phase 11~15）的第 4 个 phase，承担 3 类
 | 跨 phase stub 标注 | RM-13 idempotency_key 列 alembic 0013 新增；旧记录保 NULL，partial unique 允许多 NULL 共存（详见 §3.3）|
 
 **未在 Phase 14 收口的推迟项**：
-- R13-P3 5 项（监控增强）→ v1_5_roadmap §4.5 V1.5-A ✓
+- R13-P3 5 项（监控增强）→ v1_post_release_roadmap §4.5 V1.5-A ✓
 - Phase 15 RC 验收项（5y 真机 + STRONG 相对百分比 + 覆盖率门槛 + 文档校核）→ Phase 15 ✓
 
 **v1.3 增补启动核查（2026-06-02，§14-9）**：
@@ -860,7 +860,7 @@ NAV 恒错。故**删除** `POST /positions` + `add_position` + `PositionCreate`
 
 - **Phase 15 RC**：5y 真机端到端验收（评分 + 信号 + 因子 + 监控 + 账户）/ 30 日完整版跨制度回归 / STRONG 相对百分比化 / 覆盖率 ≥ 90% 门槛 / 文档校核 / V1.0 RC 标签
 - **V1.5-A 监控增强**：R13-P3 5 项（API-101 Upgrade header / SecretFilter record.__dict__ / factor_monitor_params config_key / TushareAdapter 统一埋点 / Grafana 3 panel）
-- **V1.5+ 其他主题**：见 `docs/design/v1_5_roadmap.md` §6
+- **V1.5+ 其他主题**：见 `docs/design/v1_post_release_roadmap.md` §6
 - **V2.0**：边际 VaR / 因子拥挤度 / 涨停板完整版
 
 ---

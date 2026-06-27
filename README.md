@@ -7,7 +7,7 @@
 
 > 个人量化交易决策辅助系统——基于多因子模型，每日收盘后自动采集数据、评分选股、生成交易信号，并通过微信推送给用户。
 >
-> **当前状态：V1.0 全部 10 个 Phase + V1.0 整改 Batch 1/2/3 全部完成（2026-05-01）；V1.0 真机验收核心通路修复完成（2026-05-12，11 个 bug 修；4 项推迟 V1.5 见 `docs/design/v1_5_roadmap.md` §2.9）**
+> **当前状态：V1.0 全部 10 个 Phase + V1.0 整改 Batch 1/2/3 全部完成（2026-05-01）；V1.0 真机验收核心通路修复完成（2026-05-12，11 个 bug 修）；评分链路根本缺陷整改 → V1.0 收尾 Phase 11~14 全部完成，Phase 15 V1.0 RC 验收进行中（详见 `docs/design/system_design.md` §9）。V1.0 发布后路线图见 `docs/design/v1_post_release_roadmap.md`**
 >
 > ⚠️ **风险提示**：本工具仅用于个人学习与决策辅助，**不构成任何投资建议**。所有信号、回测、绩效输出均存在模型局限与数据延迟风险，使用者应自行承担投资决策与风险。
 
@@ -88,7 +88,7 @@ Data 层 (TushareAdapter / AkshareAdapter / TradingCalendar / DataValidator /
 
 ### V1.5 路线图
 
-V1.5 完整 scope 共 **50 项**（SDD §16 14 项产品功能 + V1.0 评审 P2/P3 25 项 + SDD 外部专家评审 8 项 + Phase 10 评审 3 项），按 10 主题（V1.5-A..J）打包 ~91-115 pd（6-8 个月）。详见 [docs/design/v1_5_roadmap.md](docs/design/v1_5_roadmap.md)。
+V1.0 重新定位后，原 V1.5 中评分链路 / 因子级溯源 / 数据质量监控 / 部署评审 / 账户资金链相关项升级为 V1.0 收尾 Phase 11~15 必修；剩余 V1.5+ / V2.0 范围（v2.1 重构后）按主题（V1.5-A..J）打包。详见 [docs/design/v1_post_release_roadmap.md](docs/design/v1_post_release_roadmap.md)。
 
 ---
 
@@ -319,7 +319,7 @@ QuantPilot/
 └── docs/
     ├── spec/QuantPilot_SDD.md      # 系统规范文档（v1.0-r6）
     ├── design/system_design.md     # 技术架构 + Phase 9 范围
-    ├── design/v1_5_roadmap.md      # V1.5 完整 scope（50 项 / 10 主题）
+    ├── design/v1_post_release_roadmap.md  # V1.0 发布后路线图（V1.5+ / V2.0）
     ├── design/phases/              # phase1 ~ phase10 详细设计
     ├── reviews/                    # 4 份评审报告
     │   ├── v1_overall_review_2026-04-27.md
@@ -367,7 +367,7 @@ GitHub Actions 在 `push` 到 `main`/`develop` 或 PR 时执行：
 |------|------|
 | [SDD 规范](docs/spec/QuantPilot_SDD.md) | 系统需求与功能规范（权威来源，v1.0-r6） |
 | [系统设计](docs/design/system_design.md) | 技术架构、数据模型、API 概览、Phase 划分 |
-| [V1.5 路线图](docs/design/v1_5_roadmap.md) | V1.5 完整 scope（50 项 / 10 主题 / ~91-115 pd） |
+| [V1.0 发布后路线图](docs/design/v1_post_release_roadmap.md) | V1.5+ / V2.0 完整 scope（v2.1 重构后） |
 | [Phase 1~10 详细设计](docs/design/phases/) | 各 Phase 实现细节（含修订历史） |
 | [V1.0 整体评审](docs/reviews/v1_overall_review_2026-04-27.md) | 8 P0 + 12 P1 整改清单（已全部完成） |
 | [SDD 外部专家评审](docs/reviews/SDD_review_outside_2026-04-22.md) | 机构级量化体系视角，9 项建议（8 入 V1.5） |

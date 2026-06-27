@@ -10,7 +10,7 @@
 > - 评审报告：`phase11_implementation_review_2026-05-19.md`（STRONG 偏差 / 30 日完整版 / 覆盖率门槛 / 旧表归并留 Phase 15）
 > - 评审报告：`phase12_implementation_review_2026-05-20.md` §2（P1 合规 banner，RC 前必修）/ §8.2（真机层抽测推迟 RC 同批）
 > - 评审报告：`sdd_7_10_doc_sync_review_2026-05-14.md`（§7.2.1 共线性附注残留 P2）
-> - 路线图：`v1_5_roadmap.md`（本 phase 改名 `v1_post_release_roadmap.md`）
+> - 路线图：`v1_post_release_roadmap.md`（本 phase §15-5 由原名 `v1_5_roadmap.md` 改名）
 
 ---
 
