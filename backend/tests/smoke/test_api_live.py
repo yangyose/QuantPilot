@@ -732,14 +732,16 @@ def test_api_43_positions_no_auth(client: httpx.Client) -> None:
     _assert_error(r.json(), 401)
 
 
-def test_api_44_positions_post_no_auth(client: httpx.Client) -> None:
-    """API-44: POST /api/v1/positions 无鉴权 → 401"""
+def test_api_44_positions_post_removed(client: httpx.Client) -> None:
+    """API-44: POST /api/v1/positions 已删除（§14-10 废手工录入持仓）→ 405 Method Not Allowed。
+
+    持仓改为由成交流水派生，建仓走 POST /account/trades。该路由不再注册，
+    任何方法/鉴权状态下 POST 均返回 405（路由匹配 GET 但方法不允许）。"""
     r = client.post("/api/v1/positions", json={
         "account_id": 1, "ts_code": "000001.SZ", "shares": 100,
         "cost_price": 10.0, "trade_date": "2026-04-10",
     })
-    assert r.status_code == 401
-    _assert_error(r.json(), 401)
+    assert r.status_code == 405
 
 
 def test_api_45_positions_patch_no_auth(client: httpx.Client) -> None:
@@ -968,16 +970,23 @@ def test_api_66_backtest_run_no_auth(client: httpx.Client) -> None:
 def test_api_67_backtest_run_with_auth(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
-    """API-67: POST /api/v1/backtest/run 有鉴权 → 200（返回 task_id，status=PENDING）"""
+    """API-67: POST /api/v1/backtest/run 有鉴权 → 200（task_id, PENDING）或 503（生产禁用）。
+
+    自适应契约：生产 .env.prod 置 backtest_enabled=false（2GB 机即便短区间回测也
+    OOM 拖垮整机，2026-06-29 冒烟实证），→ 503；本地大内存机默认开启 → 200 PENDING。
+    两态均为正确契约，故按目标实际状态二选一断言。窗口取 6 日（落窗口护栏内，仅本地态用到）。"""
     r = client.post(
         "/api/v1/backtest/run",
         json={
             "start_date": "2023-01-03",
-            "end_date": "2023-03-31",
+            "end_date": "2023-01-09",
             "initial_capital": 1000000.0,
         },
         headers=auth_headers,
     )
+    if r.status_code == 503:
+        assert "本地" in r.json()["msg"]  # 生产禁用态：提示本地运行
+        return
     assert r.status_code == 200
     body = r.json()
     _assert_ok(body)
@@ -1018,17 +1027,22 @@ def test_api_70_backtest_result_not_found(
 def test_api_71_backtest_result_pending_409(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
-    """API-71: 刚提交的任务查询 /result → 409 CONFLICT（PENDING 状态下不可取结果）"""
+    """API-71: 刚提交的任务查询 /result → 409 CONFLICT（PENDING 状态下不可取结果）。
+
+    窗口 ≤ 7 日（生产回测护栏，§14）；6 日窗口落护栏内可成功入队。
+    生产 backtest_enabled=false 时 → 503，跳过（无任务可查）。"""
     # 提交回测
     r = client.post(
         "/api/v1/backtest/run",
         json={
             "start_date": "2023-01-03",
-            "end_date": "2023-12-29",
+            "end_date": "2023-01-09",
             "initial_capital": 1000000.0,
         },
         headers=auth_headers,
     )
+    if r.status_code == 503:
+        pytest.skip("回测在本服务器禁用（backtest_enabled=false），无任务可查")
     assert r.status_code == 200
     task_id = r.json()["data"]["task_id"]
 
@@ -1056,17 +1070,22 @@ def test_api_72_performance_attribution_with_auth(
 def test_api_73_backtest_status_with_valid_task(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
-    """API-73: POST /run 后用返回的 task_id 查询 /status → 200，status 在合法集合内"""
+    """API-73: POST /run 后用返回的 task_id 查询 /status → 200，status 在合法集合内。
+
+    窗口 ≤ 7 日（生产回测护栏，§14）；6 日窗口落护栏内可成功入队。
+    生产 backtest_enabled=false 时 → 503，跳过（无任务可查）。"""
     # 先创建任务
     r = client.post(
         "/api/v1/backtest/run",
         json={
             "start_date": "2023-01-03",
-            "end_date": "2023-03-31",
+            "end_date": "2023-01-09",
             "initial_capital": 1000000.0,
         },
         headers=auth_headers,
     )
+    if r.status_code == 503:
+        pytest.skip("回测在本服务器禁用（backtest_enabled=false），无任务可查")
     assert r.status_code == 200
     task_id = r.json()["data"]["task_id"]
 
@@ -1234,9 +1253,12 @@ def test_api_85_signals_no_auth_returns_401(client: httpx.Client) -> None:
 def test_api_86_signals_with_auth_returns_phase11_fields(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
-    """API-86: GET /signals 带鉴权 → 200；响应 signals 任意一条须含 Phase 11 4 新字段
-    （composite_z / composite_pct_in_market / weights_source / trigger_reason），
-    实际值允许 null（当日可能无信号或字段未填充）。"""
+    """API-86: GET /signals 带鉴权 → 200；响应 signals 任意一条须含 Phase 11 字段
+    （composite_z / composite_pct_in_market / trigger_reason），实际值允许 null。
+
+    注：`weights_source` 按设计不在 SignalResponse（仅在 candidate_pool /
+    signal_score_snapshot / GET /signals/{id}/lineage 的三层溯源响应里，
+    见 schemas/signals.py SignalResponse 注释）；故此处只校验列表契约的 3 字段。"""
     r = client.get("/api/v1/signals", headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
@@ -1245,9 +1267,7 @@ def test_api_86_signals_with_auth_returns_phase11_fields(
     # 即使列表为空也通过；非空时校验首行 key 集合（pydantic 模型默认序列化所有字段）
     if signals:
         sample = signals[0]
-        for k in (
-            "composite_z", "composite_pct_in_market", "weights_source", "trigger_reason",
-        ):
+        for k in ("composite_z", "composite_pct_in_market", "trigger_reason"):
             assert k in sample, f"signal 行缺 Phase 11 字段: {k}"
 
 
@@ -1528,7 +1548,9 @@ def test_api_103_deposit_idempotent_same_key(
     """
     import uuid
 
-    key = f"smoke-{uuid.uuid4()}"  # 36 字符 UUID，每次冒烟唯一
+    # idempotency_key 字段上限 36 字符；uuid4().hex = 32 字符（无连字符），落在限内。
+    # 旧写法 f"smoke-{uuid4()}" = 6+36 = 42 字符会被 422 拒（字段校验正确）。
+    key = uuid.uuid4().hex
 
     # 取一次基线 cash
     r0 = client.get("/api/v1/account?account_id=1", headers=auth_headers)

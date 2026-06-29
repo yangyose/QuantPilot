@@ -36,6 +36,20 @@ async def run_backtest(
     后台任务 `_run_backtest_bg` 内根据 `task.config_snapshot` 即时构造，确保用户
     最新配置消费。前置校验仅检查 `calendar` 是否就绪。
     """
+    # 回测整体开关（2026-06-29）：生产 2GB 机即便单个短区间回测也会 OOM 拖垮整机
+    # （冒烟实证：一个 6 日回测吃 1.5GB → /health 超时 11 分钟）。生产 .env.prod
+    # 置 backtest_enabled=false 彻底禁用，回测改在本地算力中心跑（scripts/run_backtest_local.py），
+    # 跑完经 POST /backtest/import 回灌结果。开关最前置——连日历/窗口/并发护栏都不到。
+    if not settings.backtest_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "回测已在本服务器禁用（内存受限）。请在本地算力中心运行"
+                "（scripts/run_backtest_local.py，数据自动同步自最新远端备份），"
+                "跑完经 POST /backtest/import 回灌结果。"
+            ),
+        )
+
     # 前置校验：交易日历必须已初始化
     calendar = getattr(request.app.state, "calendar", None)
     if calendar is None:

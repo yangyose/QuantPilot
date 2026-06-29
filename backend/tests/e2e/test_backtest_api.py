@@ -303,6 +303,31 @@ async def test_bt_09_run_window_guard_rejects(
         app.state.calendar = original_calendar
 
 
+async def test_bt_09b_run_disabled_returns_503(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2E-BT-09b：回测整体禁用——backtest_enabled=False → 503，最先拦截不进任何后续。
+
+    2GB 生产机即便单个短区间回测也会 OOM 拖垮整机（2026-06-29 冒烟实证：一个 6 日
+    回测吃 1.5GB → /health 超时 11 分钟）。生产 .env.prod 置 backtest_enabled=false
+    彻底禁用，回测改在本地算力中心跑。开关在端点最前置，连日历/护栏都不到。
+    """
+    from quantpilot.core.config import settings as cfg_settings
+
+    monkeypatch.setattr(cfg_settings, "backtest_enabled", False)
+
+    mock_svc = AsyncMock()
+    mock_svc.create_task = AsyncMock(return_value="should-not-be-called")
+    app.dependency_overrides[get_backtest_service] = lambda: mock_svc
+    try:
+        resp = await client.post("/api/v1/backtest/run", json=_VALID_BODY, headers=_auth())
+        assert resp.status_code == 503
+        mock_svc.create_task.assert_not_awaited()
+        assert "本地" in resp.json()["msg"]
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
 async def test_bt_15_run_concurrency_guard_rejects(client: AsyncClient) -> None:
     """E2E-BT-15：并发护栏——已有 RUNNING/PENDING 回测时再提交 → 409，不进后台任务。
 
