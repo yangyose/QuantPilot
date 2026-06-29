@@ -229,6 +229,8 @@ DEBUG=false
 
 ## 6. 当前进度
 
-V1.0 收尾批次：Phase 11 / 12 / 13 / **14 ✓**（§14-1~§14-10 全交付：账户幂等 + 5y candidate_pool 回填 + 日级 IC/ICIR 历史回算 + BacktestEngine 真 5 步 + 共表拆分 + Phase 13/12 评审 P2 + 交易日历持久化 CAL-1~6 + §14-10 成交/资金流水作废订正）| **Phase 15 待启动**（V1.0 RC 验收 + 文档校核）
+V1.0 收尾批次：Phase 11 / 12 / 13 / **14 ✓**（§14-1~§14-10 全交付：账户幂等 + 5y candidate_pool 回填 + 日级 IC/ICIR 历史回算 + BacktestEngine 真 5 步 + 共表拆分 + Phase 13/12 评审 P2 + 交易日历持久化 CAL-1~6 + §14-10 成交/资金流水作废订正）| **Phase 15 ✓**（V1.0 RC 验收：8 子项全交付 + 收尾门槛全过 + 冒烟对生产 105 PASS；RC 期根治回测 2GB OOM——生产经 `backtest_enabled=false` 禁用回测 503，回测走本地算力中心）| **下一步**：打 `v1.0` 正式 tag（须含回测禁用补丁 commit 3ffefcb，`v1.0-rc1` tag 不含）→ V1.0 发布 → 启动 V1.5-G 多用户
+
+> **运维红线（RC 验收期实证）**：① 回测在生产**禁用**（`POST /backtest/run`→503），任何"验证回测"必在本地算力中心（`scripts/run_backtest_local.py`）跑，**绝不对生产 POST /backtest/run**——单个 6 日回测即拖垮 2GB 机 11 分钟。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
 
 详细 phase 表 + 历史里程碑（V1.0 整改 3 批次 / V1.0 真机验收 15 bug / Phase 11~13 实施细节）→ `docs/design/system_design.md §9`。
