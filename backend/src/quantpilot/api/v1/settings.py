@@ -7,7 +7,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import PlainTextResponse
 
-from quantpilot.api.deps import get_config_service, get_current_user, get_settings_service
+from quantpilot.api.deps import get_config_service, get_current_user_id, get_settings_service
 from quantpilot.schemas.settings import (
     ConfigHistoryResponse,
     ImportChange,
@@ -42,7 +42,7 @@ _VALID_CONFIG_KEYS: frozenset[str] = frozenset({
 @router.get("")
 async def get_settings(
     service: SettingsService = Depends(get_settings_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /settings → 获取全部用户配置（V1.0 不过滤 user_level）。"""
     configs = await service.get_settings()
@@ -54,7 +54,7 @@ async def update_setting(
     body: UserConfigUpdate,
     service: SettingsService = Depends(get_settings_service),
     cfg: ConfigService = Depends(get_config_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """PUT /settings → 更新单项配置，自动写入变更历史；主动失效 ConfigService 缓存。
 
@@ -82,7 +82,7 @@ async def get_config_history(
     limit: int = 50,
     offset: int = 0,
     service: SettingsService = Depends(get_settings_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /settings/config-history → 配置变更历史（分页 + 按 key 过滤）。"""
     items, total = await service.get_config_history(
@@ -103,7 +103,7 @@ async def get_config_history(
 @router.get("/export", response_class=PlainTextResponse)
 async def export_settings(
     service: SettingsService = Depends(get_settings_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> PlainTextResponse:
     """GET /settings/export → 以 YAML 格式导出所有已设置的 user_config（Phase 10 §6.9）。
 
@@ -126,7 +126,7 @@ async def import_settings(
     body: ImportRequest,
     service: SettingsService = Depends(get_settings_service),
     cfg: ConfigService = Depends(get_config_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /settings/import → 上传 YAML 批量 upsert（Phase 10 §6.9）。
 
@@ -202,7 +202,7 @@ async def revert_config(
     history_id: int,
     service: SettingsService = Depends(get_settings_service),
     cfg: ConfigService = Depends(get_config_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /settings/config-history/{id}/revert → 恢复到指定历史的 old_value（变更前状态）。
 

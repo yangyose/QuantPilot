@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, WebSocket, status
 
-from quantpilot.api.deps import get_backtest_service, get_config_service, get_current_user
+from quantpilot.api.deps import get_backtest_service, get_config_service, get_current_user_id
 from quantpilot.core.config import settings
 from quantpilot.engine.backtest.engine import BacktestConfig
 from quantpilot.schemas.backtest import BacktestImportRequest, BacktestRunRequest
@@ -22,7 +22,7 @@ async def run_backtest(
     body: BacktestRunRequest,
     background_tasks: BackgroundTasks,
     request: Request,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: BacktestService = Depends(get_backtest_service),
     cfg: ConfigService = Depends(get_config_service),
 ) -> dict:
@@ -132,7 +132,7 @@ async def run_backtest(
 @router.post("/import")
 async def import_backtest(
     body: BacktestImportRequest,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: BacktestService = Depends(get_backtest_service),
 ) -> dict:
     """POST /backtest/import — 回流本地算力中心跑完的回测结果（2026-06-15）。
@@ -287,7 +287,7 @@ def _make_redis_progress_cb(task_id: str, redis: object):
 async def get_backtest_status(
     task_id: str,
     request: Request,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: BacktestService = Depends(get_backtest_service),
 ) -> dict:
     """GET /backtest/{task_id}/status — 查询回测任务状态（含实时进度）。"""
@@ -316,7 +316,7 @@ async def get_backtest_status(
 @router.get("/{task_id}/result")
 async def get_backtest_result(
     task_id: str,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: BacktestService = Depends(get_backtest_service),
 ) -> dict:
     """GET /backtest/{task_id}/result — 查询回测结果。"""

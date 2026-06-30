@@ -24,7 +24,7 @@ from quantpilot.models.business import InAppNotification
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_notif(

@@ -12,7 +12,7 @@ from quantpilot.models.business import CandidatePool
 
 
 def _auth_header() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_pool_record(

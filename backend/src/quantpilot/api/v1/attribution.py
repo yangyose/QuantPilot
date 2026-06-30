@@ -6,7 +6,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from quantpilot.api.deps import get_attribution_service, get_current_user
+from quantpilot.api.deps import get_attribution_service, get_current_user_id
 from quantpilot.schemas.attribution import (
     AttributionHistoryItem,
     AttributionHistoryResponse,
@@ -22,7 +22,7 @@ async def get_attribution_history(
     start_date: date = Query(..., description="起始日（含）"),
     end_date: date = Query(..., description="结束日（含）"),
     factor: str | None = Query(default=None, description="可选过滤因子"),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: AttributionService = Depends(get_attribution_service),
 ):
     """GET /api/v1/attribution/history — 归因历史列表（按 calc_date desc）。"""
@@ -51,7 +51,7 @@ async def get_attribution_history(
 async def get_attribution_summary(
     start_date: date = Query(..., description="起始日（含）"),
     end_date: date = Query(..., description="结束日（含）"),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: AttributionService = Depends(get_attribution_service),
 ):
     """GET /api/v1/attribution/summary — 区间累计归因摘要。"""

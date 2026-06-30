@@ -32,18 +32,16 @@ def test_verify_password_wrong():
 # SEC-03 / SEC-04 : 正常 token 签发与解码
 # ---------------------------------------------------------------------------
 
-def test_decode_access_token_returns_username():
-    """SEC-03: access token 解码返回用户名"""
-    token = create_token("access")
-    username = decode_token(token, expected_type="access")
-    assert username == settings.admin_username
+def test_decode_access_token_returns_subject():
+    """SEC-03: access token 解码返回 subject（V1.5-G：user_id 字符串）"""
+    token = create_token("access", "1")
+    assert decode_token(token, expected_type="access") == "1"
 
 
-def test_decode_refresh_token_returns_username():
-    """SEC-04: refresh token 解码返回用户名"""
-    token = create_token("refresh")
-    username = decode_token(token, expected_type="refresh")
-    assert username == settings.admin_username
+def test_decode_refresh_token_returns_subject():
+    """SEC-04: refresh token 解码返回 subject（V1.5-G：user_id 字符串）"""
+    token = create_token("refresh", "1")
+    assert decode_token(token, expected_type="refresh") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +50,7 @@ def test_decode_refresh_token_returns_username():
 
 def test_decode_token_type_mismatch():
     """SEC-05: access token 当作 refresh 解码 → AuthError"""
-    token = create_token("access")
+    token = create_token("access", "1")
     with pytest.raises(AuthError):
         decode_token(token, expected_type="refresh")
 

@@ -6,7 +6,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from quantpilot.api.deps import get_account_service, get_current_user, get_signal_service
+from quantpilot.api.deps import get_account_service, get_current_user_id, get_signal_service
 from quantpilot.schemas.account import (
     AccountSummary,
     FundFlowCreate,
@@ -27,7 +27,7 @@ router = APIRouter()
 async def get_account(
     account_id: int | None = None,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /account?account_id=1 → 账户概览（省略时返回默认账户）。"""
     if account_id is not None:
@@ -47,7 +47,7 @@ async def get_account(
 async def sync_account(
     account_id: int,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /account/sync?account_id=1 → 从 daily_quote 更新持仓价格/市值/total_assets。"""
     try:
@@ -62,7 +62,7 @@ async def record_trade(
     body: TradeRecordCreate,
     service: AccountService = Depends(get_account_service),
     signal_service: SignalService = Depends(get_signal_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /account/trades → 录入成交（BUY/SELL），同步更新持仓和资金流水。
 
@@ -111,7 +111,7 @@ async def list_trades(
     limit: int = 50,
     offset: int = 0,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /account/trades → 成交记录列表（分页）。include_voided=true 显示已作废行。"""
     trades, total = await service.list_trades(
@@ -145,7 +145,7 @@ async def void_trade(
     trade_id: int,
     body: VoidRequest | None = None,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /account/trades/{id}/void → 作废成交（订正录入错误）。
 
@@ -169,7 +169,7 @@ async def void_cashflow(
     flow_id: int,
     body: VoidRequest | None = None,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /account/cashflow/{id}/void → 作废资金流水（入金/出金/分红）。
 
@@ -192,7 +192,7 @@ async def void_cashflow(
 async def deposit(
     body: FundFlowCreate,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /account/deposit → 入金或分红（ts_code 决定类型）。
 
@@ -228,7 +228,7 @@ async def deposit(
 async def withdraw(
     body: FundFlowCreate,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /account/withdraw → 出金。cash 不足返回 400。"""
     try:
@@ -256,7 +256,7 @@ async def get_cashflow(
     offset: int = 0,
     include_voided: bool = False,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /account/cashflow → 资金流水查询（分页 + 过滤）。
 

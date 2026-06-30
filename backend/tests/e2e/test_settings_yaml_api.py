@@ -12,7 +12,7 @@ from quantpilot.main import app
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_config(config_key: str, config_value: dict, config_id: int = 1) -> object:

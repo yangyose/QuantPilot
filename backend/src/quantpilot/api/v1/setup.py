@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from quantpilot.api.deps import get_current_user, get_setup_service
+from quantpilot.api.deps import get_current_user_id, get_setup_service
 from quantpilot.schemas.setup import SetupStatusData
 from quantpilot.services.setup_service import SetupService
 
@@ -18,7 +18,7 @@ router = APIRouter()
 @router.get("/status")
 async def get_setup_status(
     service: SetupService = Depends(get_setup_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /setup/status → 向导完成状态。"""
     data = await service.get_status()
@@ -28,7 +28,7 @@ async def get_setup_status(
 @router.post("/complete")
 async def mark_setup_complete(
     service: SetupService = Depends(get_setup_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /setup/complete → 标记向导完成。"""
     data = await service.mark_completed()

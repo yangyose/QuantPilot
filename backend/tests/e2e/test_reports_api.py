@@ -13,7 +13,7 @@ from quantpilot.models.business import Report
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_report(

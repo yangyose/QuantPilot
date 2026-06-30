@@ -10,7 +10,7 @@ from quantpilot.main import app
 
 
 def _auth_header() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_record() -> MarketStateRecord:

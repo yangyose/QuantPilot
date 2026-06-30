@@ -12,7 +12,7 @@ from quantpilot.models.account import Position
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_position(

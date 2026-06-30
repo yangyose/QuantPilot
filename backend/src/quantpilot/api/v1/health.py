@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from quantpilot.api.deps import get_current_user, get_db
+from quantpilot.api.deps import get_current_user_id, get_db
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ router = APIRouter()
 @router.get("/scheduler")
 async def health_scheduler(
     request: Request,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """调度器健康摘要。
 
@@ -39,7 +39,7 @@ async def health_scheduler(
 @router.get("/data")
 async def health_data(
     session: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """数据延迟 + 近 30 日 DataValidator 错误聚合。
 

@@ -13,7 +13,7 @@ from quantpilot.models.account import Account, FundFlow, TradeRecord
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_account(account_id: int = 1, cash: float = 100000.0) -> Account:

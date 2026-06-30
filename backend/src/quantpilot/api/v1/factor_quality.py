@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.api.deps import (
-    get_current_user,
+    get_current_user_id,
     get_factor_monitor_service,
 )
 from quantpilot.core.config_defaults import DEFAULT_STRATEGY_WEIGHTS
@@ -40,7 +40,7 @@ _STATE_TO_DEFAULT_ATTR = {
 async def get_factor_quality(
     strategy_name: str | None = None,
     service: FactorMonitorService = Depends(get_factor_monitor_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /factor-quality → 每个（strategy, factor）最新一条 IC 质量记录。
 
@@ -62,7 +62,7 @@ async def get_factor_quality_history(
     factor_name: str | None = None,
     limit: int = 12,
     service: FactorMonitorService = Depends(get_factor_monitor_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /factor-quality/history → 历史 IC 趋势（分页）。"""
     records, total = await service.get_history(
@@ -94,7 +94,7 @@ async def get_ic_rolling_history(
     end: date | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=2000),
     session: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """Phase 11 §9.2：GET /factor-quality/ic-history → factor_ic_window_state 时序。
 
@@ -119,7 +119,7 @@ async def get_ic_rolling_history(
 async def get_current_strategy_weights(
     as_of: date | None = Query(default=None, description="生效日上界，默认今日"),
     session: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """Phase 11 §9.2：GET /factor-quality/current-weights → 3 state × 4 strategy 当前权重。
 

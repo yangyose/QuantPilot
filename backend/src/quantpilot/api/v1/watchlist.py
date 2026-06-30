@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from quantpilot.api.deps import get_current_user, get_watchlist_service
+from quantpilot.api.deps import get_current_user_id, get_watchlist_service
 from quantpilot.schemas.scoring import WatchlistAddRequest
 from quantpilot.services.watchlist_service import WatchlistService
 
@@ -16,7 +16,7 @@ router = APIRouter()
 @router.get("")
 async def list_watchlist(
     list_type: Literal["BLACKLIST", "WHITELIST"] | None = Query(default=None),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: WatchlistService = Depends(get_watchlist_service),
 ) -> JSONResponse:
     """GET /api/v1/watchlist — 查询黑白名单，可按 list_type 过滤。"""
@@ -31,7 +31,7 @@ async def list_watchlist(
 @router.post("")
 async def add_watchlist(
     body: WatchlistAddRequest,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: WatchlistService = Depends(get_watchlist_service),
 ) -> JSONResponse:
     """POST /api/v1/watchlist — 添加黑白名单条目（幂等）。"""
@@ -47,7 +47,7 @@ async def add_watchlist(
 async def remove_watchlist(
     ts_code: str,
     list_type: Literal["BLACKLIST", "WHITELIST"] = Query(...),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: WatchlistService = Depends(get_watchlist_service),
 ) -> JSONResponse:
     """DELETE /api/v1/watchlist/{ts_code}?list_type=... — 删除条目（幂等）。"""

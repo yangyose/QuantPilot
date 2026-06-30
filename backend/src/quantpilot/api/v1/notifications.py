@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from quantpilot.api.deps import get_current_user, get_notification_service
+from quantpilot.api.deps import get_current_user_id, get_notification_service
 from quantpilot.core.config import settings
 from quantpilot.schemas.notification import (
     MarkAllReadData,
@@ -33,7 +33,7 @@ async def list_notifications(
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
     service: NotificationService = Depends(get_notification_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /notifications → 通知列表 + 总数 + 未读数。"""
     items, total = await service.list_notifications(
@@ -54,7 +54,7 @@ async def list_notifications(
 @router.get("/unread-count")
 async def unread_count(
     service: NotificationService = Depends(get_notification_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /notifications/unread-count → {unread: N}。"""
     unread = await service.count_unread()
@@ -62,7 +62,7 @@ async def unread_count(
 
 
 @router.get("/wx-status")
-async def wx_status(_: str = Depends(get_current_user)) -> dict:
+async def wx_status(_: int = Depends(get_current_user_id)) -> dict:
     """GET /notifications/wx-status → WxPusher 配置状态（判断环境变量）。
 
     规则：`wx_configured = True` 当且仅当 WXPUSHER_APP_TOKEN 与 WXPUSHER_UID 均非空。
@@ -82,7 +82,7 @@ async def wx_status(_: str = Depends(get_current_user)) -> dict:
 async def mark_read(
     notification_id: int,
     service: NotificationService = Depends(get_notification_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /notifications/{id}/read → 标记单条已读。不存在 → 404。"""
     notif = await service.mark_read(notification_id)
@@ -98,7 +98,7 @@ async def mark_read(
 @router.post("/read-all")
 async def mark_all_read(
     service: NotificationService = Depends(get_notification_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /notifications/read-all → 批量标记已读。返回更新行数。"""
     updated = await service.mark_all_read()

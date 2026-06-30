@@ -22,7 +22,7 @@ _STRATEGIES = ["trend", "momentum", "mean_reversion", "value"]
 
 
 def _auth_header() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_attribution_row(factor: str, beta: float) -> MagicMock:

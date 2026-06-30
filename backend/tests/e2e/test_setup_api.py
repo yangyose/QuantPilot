@@ -18,7 +18,7 @@ from quantpilot.main import app
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 # ───────────────────── GET /setup/status ─────────────────────

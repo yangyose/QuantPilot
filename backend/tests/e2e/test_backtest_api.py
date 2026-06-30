@@ -13,7 +13,7 @@ from quantpilot.models.system import BacktestTask
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_task(task_id: str = "test-uuid-1234", status: str = "PENDING") -> BacktestTask:

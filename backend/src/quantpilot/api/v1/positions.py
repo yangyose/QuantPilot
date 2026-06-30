@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from quantpilot.api.deps import get_account_service, get_current_user
+from quantpilot.api.deps import get_account_service, get_current_user_id
 from quantpilot.schemas.account import PositionItem, PositionUpdate
 from quantpilot.services.account_service import AccountService
 
@@ -33,7 +33,7 @@ async def _resolve_names(service: AccountService, ts_codes: list[str]) -> dict[s
 async def get_positions(
     account_id: int,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /positions?account_id=1 → 持仓列表（含股票名称富化）。"""
     positions = await service.get_positions(account_id)
@@ -51,7 +51,7 @@ async def update_position(
     position_id: int,
     body: PositionUpdate,
     service: AccountService = Depends(get_account_service),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """PATCH /positions/{id} → 更新当前价或 phase。phase 枚举由 Pydantic Literal 校验。"""
     try:

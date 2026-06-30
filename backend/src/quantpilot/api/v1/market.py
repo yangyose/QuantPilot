@@ -5,7 +5,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from quantpilot.api.deps import get_current_user, get_market_state_service, get_repo
+from quantpilot.api.deps import get_current_user_id, get_market_state_service, get_repo
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.schemas.market import (
     MarketStateHistoryResponse,
@@ -38,7 +38,7 @@ def _record_to_item(record: object) -> MarketStateItem:
 
 @router.get("/state")
 async def get_current_market_state(
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: MarketStateService = Depends(get_market_state_service),
 ) -> JSONResponse:
     """GET /api/v1/market/state — 查询当前市场状态"""
@@ -52,7 +52,7 @@ async def get_current_market_state(
 async def get_market_state_history(
     start: date,
     end: date,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     svc: MarketStateService = Depends(get_market_state_service),
 ) -> JSONResponse:
     """GET /api/v1/market/state/history — 查询历史市场状态"""
@@ -74,7 +74,7 @@ async def get_candidate_pool(
     trade_date: date | None = Query(default=None),
     in_pool_only: bool = Query(default=True),
     sort_by: str = Query(default="composite_score"),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     repo: MarketDataRepository = Depends(get_repo),
 ) -> JSONResponse:
     """GET /api/v1/market/pool — 候选股池（最新交易日或指定日期）"""
@@ -150,7 +150,7 @@ async def get_candidate_pool(
 async def get_stock_kline(
     ts_code: str,
     days: int = Query(default=60, ge=5, le=365),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     repo: MarketDataRepository = Depends(get_repo),
 ) -> JSONResponse:
     """GET /api/v1/market/stock/{ts_code}/kline — 单股 K 线数据（OHLCV）"""
@@ -173,7 +173,7 @@ async def get_stock_kline(
 async def get_stock_score_history(
     ts_code: str,
     days: int = Query(default=30, ge=1, le=365),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     repo: MarketDataRepository = Depends(get_repo),
 ) -> JSONResponse:
     """GET /api/v1/market/stock/{ts_code}/score — 单股历史评分走势"""

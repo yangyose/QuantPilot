@@ -14,7 +14,7 @@ from quantpilot.core.security import create_token
 
 
 def _auth() -> dict[str, str]:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 async def test_e2e_p13_a_01_health_scheduler_no_auth(client: AsyncClient) -> None:

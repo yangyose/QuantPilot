@@ -22,7 +22,7 @@ from fastapi import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from quantpilot.api.deps import get_current_user, get_db
+from quantpilot.api.deps import get_current_user_id, get_db
 from quantpilot.models.system import PipelineRun
 from quantpilot.schemas.pipeline import PipelineRunItem, PipelineTriggerRequest
 
@@ -38,7 +38,7 @@ def _today_cn() -> date:
 async def get_pipeline_status(
     trade_date: date | None = None,
     session: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """GET /pipeline/status — 查询指定日期（或最新）的流水线运行状态。
 
@@ -68,7 +68,7 @@ async def trigger_pipeline(
     body: PipelineTriggerRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
 ) -> dict:
     """POST /pipeline/trigger — 手动触发日度流水线。
 

@@ -13,7 +13,7 @@ from quantpilot.models.system import UserConfig, UserConfigHistory
 
 
 def _auth() -> dict:
-    return {"Authorization": f"Bearer {create_token('access')}"}
+    return {"Authorization": f"Bearer {create_token('access', '1')}"}
 
 
 def _mock_config(

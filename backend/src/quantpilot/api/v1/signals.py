@@ -6,7 +6,12 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query  # noqa: F401
 from fastapi.responses import JSONResponse
 
-from quantpilot.api.deps import get_current_user, get_lineage_service, get_repo, get_signal_service
+from quantpilot.api.deps import (
+    get_current_user_id,
+    get_lineage_service,
+    get_repo,
+    get_signal_service,
+)
 from quantpilot.core.exceptions import SignalNotFoundError
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.schemas.signals import (
@@ -49,7 +54,7 @@ async def get_signals(
     ),
     signal_type: str | None = Query(default=None, description="BUY / SELL"),
     status: str | None = Query(default=None, description="NEW / VIEWED / ACTED / EXPIRED"),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: SignalService = Depends(get_signal_service),
     repo: MarketDataRepository = Depends(get_repo),
 ):
@@ -83,7 +88,7 @@ async def get_signal_history(
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: SignalService = Depends(get_signal_service),
     repo: MarketDataRepository = Depends(get_repo),
 ):
@@ -105,7 +110,7 @@ async def get_signal_history(
 async def update_signal_status(
     signal_id: int,
     body: SignalStatusUpdate,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: SignalService = Depends(get_signal_service),
 ):
     """PATCH /api/v1/signals/{id}/status — 更新信号状态（VIEWED / ACTED）"""
@@ -139,7 +144,7 @@ async def update_signal_status(
 @router.get("/{signal_id}/lineage")
 async def get_signal_lineage(
     signal_id: int,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     lineage_service: LineageService = Depends(get_lineage_service),
 ):
     """GET /api/v1/signals/{id}/lineage — 信号数据血缘（三层 schema，Phase 12 P12-A）。

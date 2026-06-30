@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from quantpilot.api.deps import get_current_user
+from quantpilot.api.deps import get_current_user_id
 from quantpilot.core.config import settings
 from quantpilot.core.security import hash_password
 from quantpilot.main import app
@@ -37,8 +37,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     """HTTP 测试客户端，动态注册测试路由并在测试后清理"""
 
     @app.get("/test/protected", include_in_schema=False)
-    async def _protected(user: str = Depends(get_current_user)):
-        return {"user": user}
+    async def _protected(user_id: int = Depends(get_current_user_id)):
+        return {"user": user_id}
 
     test_route = app.routes[-1]
 

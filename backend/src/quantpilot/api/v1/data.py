@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from quantpilot.api.deps import get_current_user, get_data_service
+from quantpilot.api.deps import get_current_user_id, get_data_service
 from quantpilot.schemas.data import (
     DataStatus,
     IngestDailyRequest,
@@ -21,7 +21,7 @@ router = APIRouter()
 
 @router.get("/status")
 async def get_status(
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: DataService = Depends(get_data_service),
 ):
     """GET /api/v1/data/status — 数据新鲜度摘要"""
@@ -33,7 +33,7 @@ async def get_status(
 @router.post("/ingest/daily")
 async def ingest_daily(
     body: IngestDailyRequest,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: DataService = Depends(get_data_service),
 ):
     """POST /api/v1/data/ingest/daily — 手动触发单日采集"""
@@ -61,7 +61,7 @@ async def ingest_daily(
 @router.post("/ingest/history")
 async def ingest_history(
     body: IngestHistoryRequest,
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: DataService = Depends(get_data_service),
 ):
     """POST /api/v1/data/ingest/history — 历史回填（Phase 2 同步执行）
@@ -84,7 +84,7 @@ async def ingest_history(
 
 @router.post("/refresh/stock-list")
 async def refresh_stock_list(
-    _: str = Depends(get_current_user),
+    _: int = Depends(get_current_user_id),
     service: DataService = Depends(get_data_service),
 ):
     """POST /api/v1/data/refresh/stock-list — 刷新全市场股票基础信息"""

@@ -1,5 +1,6 @@
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.core.database import get_db
@@ -10,8 +11,11 @@ from quantpilot.data.repository import MarketDataRepository
 from quantpilot.data.validators import DataValidator
 from quantpilot.engine.factor_monitor import FactorMonitorEngine
 from quantpilot.engine.market_state import MarketStateEngine
+from quantpilot.models.account import Account
+from quantpilot.models.user import User
 from quantpilot.services.account_service import AccountService
 from quantpilot.services.attribution_service import AttributionService
+from quantpilot.services.auth_service import AuthService
 from quantpilot.services.backtest_service import BacktestService
 from quantpilot.services.config_service import ConfigService
 from quantpilot.services.data_service import DataService
@@ -30,13 +34,54 @@ from quantpilot.services.watchlist_service import WatchlistService
 security = HTTPBearer()
 
 
-async def get_current_user(
+async def get_current_user_id(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> str:
+) -> int:
+    """轻量鉴权守卫：仅解 token 取 user_id（str(user_id)→int），不查 DB。
+
+    停用用户的未过期 access token 仍可访问共享/守卫路由（access 短时效 60min）；
+    新 token 签发（login/refresh）会校验 is_active，故停用即断后续。需 is_active
+    实时校验的路由用 get_current_user（带 DB）。
+    """
     try:
-        return decode_token(credentials.credentials, expected_type="access")
-    except AuthError as e:
+        sub = decode_token(credentials.credentials, expected_type="access")
+        return int(sub)
+    except (AuthError, ValueError) as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+
+async def get_current_user(
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+) -> User:
+    """载入当前用户并校验 is_active（不存在/停用→401）。供需要 level/邮箱的路由。"""
+    user = await session.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用"
+        )
+    return user
+
+
+async def get_current_account_id(
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+) -> int:
+    """解析当前用户的账户 id。所有账户层路由统一依赖此函数取 account_id（G-3）。"""
+    result = await session.execute(
+        select(Account.id).where(Account.user_id == user_id)
+    )
+    account_id = result.scalar_one_or_none()
+    if account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="当前用户无账户"
+        )
+    return account_id
+
+
+def get_auth_service(session: AsyncSession = Depends(get_db)) -> AuthService:
+    """按请求构造 AuthService（注册/用户管理）。"""
+    return AuthService(session)
 
 
 def get_data_service(
