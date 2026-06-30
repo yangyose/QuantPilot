@@ -24,6 +24,9 @@ class Account(Base):
     __tablename__ = "account"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("user.id"), nullable=False
+    )  # V1.5-G：账户归属用户；1 用户 : 1 账户（FK 不设 UNIQUE，为未来多账户预留）
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     account_type: Mapped[str] = mapped_column(String(10), default="REAL")  # REAL/PAPER
     broker: Mapped[str | None] = mapped_column(String(50))

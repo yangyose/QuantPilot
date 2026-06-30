@@ -12,6 +12,7 @@ from quantpilot.models.account import Account, DailyPortfolioValue, Position
 from quantpilot.models.market import DailyQuote
 from quantpilot.models.system import PipelineRun
 from quantpilot.pipeline.daily_pipeline import DailyPipeline
+from tests.integration._helpers import seeded_user_id
 
 # ---------------------------------------------------------------------------
 # 测试常量（使用独特前缀避免与其他测试数据冲突）
@@ -198,7 +199,10 @@ async def test_int_dp_03_mark_to_market_writes_dpv(db_engine: AsyncEngine) -> No
     account_id: int = -1
     async with factory() as session:
         async with session.begin():
-            account = Account(name="INT-DP-03 账户", account_type="PAPER", cash=50000.0)
+            account = Account(
+                user_id=await seeded_user_id(session),
+                name="INT-DP-03 账户", account_type="PAPER", cash=50000.0,
+            )
             session.add(account)
             await session.flush()
             account_id = account.id

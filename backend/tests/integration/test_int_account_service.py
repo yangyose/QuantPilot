@@ -26,6 +26,7 @@ from quantpilot.core.database import AsyncSessionLocal
 from quantpilot.models.account import Account, FundFlow
 from quantpilot.models.market import DailyQuote
 from quantpilot.services.account_service import AccountService
+from tests.integration._helpers import seeded_user_id
 
 # ---------------------------------------------------------------------------
 # 测试常量
@@ -38,7 +39,10 @@ _TS_B = "INTACC2.SZ"
 async def _make_account(
     session: AsyncSession, name: str = "测试账户", cash: float = 100000.0
 ) -> Account:
-    account = Account(name=name, account_type="REAL", cash=cash, total_assets=cash)
+    account = Account(
+        user_id=await seeded_user_id(session),
+        name=name, account_type="REAL", cash=cash, total_assets=cash,
+    )
     session.add(account)
     await session.flush()
     await session.refresh(account)
@@ -561,7 +565,8 @@ async def test_int_p14_1_06_concurrent_deposit_same_key(
     # seed account 并 commit 到真 DB（脱离 db_session 的 begin/rollback）
     # 改走独立 session 创建账户
     async with AsyncSessionLocal() as setup_sess:
-        acc = Account(name="并发测试账户", account_type="REAL",
+        acc = Account(user_id=await seeded_user_id(setup_sess),
+                       name="并发测试账户", account_type="REAL",
                        cash=0.0, total_assets=0.0)
         setup_sess.add(acc)
         await setup_sess.commit()

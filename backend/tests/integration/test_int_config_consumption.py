@@ -26,6 +26,7 @@ from quantpilot.services.account_service import AccountService
 from quantpilot.services.config_service import ConfigService
 from quantpilot.services.settings_service import SettingsService
 from quantpilot.services.signal_service import SignalService
+from tests.integration._helpers import seeded_user_id
 
 _TRADE_DATE = date(2026, 4, 9)
 
@@ -79,6 +80,7 @@ async def test_int_cfg_02_buy_threshold_change_filters_signals(
     )
     db_session.add(
         Account(
+            user_id=await seeded_user_id(db_session),
             name="测试", account_type="REAL", broker="MOCK",
             total_assets=1_000_000.0, cash=1_000_000.0,
         )

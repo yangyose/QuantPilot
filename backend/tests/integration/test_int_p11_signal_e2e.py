@@ -22,6 +22,7 @@ from quantpilot.models.market import DailyQuote, StockInfo
 from quantpilot.services.account_service import AccountService
 from quantpilot.services.config_service import ConfigService
 from quantpilot.services.signal_service import SignalService
+from tests.integration._helpers import seeded_user_id
 
 _TRADE_DATE = date(2026, 4, 8)
 
@@ -110,7 +111,8 @@ async def _seed_account(session: AsyncSession, cash: float = 1_000_000.0) -> Acc
     acc = await session.get(Account, 1)
     if acc is None:
         acc = Account(
-            id=1, name="测试账户", account_type="REAL", broker="MOCK",
+            id=1, user_id=await seeded_user_id(session),
+            name="测试账户", account_type="REAL", broker="MOCK",
             total_assets=cash, cash=cash,
         )
         session.add(acc)

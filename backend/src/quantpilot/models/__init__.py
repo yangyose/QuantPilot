@@ -18,6 +18,7 @@ from quantpilot.models.market import (
     TradeCalendar,
 )
 from quantpilot.models.system import PipelineRun, SystemConfig, UserConfig, UserConfigHistory
+from quantpilot.models.user import User
 
 __all__ = [
     "Base",
@@ -36,6 +37,8 @@ __all__ = [
     "Report",
     "UserWatchlist",
     "InAppNotification",
+    # user
+    "User",
     # account
     "Account",
     "Position",

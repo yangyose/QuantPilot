@@ -8,7 +8,7 @@ import asyncio
 import math
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from quantpilot.core.database import AsyncSessionLocal
@@ -22,6 +22,7 @@ from quantpilot.models.business import (
 )
 from quantpilot.models.market import DailyQuote, IndexHistory, StockInfo
 from quantpilot.models.system import UserConfig
+from quantpilot.models.user import User
 
 ACCOUNT_ID = 1
 INITIAL_CAPITAL = 1_000_000.0
@@ -103,8 +104,13 @@ async def seed():
                 await s.execute(delete(model))
 
             # ── 1. Account ──────────────────────────────────────────────
+            # V1.5-G：account.user_id NOT NULL，归属 0018 种子的首用户。
+            seed_user_id = (
+                await s.execute(select(User.id).order_by(User.id).limit(1))
+            ).scalar_one()
             account = Account(
                 id=ACCOUNT_ID,
+                user_id=seed_user_id,
                 name="量化主账户",
                 account_type="REAL",
                 broker="华泰证券",

@@ -25,6 +25,7 @@ from quantpilot.services.config_service import ConfigService
 from quantpilot.services.notification_service import NotificationService
 from quantpilot.services.settings_service import SettingsService
 from quantpilot.services.signal_service import SignalService
+from tests.integration._helpers import seeded_user_id
 
 _TRADE_DATE = date(2026, 4, 8)
 
@@ -105,7 +106,8 @@ async def _seed_account(
     acc = await session.get(Account, 1)
     if acc is None:
         acc = Account(
-            id=1, name="测试账户", account_type="REAL", broker="MOCK",
+            id=1, user_id=await seeded_user_id(session),
+            name="测试账户", account_type="REAL", broker="MOCK",
             total_assets=total_assets, cash=cash,
         )
         session.add(acc)

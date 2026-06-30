@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from quantpilot.models.account import Account, DailyPortfolioValue, FundFlow, TradeRecord
 from quantpilot.models.business import Signal, SignalScoreSnapshot
 from quantpilot.services.performance_service import PerformanceService
+from tests.integration._helpers import seeded_user_id
 
 # ---------------------------------------------------------------------------
 # 辅助函数
@@ -21,7 +22,10 @@ _TS_B = "INTPS2.SZ"
 
 
 async def _make_account(session: AsyncSession, cash: float = 1_000_000.0) -> Account:
-    account = Account(name="绩效测试账户", account_type="REAL", cash=cash, total_assets=cash)
+    account = Account(
+        user_id=await seeded_user_id(session),
+        name="绩效测试账户", account_type="REAL", cash=cash, total_assets=cash,
+    )
     session.add(account)
     await session.flush()
     await session.refresh(account)
