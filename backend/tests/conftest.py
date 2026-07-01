@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from quantpilot.api.deps import get_current_account_id, get_current_user_id
+from quantpilot.api.deps import (
+    get_current_account_id,
+    get_current_user_id,
+    get_current_user_level,
+)
 from quantpilot.core.config import settings
 from quantpilot.core.security import hash_password
 from quantpilot.main import app
@@ -50,6 +54,14 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_current_account_id] = _test_account_id
 
+    # G-4a：/settings 按 level 过滤需 get_current_user_level（查 DB）。e2e 无 DB →
+    # 默认 stub 返回 "L3"（可见全部配置，保持既有 e2e 行为）；仍依赖 get_current_user_id
+    # 保 token 守卫（无 token → 401）。需测特定 level 的用例可局部再 override。
+    async def _test_user_level(user_id: int = Depends(get_current_user_id)) -> str:
+        return "L3"
+
+    app.dependency_overrides[get_current_user_level] = _test_user_level
+
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
@@ -57,6 +69,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
     app.dependency_overrides.pop(get_current_account_id, None)
+    app.dependency_overrides.pop(get_current_user_level, None)
     app.routes.remove(test_route)
 
 

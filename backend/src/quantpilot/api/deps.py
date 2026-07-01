@@ -90,6 +90,26 @@ async def get_current_account_id(
     return account_id
 
 
+async def get_current_user_level(
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+) -> str:
+    """取当前用户的 level（L1/L2/L3）。供 /settings 等按 level 过滤的路由（G-4a §6.3）。
+
+    只读 User.level 单列（比 get_current_user 轻）；用户不存在/停用 → 401。
+    level 是自选偏好非权限（§6.1），此处仅用于内容深浅过滤。
+    """
+    result = await session.execute(
+        select(User.level, User.is_active).where(User.id == user_id)
+    )
+    row = result.one_or_none()
+    if row is None or not row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已停用"
+        )
+    return row.level
+
+
 def get_auth_service(session: AsyncSession = Depends(get_db)) -> AuthService:
     """按请求构造 AuthService（注册/用户管理）。"""
     return AuthService(session)

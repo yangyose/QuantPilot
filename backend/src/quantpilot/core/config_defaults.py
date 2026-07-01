@@ -234,6 +234,44 @@ DEFAULT_SCORING_PIPELINE = ScoringPipelineConfig()
 DEFAULT_RISK_FREE_RATE: float = 0.03
 
 
+# ---------------- V1.5-G G-4a：config_key → 所需 level（§6.3 设置分层过滤）----------------
+# SDD §14.1 设置表「适用层级」列（All / L2+ / L3）→ user.level 枚举（L1/L2/L3）映射规约
+# （设计 §6.3）：All→L1（人人可见）、L2+→L2、L3→L3。这里是 config_key（较粗的分组，
+# 一个 key 含 §14.1 多个设置项）→ 该组所需最低 level 的**代码内单一事实来源**。
+# 不依赖 user_config.user_level DB 列（生产稀疏、历史 upsert 硬编码 L2、demo 曾写 "USER"
+# 等非法字面，不可靠）。过滤 GET /settings + upsert 时回写正确 level 均以本表为准。
+CONFIG_KEY_LEVEL: dict[str, str] = {
+    # L1：SDD §14.4 提醒设置（All，人人可配）
+    "notification_prefs": "L1",
+    # L2：SDD §14.1 买/卖阈值、仓位/止损、关注池；§14.2 策略参数（L2+）
+    "signal_params": "L2",
+    "risk_limits": "L2",
+    "universe_params": "L2",
+    "backtest_defaults": "L2",
+    "strategy_params_trend": "L2",
+    "strategy_params_momentum": "L2",
+    "strategy_params_mean_reversion": "L2",
+    "strategy_params_value": "L2",
+    # L3：SDD §14.3 权重配置；市场状态/因子监控内部参数（专业用户，§7.1/§7.4）
+    "strategy_weights": "L3",
+    "market_state_params": "L3",
+    "factor_monitor_params": "L3",
+    "scoring_pipeline_params": "L3",
+}
+
+_LEVEL_ORDER: dict[str, int] = {"L1": 1, "L2": 2, "L3": 3}
+
+
+def config_visible_at_level(config_key: str, user_level: str) -> bool:
+    """config_key 是否对 user_level 用户可见（所需 level <= 用户 level）。
+
+    未登记 key 保守按 L3（最严）处理，避免把未知项误暴露给低层级用户。
+    非法 user_level 回落 L1（最保守可见集）。
+    """
+    required = CONFIG_KEY_LEVEL.get(config_key, "L3")
+    return _LEVEL_ORDER.get(user_level, 1) >= _LEVEL_ORDER[required]
+
+
 __all__ = [
     "SignalConfig", "DEFAULT_SIGNAL_CONFIG",
     "RiskLimitsConfig", "DEFAULT_RISK_LIMITS",
@@ -249,4 +287,5 @@ __all__ = [
     "FactorMonitorConfig", "DEFAULT_FACTOR_MONITOR",
     "ScoringPipelineConfig", "DEFAULT_SCORING_PIPELINE",
     "DEFAULT_RISK_FREE_RATE",
+    "CONFIG_KEY_LEVEL", "config_visible_at_level",
 ]

@@ -7,7 +7,12 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import PlainTextResponse
 
-from quantpilot.api.deps import get_config_service, get_current_user_id, get_settings_service
+from quantpilot.api.deps import (
+    get_config_service,
+    get_current_user_id,
+    get_current_user_level,
+    get_settings_service,
+)
 from quantpilot.schemas.settings import (
     ConfigHistoryResponse,
     ImportChange,
@@ -42,10 +47,14 @@ _VALID_CONFIG_KEYS: frozenset[str] = frozenset({
 @router.get("")
 async def get_settings(
     service: SettingsService = Depends(get_settings_service),
-    _: int = Depends(get_current_user_id),
+    level: str = Depends(get_current_user_level),
 ) -> dict:
-    """GET /settings → 获取全部用户配置（V1.0 不过滤 user_level）。"""
-    configs = await service.get_settings()
+    """GET /settings → 按当前用户 level 过滤的用户配置（V1.5-G G-4a §6.3）。
+
+    L1 用户仅见 L1 项（如通知偏好），L2/L3 逐层解锁高级参数。level 是自选偏好
+    非权限（§6.1）——过滤仅控制界面复杂度，不构成访问控制边界。
+    """
+    configs = await service.get_settings(max_level=level)
     return {"code": 0, "data": [UserConfigItem.model_validate(c) for c in configs], "msg": "ok"}
 
 

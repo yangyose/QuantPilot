@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.core.config_defaults import CONFIG_KEY_LEVEL, config_visible_at_level
 from quantpilot.models.system import UserConfig, UserConfigHistory
 
 logger = logging.getLogger(__name__)
@@ -16,12 +17,22 @@ class SettingsService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_settings(self) -> list[UserConfig]:
-        """返回全部 user_config 记录（V1.0 不过滤 user_level）。"""
+    async def get_settings(self, max_level: str | None = None) -> list[UserConfig]:
+        """返回 user_config 记录；max_level 非空时按 level 过滤（V1.5-G G-4a §6.3）。
+
+        max_level = 当前用户 level（L1/L2/L3）→ 仅返回该用户可见的配置项
+        （config 所需 level <= 用户 level）。None → 不过滤（如 export 全量备份）。
+        过滤依据 CONFIG_KEY_LEVEL 代码内真源，非 DB user_level 列（后者不可靠）。
+        """
         result = await self._session.execute(
             select(UserConfig).order_by(UserConfig.config_key)
         )
-        return list(result.scalars().all())
+        configs = list(result.scalars().all())
+        if max_level is not None:
+            configs = [
+                c for c in configs if config_visible_at_level(c.config_key, max_level)
+            ]
+        return configs
 
     async def upsert_setting(
         self,
@@ -48,8 +59,10 @@ class SettingsService:
             insert(UserConfig)
             .values(
                 config_key=config_key,
+                # G-4a §6.3：按 config_key 的所需 level 写库（不再硬编码 L2），
+                # 让 DB user_level 列与 CONFIG_KEY_LEVEL 真源一致；未登记 key 回落 L2。
                 config_value=config_value,
-                user_level="L2",
+                user_level=CONFIG_KEY_LEVEL.get(config_key, "L2"),
                 updated_at=func.now(),
             )
             .on_conflict_do_update(

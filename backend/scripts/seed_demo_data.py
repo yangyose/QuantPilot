@@ -444,17 +444,19 @@ async def seed():
             ))
 
             # ── 10. UserConfig ───────────────────────────────────────────
+            # V1.5-G G-4a：user_level 规范化为 L1/L2/L3 枚举（旧 "USER" 非法字面会让
+            # §6.3 字符串 <= 层级比较失效）。取值对齐 SDD §14 层级归属。
             configs = [
                 UserConfig(
                     config_key="position_limit",
                     config_value={"max_single_position_pct": 0.15, "max_total_positions": 10},
-                    user_level="USER",
+                    user_level="L2",
                     description="单股最大仓位比例 & 最大持仓数量",
                 ),
                 UserConfig(
                     config_key="risk_params",
                     config_value={"stop_loss_pct": 0.08, "take_profit_pct": 0.25},
-                    user_level="USER",
+                    user_level="L2",
                     description="止损止盈参数",
                 ),
                 UserConfig(
@@ -464,7 +466,7 @@ async def seed():
                         "ValueStrategy": 0.3,
                         "ReversionStrategy": 0.2,
                     },
-                    user_level="USER",
+                    user_level="L3",
                     description="策略权重配置",
                 ),
             ]

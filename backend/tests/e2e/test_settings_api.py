@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from httpx import AsyncClient
 
-from quantpilot.api.deps import get_settings_service
+from quantpilot.api.deps import get_current_user_level, get_settings_service
 from quantpilot.core.security import create_token
 from quantpilot.main import app
 from quantpilot.models.system import UserConfig, UserConfigHistory
@@ -73,6 +73,23 @@ async def test_sapi_02_get_settings_ok(client: AsyncClient) -> None:
         assert "config_value" in data[0]
     finally:
         app.dependency_overrides.pop(get_settings_service, None)
+
+
+async def test_sapi_02b_get_settings_passes_user_level(client: AsyncClient) -> None:
+    """GET /settings 按当前用户 level 过滤（G-4a §6.3）：路由把 level 透传给 service。"""
+    mock = AsyncMock()
+    mock.get_settings = AsyncMock(return_value=[])
+    app.dependency_overrides[get_settings_service] = lambda: mock
+    # 局部覆盖 level stub 为 L1，验证过滤参数确实按用户 level 下传
+    app.dependency_overrides[get_current_user_level] = lambda: "L1"
+    try:
+        resp = await client.get("/api/v1/settings", headers=_auth())
+        assert resp.status_code == 200
+        mock.get_settings.assert_awaited_once_with(max_level="L1")
+    finally:
+        app.dependency_overrides.pop(get_settings_service, None)
+        # 还原为 conftest 默认 L3 stub（client fixture teardown 亦会 pop）
+        app.dependency_overrides.pop(get_current_user_level, None)
 
 
 # ---------------------------------------------------------------------------
