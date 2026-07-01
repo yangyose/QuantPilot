@@ -627,7 +627,7 @@ async def test_int_void_01_void_buy_reverses_all(db_session: AsyncSession) -> No
     )
     assert float((await svc.get_account(account.id)).cash) == pytest.approx(89975.0)
 
-    voided = await svc.void_trade(trade.id, void_note="录入价格错误")
+    voided = await svc.void_trade(trade.id, account.id, void_note="录入价格错误")
     assert voided.is_voided is True
     assert voided.voided_at is not None
 
@@ -664,7 +664,7 @@ async def test_int_void_02_void_polluting_buy_restores_cost(
     polluted = float((await svc.get_positions(account.id))[0].cost_price)
     assert polluted == pytest.approx(7400 / 300, abs=1e-3)  # 24.667（NUMERIC(10,3) 丸め）
 
-    await svc.void_trade(wrong.id, void_note="买错价格")
+    await svc.void_trade(wrong.id, account.id, void_note="买错价格")
 
     pos = (await svc.get_positions(account.id))[0]
     assert pos.shares == 200
@@ -691,7 +691,7 @@ async def test_int_void_03_void_buy_with_later_sell_rejected(
     )
 
     with pytest.raises(ValueError, match="超过当时持仓"):
-        await svc.void_trade(buy.id)
+        await svc.void_trade(buy.id, account.id)
 
     # 未改动：买入仍有效，持仓 400 不变
     fresh_buy = await svc.list_trades(account.id, include_voided=True)
@@ -719,7 +719,7 @@ async def test_int_void_04_void_dividend_restores_cost(
     assert float((await svc.get_positions(account.id))[0].cost_price) == pytest.approx(9.5)
     cash_with_div = float((await svc.get_account(account.id)).cash)
 
-    await svc.void_fund_flow(div.id, void_note="分红录错")
+    await svc.void_fund_flow(div.id, account.id, void_note="分红录错")
 
     assert float((await svc.get_positions(account.id))[0].cost_price) == pytest.approx(10.0)
     assert float((await svc.get_account(account.id)).cash) == pytest.approx(
@@ -740,7 +740,7 @@ async def test_int_void_05_void_deposit_reverses_cash(
     flow = await svc.deposit(account_id=account.id, amount=50000.0, trade_date=_TRADE_DATE)
     assert float((await svc.get_account(account.id)).cash) == pytest.approx(51000.0)
 
-    await svc.void_fund_flow(flow.id)
+    await svc.void_fund_flow(flow.id, account.id)
     assert float((await svc.get_account(account.id)).cash) == pytest.approx(1000.0)
 
     _, total = await svc.get_cashflow(account.id)
@@ -765,7 +765,7 @@ async def test_int_void_06_cannot_void_trade_fee_flow_directly(
     )
     flows, _ = await svc.get_cashflow(account.id, flow_type="BUY_FEE")
     with pytest.raises(ValueError, match="不可单独作废"):
-        await svc.void_fund_flow(flows[0].id)
+        await svc.void_fund_flow(flows[0].id, account.id)
 
 
 # ---------------------------------------------------------------------------
@@ -782,10 +782,10 @@ async def test_int_void_07_double_void_and_list_filter(
         account_id=account.id, ts_code=_TS_A, trade_type="BUY",
         trade_date=_TRADE_DATE, price=10.0, shares=1000, commission=0.0,
     )
-    await svc.void_trade(trade.id)
+    await svc.void_trade(trade.id, account.id)
 
     with pytest.raises(ValueError, match="已作废"):
-        await svc.void_trade(trade.id)
+        await svc.void_trade(trade.id, account.id)
 
     active, total = await svc.list_trades(account.id)
     assert total == 0

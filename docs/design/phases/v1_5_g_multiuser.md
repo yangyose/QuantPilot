@@ -176,14 +176,15 @@ ALTER TABLE account ADD COLUMN user_id BIGINT REFERENCES "user"(id);
 - `/account/*`（概览/sync/cashflow/deposit/withdraw/dividend/trades/void）
 - `/positions/*`
 - `/performance/*`
-- `/backtest/*`（用户自发起，结果归属发起用户）
-- `/reports/*`
+- `/reports/*`（需 `report.account_id`——G-3 加 alembic 0019 建列 + 回填首账户）
 
-`account_id` query 参数**移除**（或保留但忽略并强制等于当前用户账户，二选一在实施期定；倾向直接移除，前端同步删 `account_id=1`）。
+`account_id` query/body 参数**移除**（`TradeRecordCreate` / `FundFlowCreate` 删 `account_id`），前端同步删 `account_id=1`。
+
+**`/backtest/*` 决策（实施启动 2026-07-01 锁定）**：仅保留登录门槛，**不做 per-user ownership**。理由：回测结果是「策略×区间×初始资金」的可复现模拟，不读取用户真实持仓，非私有账户数据；且生产已 `backtest_enabled=false` 禁用。`backtest_task` 不加归属列。若未来回测引入账户上下文（如按真实持仓回测），再补 per-user 归属。
 
 ### 5.2 ownership 越权防护（安全红线）
 
-凡按 **资源 id** 直接访问的端点（如 `POST /account/trades/{id}/void`、`GET /positions/{id}`、`PATCH /positions/{id}`、回测结果按 id 查），必须校验该行的 `account_id` 属于当前用户账户，否则返回 **404**（非 403——不泄露资源是否存在）。
+凡按 **资源 id** 直接访问的账户层端点（`POST /account/trades/{id}/void`、`POST /account/cashflow/{id}/void`、`PATCH /positions/{id}`、`GET /reports/{id}`），必须校验该行的 `account_id` 属于当前用户账户，否则返回 **404**（非 403——不泄露资源是否存在）。回测按 §5.1 决策仅登录门槛，不在此列。
 
 - 实现：Service 层方法签名带 `account_id`，查询 `WHERE id=:id AND account_id=:account_id`；查无 → 404。Route 层注入 `get_current_account_id`。
 - 测试必覆盖：用户 A 持 token 访问用户 B 的 position/trade/report id → 404（§9 INT-ISO-*）。

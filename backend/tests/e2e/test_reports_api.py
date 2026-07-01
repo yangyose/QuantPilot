@@ -91,6 +91,7 @@ async def test_rp_04_filter_params(client: AsyncClient) -> None:
         )
         assert resp.status_code == 200
         mock.get_list.assert_called_once_with(
+            account_id=1,
             report_type="WEEKLY",
             start_date=None,
             end_date=None,

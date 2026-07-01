@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from quantpilot.api.deps import get_current_user_id
+from quantpilot.api.deps import get_current_account_id, get_current_user_id
 from quantpilot.core.config import settings
 from quantpilot.core.security import hash_password
 from quantpilot.main import app
@@ -42,12 +42,21 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     test_route = app.routes[-1]
 
+    # G-3：账户层路由改由 get_current_account_id 从 token 推 account_id（查 DB）。
+    # e2e 无 DB → 用仍依赖 get_current_user_id 的 stub 返回固定 account_id=1：
+    # 无 token 仍 401（token 守卫在 stub 的子依赖里触发），OK 路径拿到 1 且不碰 DB。
+    async def _test_account_id(user_id: int = Depends(get_current_user_id)) -> int:
+        return 1
+
+    app.dependency_overrides[get_current_account_id] = _test_account_id
+
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
     ) as ac:
         yield ac
 
+    app.dependency_overrides.pop(get_current_account_id, None)
     app.routes.remove(test_route)
 
 

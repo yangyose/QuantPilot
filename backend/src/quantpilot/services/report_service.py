@@ -22,8 +22,10 @@ class ReportService:
 
     # ------------------------------------------------------------------ 生成
 
-    async def generate_weekly(self, week_end: date) -> Report:
+    async def generate_weekly(self, week_end: date, account_id: int) -> Report:
         """生成周报。week_end 为周五（自然周结束日）。
+
+        account_id：报告归属账户（G-3 账户层隔离）。成交按此账户过滤；信号为共享层。
 
         数据结构：
         - trade_summary：本周成交数量（从 trade_record 统计）
@@ -40,6 +42,7 @@ class ReportService:
         trade_count: int = (
             await self._session.execute(
                 select(func.count()).where(
+                    TradeRecord.account_id == account_id,
                     TradeRecord.trade_date >= week_start,
                     TradeRecord.trade_date <= week_end,
                 )
@@ -49,6 +52,7 @@ class ReportService:
         buy_count: int = (
             await self._session.execute(
                 select(func.count()).where(
+                    TradeRecord.account_id == account_id,
                     TradeRecord.trade_date >= week_start,
                     TradeRecord.trade_date <= week_end,
                     TradeRecord.trade_type == "BUY",
@@ -80,10 +84,14 @@ class ReportService:
             else f"本周成交 {trade_count} 笔，新信号 {signal_count} 个"
         )
 
-        return await self._insert_report("WEEKLY", week_start, week_end, content, summary)
+        return await self._insert_report(
+            "WEEKLY", week_start, week_end, content, summary, account_id
+        )
 
-    async def generate_monthly(self, month_end: date) -> Report:
+    async def generate_monthly(self, month_end: date, account_id: int) -> Report:
         """生成月报。month_end 为月末最后交易日。
+
+        account_id：报告归属账户（G-3 账户层隔离）。成交/持仓按此账户过滤。
 
         数据结构：
         - trade_count：月内成交笔数
@@ -98,6 +106,7 @@ class ReportService:
         trade_count: int = (
             await self._session.execute(
                 select(func.count()).where(
+                    TradeRecord.account_id == account_id,
                     TradeRecord.trade_date >= month_start,
                     TradeRecord.trade_date <= month_end,
                 )
@@ -127,7 +136,9 @@ class ReportService:
         ]
 
         pos_rows = await self._session.execute(
-            select(Position.ts_code).where(Position.shares > 0)
+            select(Position.ts_code).where(
+                Position.account_id == account_id, Position.shares > 0
+            )
         )
         top_holdings = [row.ts_code for row in pos_rows]
 
@@ -143,10 +154,15 @@ class ReportService:
             f"当前持仓 {len(top_holdings)} 只"
         )
 
-        return await self._insert_report("MONTHLY", month_start, month_end, content, summary)
+        return await self._insert_report(
+            "MONTHLY", month_start, month_end, content, summary, account_id
+        )
 
-    async def generate_custom(self, start: date, end: date) -> Report:
-        """用户触发的自定义时间段报告（含持仓快照、交易明细、信号统计、因子告警）。"""
+    async def generate_custom(self, start: date, end: date, account_id: int) -> Report:
+        """用户触发的自定义时间段报告（含持仓快照、交易明细、信号统计、因子告警）。
+
+        account_id：报告归属账户（G-3 账户层隔离）。成交/持仓按此账户过滤；信号为共享层。
+        """
         from quantpilot.models.account import Position, TradeRecord
         from quantpilot.models.business import Signal
 
@@ -160,6 +176,7 @@ class ReportService:
                 TradeRecord.shares,
                 TradeRecord.amount,
             ).where(
+                TradeRecord.account_id == account_id,
                 TradeRecord.trade_date >= start,
                 TradeRecord.trade_date <= end,
             ).order_by(TradeRecord.trade_date)
@@ -213,7 +230,7 @@ class ReportService:
                 Position.current_price,
                 Position.market_value,
                 Position.pnl_pct,
-            ).where(Position.shares > 0)
+            ).where(Position.account_id == account_id, Position.shares > 0)
         )
         holdings = [
             {
@@ -286,20 +303,24 @@ class ReportService:
         if factor_alerts:
             summary += f"，{len(factor_alerts)} 个因子告警"
 
-        return await self._insert_report("CUSTOM", start, end, content, summary)
+        return await self._insert_report("CUSTOM", start, end, content, summary, account_id)
 
     # ------------------------------------------------------------------ 查询
 
     async def get_list(
         self,
+        account_id: int,
         report_type: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[Report], int]:
-        """查询历史报告列表（分页）。返回 (records, total_count)。"""
-        stmt = select(Report)
+        """查询历史报告列表（分页）。返回 (records, total_count)。
+
+        account_id：仅返回归属当前用户账户的报告（G-3 账户层隔离）。
+        """
+        stmt = select(Report).where(Report.account_id == account_id)
         if report_type:
             stmt = stmt.where(Report.report_type == report_type)
         if start_date:
@@ -314,9 +335,16 @@ class ReportService:
         result = await self._session.execute(stmt)
         return list(result.scalars().all()), total
 
-    async def get_by_id(self, report_id: int) -> Report | None:
-        """按 ID 获取报告详情。"""
-        result = await self._session.execute(select(Report).where(Report.id == report_id))
+    async def get_by_id(self, report_id: int, account_id: int) -> Report | None:
+        """按 ID 获取报告详情。
+
+        ownership（G-3 §5.2）：跨账户 report_id → 查无 → None（路由转 404，不泄露存在性）。
+        """
+        result = await self._session.execute(
+            select(Report).where(
+                Report.id == report_id, Report.account_id == account_id
+            )
+        )
         return result.scalar_one_or_none()
 
     # ------------------------------------------------------------------ 内部
@@ -328,9 +356,11 @@ class ReportService:
         period_end: date,
         content: dict,
         summary: str,
+        account_id: int,
     ) -> Report:
         """写入新报告记录。"""
         report = Report(
+            account_id=account_id,
             report_type=report_type,
             period_start=period_start,
             period_end=period_end,

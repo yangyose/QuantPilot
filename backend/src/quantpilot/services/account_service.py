@@ -219,11 +219,15 @@ class AccountService:
     async def update_position(
         self,
         position_id: int,
+        account_id: int,
         current_price: float | None = None,
         phase: str | None = None,
     ) -> Position:
+        # ownership（G-3 §5.2）：跨账户 id → 查无 → not found（404，不泄露存在性）
         result = await self._session.execute(
-            select(Position).where(Position.id == position_id)
+            select(Position).where(
+                Position.id == position_id, Position.account_id == account_id
+            )
         )
         position = result.scalar_one_or_none()
         if position is None:
@@ -456,15 +460,19 @@ class AccountService:
         position.pnl_pct = None
 
     async def void_trade(
-        self, trade_id: int, void_note: str | None = None,
+        self, trade_id: int, account_id: int, void_note: str | None = None,
     ) -> TradeRecord:
         """作废一笔成交（软删除）：联动作废费用流水 + 逆仕訳现金 + 重建持仓。
 
         先 dry-run replay（排除本笔）检测超卖——若撤销会导致后续卖出无券可卖则抛
         OversellError，不改动任何数据。校验通过后落库。
+
+        account_id 为当前用户账户（ownership §5.2）：跨账户 trade_id → 查无 → not found。
         """
         trade = (await self._session.execute(
-            select(TradeRecord).where(TradeRecord.id == trade_id)
+            select(TradeRecord).where(
+                TradeRecord.id == trade_id, TradeRecord.account_id == account_id
+            )
         )).scalar_one_or_none()
         if trade is None:
             raise ValueError(f"成交 {trade_id} not found")
@@ -508,15 +516,19 @@ class AccountService:
         return trade
 
     async def void_fund_flow(
-        self, flow_id: int, void_note: str | None = None,
+        self, flow_id: int, account_id: int, void_note: str | None = None,
     ) -> FundFlow:
         """作废一笔资金流水（DEPOSIT/WITHDRAW/DIVIDEND）：逆仕訳现金；分红则重建持仓。
 
         BUY_FEE / SELL_PROCEEDS 不可单独作废（须经对应成交的 void_trade 联动），
         否则会与成交状态脱节。
+
+        account_id 为当前用户账户（ownership §5.2）：跨账户 flow_id → 查无 → not found。
         """
         flow = (await self._session.execute(
-            select(FundFlow).where(FundFlow.id == flow_id)
+            select(FundFlow).where(
+                FundFlow.id == flow_id, FundFlow.account_id == account_id
+            )
         )).scalar_one_or_none()
         if flow is None:
             raise ValueError(f"资金流水 {flow_id} not found")

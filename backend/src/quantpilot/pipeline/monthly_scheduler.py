@@ -187,8 +187,15 @@ class MonthlyScheduler:
 
         async with self._session_factory() as session:
             try:
+                # G-3：报告按账户隔离。当前生成默认账户月报；G-4 将改为遍历 is_active 用户账户
+                from quantpilot.services.account_service import AccountService
+
+                account = await AccountService(session).get_default_account()
+                if account is None:
+                    logger.warning("monthly_report_skipped: no account")
+                    return
                 service = ReportService(session)
-                report = await service.generate_monthly(month_end)
+                report = await service.generate_monthly(month_end, account.id)
                 await session.commit()
                 logger.info(
                     "monthly_report_done: month_end=%s report_id=%d", month_end, report.id

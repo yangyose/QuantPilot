@@ -220,8 +220,15 @@ async def _weekly_report_job(session_factory: async_sessionmaker) -> None:
     logger.info("weekly_report_job_start: week_end=%s", week_end)
     async with session_factory() as session:
         try:
+            # G-3：报告按账户隔离。当前生成默认账户周报；G-4 将改为遍历 is_active 用户账户
+            from quantpilot.services.account_service import AccountService
+
+            account = await AccountService(session).get_default_account()
+            if account is None:
+                logger.warning("weekly_report_job_skipped: no account")
+                return
             service = ReportService(session)
-            report = await service.generate_weekly(week_end)
+            report = await service.generate_weekly(week_end, account.id)
             await session.commit()
             logger.info("weekly_report_job_done: report_id=%d", report.id)
         except Exception:

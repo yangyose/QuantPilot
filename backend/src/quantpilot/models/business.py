@@ -355,6 +355,9 @@ class Report(Base):
     __tablename__ = "report"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("account.id"), nullable=False
+    )  # V1.5-G G-3：报告归属账户（账户层隔离，ownership 经此列强制）
     report_type: Mapped[str] = mapped_column(String(15), nullable=False)  # WEEKLY/MONTHLY/CUSTOM
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)

@@ -22,7 +22,7 @@ def _admin_user() -> User:
     u = MagicMock(spec=User)
     u.id = 1
     u.username = settings.admin_username
-    u.email = f"{settings.admin_username}@local"
+    u.email = f"{settings.admin_username}@local.host"
     u.level = "L3"
     u.is_active = True
     u.password_hash = hash_password(TEST_PASSWORD)

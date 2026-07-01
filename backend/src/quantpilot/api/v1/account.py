@@ -6,7 +6,11 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from quantpilot.api.deps import get_account_service, get_current_user_id, get_signal_service
+from quantpilot.api.deps import (
+    get_account_service,
+    get_current_account_id,
+    get_signal_service,
+)
 from quantpilot.schemas.account import (
     AccountSummary,
     FundFlowCreate,
@@ -25,15 +29,11 @@ router = APIRouter()
 
 @router.get("")
 async def get_account(
-    account_id: int | None = None,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """GET /account?account_id=1 → 账户概览（省略时返回默认账户）。"""
-    if account_id is not None:
-        account = await service.get_account(account_id)
-    else:
-        account = await service.get_default_account()
+    """GET /account → 当前用户账户概览。account_id 由 token 推。"""
+    account = await service.get_account(account_id)
 
     if account is None:
         raise HTTPException(
@@ -45,11 +45,10 @@ async def get_account(
 
 @router.post("/sync")
 async def sync_account(
-    account_id: int,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """POST /account/sync?account_id=1 → 从 daily_quote 更新持仓价格/市值/total_assets。"""
+    """POST /account/sync → 从 daily_quote 更新当前用户账户持仓价格/市值/total_assets。"""
     try:
         account = await service.sync_account(account_id)
     except ValueError as e:
@@ -62,7 +61,7 @@ async def record_trade(
     body: TradeRecordCreate,
     service: AccountService = Depends(get_account_service),
     signal_service: SignalService = Depends(get_signal_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
     """POST /account/trades → 录入成交（BUY/SELL），同步更新持仓和资金流水。
 
@@ -72,7 +71,7 @@ async def record_trade(
     """
     try:
         trade = await service.record_trade(
-            account_id=body.account_id,
+            account_id=account_id,
             ts_code=body.ts_code,
             trade_type=body.trade_type,
             trade_date=body.trade_date,
@@ -106,12 +105,11 @@ async def record_trade(
 
 @router.get("/trades")
 async def list_trades(
-    account_id: int,
     include_voided: bool = False,
     limit: int = 50,
     offset: int = 0,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
     """GET /account/trades → 成交记录列表（分页）。include_voided=true 显示已作废行。"""
     trades, total = await service.list_trades(
@@ -145,16 +143,16 @@ async def void_trade(
     trade_id: int,
     body: VoidRequest | None = None,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
     """POST /account/trades/{id}/void → 作废成交（订正录入错误）。
 
     联动作废费用流水 + 逆仕訳现金 + 按非作废成交重建持仓。撤销后会导致后续卖出
-    无券可卖时返回 400（请先撤销相关卖出）。
+    无券可卖时返回 400（请先撤销相关卖出）。ownership：成交不属当前账户 → 404。
     """
     try:
         trade = await service.void_trade(
-            trade_id, void_note=body.void_note if body else None,
+            trade_id, account_id, void_note=body.void_note if body else None,
         )
     except ValueError as e:
         msg = str(e)
@@ -169,16 +167,16 @@ async def void_cashflow(
     flow_id: int,
     body: VoidRequest | None = None,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
     """POST /account/cashflow/{id}/void → 作废资金流水（入金/出金/分红）。
 
     逆仕訳现金；分红作废额外重建持仓还原成本。交易费用流水（BUY_FEE/SELL_PROCEEDS）
-    不可单独作废 → 400（请作废对应成交）。
+    不可单独作废 → 400（请作废对应成交）。ownership：流水不属当前账户 → 404。
     """
     try:
         flow = await service.void_fund_flow(
-            flow_id, void_note=body.void_note if body else None,
+            flow_id, account_id, void_note=body.void_note if body else None,
         )
     except ValueError as e:
         msg = str(e)
@@ -192,7 +190,7 @@ async def void_cashflow(
 async def deposit(
     body: FundFlowCreate,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
     """POST /account/deposit → 入金或分红（ts_code 决定类型）。
 
@@ -204,7 +202,7 @@ async def deposit(
             # 隐式分支：ts_code 存在 → 分红（DIVIDEND），否则 → 入金（DEPOSIT）
             # 注意：用户若误传 ts_code 会静默走分红路径；单管理员场景下可接受
             flow = await service.record_dividend(
-                account_id=body.account_id,
+                account_id=account_id,
                 ts_code=body.ts_code,
                 amount=body.amount,
                 trade_date=body.trade_date,
@@ -213,7 +211,7 @@ async def deposit(
             )
         else:
             flow = await service.deposit(
-                account_id=body.account_id,
+                account_id=account_id,
                 amount=body.amount,
                 trade_date=body.trade_date,
                 note=body.note,
@@ -228,12 +226,12 @@ async def deposit(
 async def withdraw(
     body: FundFlowCreate,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
     """POST /account/withdraw → 出金。cash 不足返回 400。"""
     try:
         flow = await service.withdraw(
-            account_id=body.account_id,
+            account_id=account_id,
             amount=body.amount,
             trade_date=body.trade_date,
             note=body.note,
@@ -248,7 +246,6 @@ async def withdraw(
 
 @router.get("/cashflow")
 async def get_cashflow(
-    account_id: int,
     flow_type: str | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -256,7 +253,7 @@ async def get_cashflow(
     offset: int = 0,
     include_voided: bool = False,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
     """GET /account/cashflow → 资金流水查询（分页 + 过滤）。
 

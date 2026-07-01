@@ -9,8 +9,10 @@ from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.models.account import Account
 from quantpilot.models.business import FactorICWindowState
 from quantpilot.services.report_service import ReportService
+from tests.integration._helpers import seeded_user_id
 
 _MONTH_END = date(2026, 3, 31)
 
@@ -36,9 +38,14 @@ async def test_int_p15_7_01_monthly_report_reads_alerts_from_window_state(
         trade_date=_MONTH_END, ic_value=0.03, sample_size=120,
         row_type="aggregate", icir=1.5, alert_status=None,
     ))
+    account = Account(
+        user_id=await seeded_user_id(db_session), name="报告测试账户",
+        account_type="REAL", cash=0.0,
+    )
+    db_session.add(account)
     await db_session.flush()
 
-    report = await ReportService(db_session).generate_monthly(_MONTH_END)
+    report = await ReportService(db_session).generate_monthly(_MONTH_END, account.id)
 
     alerts = report.content["factor_alerts"]
     assert len(alerts) == 1

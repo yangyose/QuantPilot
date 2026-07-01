@@ -80,7 +80,7 @@ async def test_aapi_01_get_account_no_auth(client: AsyncClient) -> None:
 async def test_aapi_02_get_account_ok(client: AsyncClient) -> None:
     """GET /account 有鉴权 → 200，AccountSummary 结构。"""
     mock = AsyncMock()
-    mock.get_default_account = AsyncMock(return_value=_mock_account())
+    mock.get_account = AsyncMock(return_value=_mock_account())
     app.dependency_overrides[get_account_service] = lambda: mock
     try:
         resp = await client.get("/api/v1/account", headers=_auth())
@@ -98,7 +98,7 @@ async def test_aapi_02_get_account_ok(client: AsyncClient) -> None:
 async def test_aapi_03_get_account_not_found(client: AsyncClient) -> None:
     """GET /account 无账户 → 404。"""
     mock = AsyncMock()
-    mock.get_default_account = AsyncMock(return_value=None)
+    mock.get_account = AsyncMock(return_value=None)
     app.dependency_overrides[get_account_service] = lambda: mock
     try:
         resp = await client.get("/api/v1/account", headers=_auth())

@@ -27,7 +27,7 @@ async def test_int_mig_01_seed_user_exists(db_session: AsyncSession) -> None:
     assert user.level == "L3"  # 管理员=专业用户
     assert user.is_active is True
     assert user.username  # 非空（来自 env ADMIN_USERNAME）
-    assert user.email.endswith("@local")
+    assert user.email.endswith("@local.host")
 
 
 async def test_int_mig_01_account_bound_to_user(db_session: AsyncSession) -> None:

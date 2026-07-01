@@ -74,7 +74,8 @@ def upgrade() -> None:
             """
         ).bindparams(
             username=admin_username,
-            email=f"{admin_username}@local",
+            # @local.host（非 @local）以通过应用自身 email 正则（域名需含点，schemas/auth.py）
+            email=f"{admin_username}@local.host",
             password_hash=admin_hash,
         )
     )

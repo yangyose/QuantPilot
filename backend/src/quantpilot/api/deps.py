@@ -46,8 +46,11 @@ async def get_current_user_id(
     try:
         sub = decode_token(credentials.credentials, expected_type="access")
         return int(sub)
-    except (AuthError, ValueError) as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+    except (AuthError, ValueError):
+        # 不回传 PyJWT 原始文本（"Signature has expired" 等）避免向客户端泄露实现细节
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或过期的令牌"
+        )
 
 
 async def get_current_user(

@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     String,
+    func,
     text,
     true,
 )
@@ -38,7 +39,7 @@ class User(Base):
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
     updated_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()")
+        TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=func.now()
     )
 
     __table_args__ = (

@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from quantpilot.api.deps import get_account_service, get_current_user_id
+from quantpilot.api.deps import get_account_service, get_current_account_id
 from quantpilot.schemas.account import PositionItem, PositionUpdate
 from quantpilot.services.account_service import AccountService
 
@@ -31,11 +31,10 @@ async def _resolve_names(service: AccountService, ts_codes: list[str]) -> dict[s
 
 @router.get("")
 async def get_positions(
-    account_id: int,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """GET /positions?account_id=1 → 持仓列表（含股票名称富化）。"""
+    """GET /positions → 当前用户账户持仓列表（含股票名称富化）。account_id 由 token 推。"""
     positions = await service.get_positions(account_id)
     names = await _resolve_names(service, [p.ts_code for p in positions])
     items = []
@@ -51,12 +50,16 @@ async def update_position(
     position_id: int,
     body: PositionUpdate,
     service: AccountService = Depends(get_account_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """PATCH /positions/{id} → 更新当前价或 phase。phase 枚举由 Pydantic Literal 校验。"""
+    """PATCH /positions/{id} → 更新当前价或 phase。phase 枚举由 Pydantic Literal 校验。
+
+    ownership：position 不属当前用户账户 → 404（不泄露存在性）。
+    """
     try:
         position = await service.update_position(
             position_id=position_id,
+            account_id=account_id,
             current_price=body.current_price,
             phase=body.phase,
         )

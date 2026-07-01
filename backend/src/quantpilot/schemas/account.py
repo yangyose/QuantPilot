@@ -41,7 +41,7 @@ class PositionUpdate(BaseModel):
 
 
 class TradeRecordCreate(BaseModel):
-    account_id: int
+    # account_id 不再由客户端提供：G-3 起由 token 推（get_current_account_id）
     ts_code: str
     trade_type: Literal["BUY", "SELL"]
     trade_date: date
@@ -86,7 +86,7 @@ class FundFlowCreate(BaseModel):
     （出金本身已有现金余额二次校验）。
     """
 
-    account_id: int
+    # account_id 不再由客户端提供：G-3 起由 token 推（get_current_account_id）
     amount: float
     trade_date: date
     ts_code: str | None = None
