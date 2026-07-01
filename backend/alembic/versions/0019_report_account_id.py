@@ -36,6 +36,16 @@ def upgrade() -> None:
         WHERE account_id IS NULL
         """
     )
+    # 兜底：若回填后仍有 report 无归属（异常前置态：有报告但无任何账户——
+    # pre-G3 generate_weekly 曾与账户无关），明确报错而非撞 NOT NULL 的隐晦约束错。
+    remaining = op.get_bind().execute(
+        sa.text("SELECT count(*) FROM report WHERE account_id IS NULL")
+    ).scalar()
+    if remaining:
+        raise RuntimeError(
+            f"0019 迁移中止：{remaining} 条报告无法归属账户（库中无任何 account）。"
+            "请先创建账户后重跑迁移，不静默丢弃报告。"
+        )
     op.alter_column("report", "account_id", nullable=False)
 
 

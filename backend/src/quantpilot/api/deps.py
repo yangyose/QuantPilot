@@ -70,9 +70,17 @@ async def get_current_account_id(
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
 ) -> int:
-    """解析当前用户的账户 id。所有账户层路由统一依赖此函数取 account_id（G-3）。"""
+    """解析当前用户的账户 id。所有账户层路由统一依赖此函数取 account_id（G-3）。
+
+    取最小 id 的账户（当前 1 用户:1 账户）。用 limit(1) 而非依赖 1:1 唯一性——
+    account.user_id FK 未设 UNIQUE（models/account.py：为未来多账户预留），
+    若某用户存在多账户，scalar_one_or_none() 会抛 MultipleResultsFound(500)。
+    """
     result = await session.execute(
-        select(Account.id).where(Account.user_id == user_id)
+        select(Account.id)
+        .where(Account.user_id == user_id)
+        .order_by(Account.id)
+        .limit(1)
     )
     account_id = result.scalar_one_or_none()
     if account_id is None:
