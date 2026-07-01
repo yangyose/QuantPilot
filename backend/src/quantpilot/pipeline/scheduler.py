@@ -220,17 +220,24 @@ async def _weekly_report_job(session_factory: async_sessionmaker) -> None:
     logger.info("weekly_report_job_start: week_end=%s", week_end)
     async with session_factory() as session:
         try:
-            # G-3：报告按账户隔离。当前生成默认账户周报；G-4 将改为遍历 is_active 用户账户
+            # G-4c §6.4：报告账户层隔离——遍历所有 is_active 用户账户各自生成周报。
             from quantpilot.services.account_service import AccountService
 
-            account = await AccountService(session).get_default_account()
-            if account is None:
-                logger.warning("weekly_report_job_skipped: no account")
+            accounts = await AccountService(session).list_active_user_accounts()
+            if not accounts:
+                logger.warning("weekly_report_job_skipped: no active account")
                 return
             service = ReportService(session)
-            report = await service.generate_weekly(week_end, account.id)
+            count = 0
+            for account in accounts:
+                report = await service.generate_weekly(week_end, account.id)
+                count += 1
+                logger.info(
+                    "weekly_report_generated: account=%d report_id=%d",
+                    account.id, report.id,
+                )
             await session.commit()
-            logger.info("weekly_report_job_done: report_id=%d", report.id)
+            logger.info("weekly_report_job_done: accounts=%d", count)
         except Exception:
             await session.rollback()
             logger.exception("weekly_report_job_failed: week_end=%s", week_end)
@@ -242,16 +249,17 @@ async def _stop_loss_warn_job(
     redis: AsyncRedis | None,
     notification_channel: NotificationChannel | None,
 ) -> None:
-    """Phase 10 §5.5：每日 15:05 扫描持仓 → 距止损 ≤ 2% 推送预警。
+    """Phase 10 §5.5 + V1.5-G G-4c §6.4：每日 15:05 按用户扫描持仓 → 距止损 ≤ 2% 推送。
 
-    逻辑（设计文档 §5.5）：
-    1. `account_service.get_all_positions()` 获取全部持仓
-    2. 对每个持仓查最近一条 BUY Signal 取 `stop_loss_price`
+    逻辑（设计文档 §5.5 + §6.4 多用户化）：
+    1. `list_active_user_accounts()` 遍历所有 is_active 用户的账户
+    2. 每账户查自己持仓；对每个持仓查最近一条 BUY Signal（共享层）取 `stop_loss_price`
     3. 计算 `distance_pct = (current_price - stop_loss_price) / current_price`
-    4. `0 < distance_pct <= 0.02` → `notifier.notify_stop_loss_warn(...)`
+    4. `0 < distance_pct <= 0.02` → `notify_stop_loss_warn(..., account_id=account.id)`
+       （账户私有通知，仅归属用户可见）
 
-    去重由 NotificationService 内部按 `(notify_type, payload)` 24h 窗口完成。
-    非交易日跳过（A股收盘后触发才有意义；同时 15:05 在周末运行没有最新行情）。
+    去重由 NotificationService 内部按 `(notify_type, payload, account_id)` 24h 窗口
+    分账户完成（两用户同 ts_code 各自触发）。非交易日跳过。
     """
     today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
     if not calendar.is_trade_date(today):
@@ -265,6 +273,7 @@ async def _stop_loss_warn_job(
     from quantpilot.services.signal_service import SignalService
 
     warned = 0
+    scanned = 0
     try:
         async with session_factory() as session:
             account_service = AccountService(session)
@@ -272,38 +281,42 @@ async def _stop_loss_warn_job(
             cfg = ConfigService(session, redis)
             notifier = NotificationService(session, cfg, notification_channel)
 
-            positions = await account_service.get_all_positions()
-            for p in positions:
-                if p.current_price is None:
-                    continue
-                sig = await signal_service.get_last_buy_signal(p.ts_code)
-                if sig is None or sig.stop_loss_price is None:
-                    continue
+            accounts = await account_service.list_active_user_accounts()
+            for account in accounts:
+                positions = await account_service.get_positions(account.id)
+                scanned += len(positions)
+                for p in positions:
+                    if p.current_price is None:
+                        continue
+                    sig = await signal_service.get_last_buy_signal(p.ts_code)
+                    if sig is None or sig.stop_loss_price is None:
+                        continue
 
-                current = float(p.current_price)
-                stop_loss = float(sig.stop_loss_price)
-                if current <= 0:
-                    continue
-                distance_pct = (current - stop_loss) / current
-                if 0 < distance_pct <= STOP_LOSS_WARN_THRESHOLD:
-                    try:
-                        await notifier.notify_stop_loss_warn(
-                            ts_code=p.ts_code,
-                            name=None,
-                            current_price=current,
-                            stop_loss_price=stop_loss,
-                            distance_pct=distance_pct,
-                        )
-                        warned += 1
-                    except Exception:
-                        logger.warning(
-                            "stop_loss_warn_notify_failed: ts_code=%s",
-                            p.ts_code, exc_info=True,
-                        )
+                    current = float(p.current_price)
+                    stop_loss = float(sig.stop_loss_price)
+                    if current <= 0:
+                        continue
+                    distance_pct = (current - stop_loss) / current
+                    if 0 < distance_pct <= STOP_LOSS_WARN_THRESHOLD:
+                        try:
+                            await notifier.notify_stop_loss_warn(
+                                ts_code=p.ts_code,
+                                name=None,
+                                current_price=current,
+                                stop_loss_price=stop_loss,
+                                distance_pct=distance_pct,
+                                account_id=account.id,
+                            )
+                            warned += 1
+                        except Exception:
+                            logger.warning(
+                                "stop_loss_warn_notify_failed: account=%d ts_code=%s",
+                                account.id, p.ts_code, exc_info=True,
+                            )
             await session.commit()
         logger.info(
-            "stop_loss_warn_done: date=%s scanned=%d warned=%d",
-            today, len(positions), warned,
+            "stop_loss_warn_done: date=%s accounts=%d scanned=%d warned=%d",
+            today, len(accounts), scanned, warned,
         )
     except Exception:
         logger.exception("stop_loss_warn_job_failed: date=%s", today)

@@ -135,6 +135,22 @@ class AccountService:
         )
         return result.scalar_one_or_none()
 
+    async def list_active_user_accounts(self) -> list[Account]:
+        """V1.5-G G-4c：所有 is_active 用户的账户（供止损/报告 Job 多用户化遍历，§6.4）。
+
+        停用用户（is_active=false）的账户不参与批量 Job（保留数据但不推送/不生成）。
+        JOIN user 表按 account.id 排序，输出稳定。
+        """
+        from quantpilot.models.user import User
+
+        result = await self._session.execute(
+            select(Account)
+            .join(User, Account.user_id == User.id)
+            .where(User.is_active.is_(True))
+            .order_by(Account.id)
+        )
+        return list(result.scalars().all())
+
     async def sync_account(self, account_id: int) -> Account:
         """从 daily_quote 更新持仓当前价/市值/盈亏，重算 total_assets。
 
