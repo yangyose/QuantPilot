@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from quantpilot.api.deps import get_current_user_id, get_notification_service
+from quantpilot.api.deps import (
+    get_current_account_id,
+    get_current_user_id,
+    get_notification_service,
+)
 from quantpilot.core.config import settings
 from quantpilot.schemas.notification import (
     MarkAllReadData,
@@ -33,16 +37,17 @@ async def list_notifications(
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
     service: NotificationService = Depends(get_notification_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """GET /notifications → 通知列表 + 总数 + 未读数。"""
+    """GET /notifications → 通知列表 + 总数 + 未读数（按当前账户隔离，G-4b §6.4）。"""
     items, total = await service.list_notifications(
         notify_type=notify_type,
         unread_only=unread_only,
         limit=limit,
         offset=offset,
+        account_id=account_id,
     )
-    unread = await service.count_unread()
+    unread = await service.count_unread(account_id=account_id)
     data = NotificationListData(
         items=[NotificationItem.model_validate(n) for n in items],
         total=total,
@@ -54,10 +59,10 @@ async def list_notifications(
 @router.get("/unread-count")
 async def unread_count(
     service: NotificationService = Depends(get_notification_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """GET /notifications/unread-count → {unread: N}。"""
-    unread = await service.count_unread()
+    """GET /notifications/unread-count → {unread: N}（按当前账户隔离，G-4b §6.4）。"""
+    unread = await service.count_unread(account_id=account_id)
     return {"code": 0, "data": UnreadCountData(unread=unread).model_dump(), "msg": "ok"}
 
 
@@ -82,10 +87,10 @@ async def wx_status(_: int = Depends(get_current_user_id)) -> dict:
 async def mark_read(
     notification_id: int,
     service: NotificationService = Depends(get_notification_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """POST /notifications/{id}/read → 标记单条已读。不存在 → 404。"""
-    notif = await service.mark_read(notification_id)
+    """POST /notifications/{id}/read → 标记单条已读。不存在/越权 → 404（G-4b §6.4）。"""
+    notif = await service.mark_read(notification_id, account_id=account_id)
     if notif is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -98,8 +103,8 @@ async def mark_read(
 @router.post("/read-all")
 async def mark_all_read(
     service: NotificationService = Depends(get_notification_service),
-    _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
 ) -> dict:
-    """POST /notifications/read-all → 批量标记已读。返回更新行数。"""
-    updated = await service.mark_all_read()
+    """POST /notifications/read-all → 批量标记已读（本账户可见范围，G-4b §6.4）。"""
+    updated = await service.mark_all_read(account_id=account_id)
     return {"code": 0, "data": MarkAllReadData(updated=updated).model_dump(), "msg": "ok"}

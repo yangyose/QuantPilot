@@ -614,6 +614,9 @@ class SignalService:
                             "severity": w.severity,
                             "trade_date": str(trade_date),
                         },
+                        # G-4b §6.4：风险告警账户私有——归属当前账户（account 为 None
+                        # 时回落系统级，与 pre-G4 行为一致）。管线全量解耦见 G-4d。
+                        account_id=account.id if account is not None else None,
                     )
                 except Exception:
                     logger.warning(

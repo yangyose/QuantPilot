@@ -403,6 +403,11 @@ class InAppNotification(Base):
     __tablename__ = "in_app_notification"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # V1.5-G G-4b：账户隔离（混合方案）。NULL = 系统级/共享通知（信号/市场/因子/健康），
+    # 所有登录用户可见；非 NULL = 账户私有（止损/风险），仅归属用户可见。
+    account_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("account.id"), nullable=True
+    )
     # SIGNAL_BUY / SIGNAL_SELL / MARKET_STATE / STOP_LOSS_WARN
     # / RISK_WARN / FACTOR_ALERT / PIPELINE_FAILURE
     notify_type: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -428,6 +433,14 @@ class InAppNotification(Base):
             "idx_notify_type_created",
             "notify_type",
             "created_at",
+            postgresql_ops={"created_at": "DESC"},
+        ),
+        # V1.5-G G-4b：账户私有通知按账户过滤（部分索引，仅 account_id 非空行）
+        Index(
+            "idx_notify_account",
+            "account_id",
+            "created_at",
+            postgresql_where=sa.text("account_id IS NOT NULL"),
             postgresql_ops={"created_at": "DESC"},
         ),
     )

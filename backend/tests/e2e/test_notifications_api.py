@@ -94,6 +94,7 @@ async def test_napi_03_list_with_filters(client: AsyncClient) -> None:
             unread_only=True,
             limit=5,
             offset=0,
+            account_id=1,  # G-4b：按当前账户隔离（conftest stub 返回 1）
         )
     finally:
         app.dependency_overrides.pop(get_notification_service, None)
@@ -144,7 +145,7 @@ async def test_napi_07_mark_read_ok(client: AsyncClient) -> None:
         assert body["code"] == 0
         assert body["data"]["id"] == 42
         assert body["data"]["read_at"].startswith("2026-04-21T16:00")
-        mock.mark_read.assert_awaited_once_with(42)
+        mock.mark_read.assert_awaited_once_with(42, account_id=1)
     finally:
         app.dependency_overrides.pop(get_notification_service, None)
 

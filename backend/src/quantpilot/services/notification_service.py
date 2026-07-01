@@ -73,19 +73,27 @@ class NotificationService:
         title: str,
         body: str,
         payload: dict[str, Any] | None = None,
+        account_id: int | None = None,
     ) -> InAppNotification | None:
-        """统一通知入口。返回写入的 InAppNotification（被去重/被禁用时返回 None）。"""
+        """统一通知入口。返回写入的 InAppNotification（被去重/被禁用时返回 None）。
+
+        V1.5-G G-4b：account_id 可空（混合方案 §6.4）。NULL = 系统级/共享通知
+        （信号/市场/因子/健康），全员可见；非 NULL = 账户私有（止损/风险），仅归属
+        用户可见。去重按 account_id 分账户判定（两用户同 ts_code 各自触发）。
+        """
         prefs = await self._cfg.get_notification_prefs()
         if not self._is_enabled(prefs, notify_type):
             return None
 
-        if await self._is_duplicate(notify_type, payload):
+        if await self._is_duplicate(notify_type, payload, account_id):
             logger.info(
-                "notification_dedup_skip type=%s payload=%s", notify_type, payload
+                "notification_dedup_skip type=%s payload=%s account=%s",
+                notify_type, payload, account_id,
             )
             return None
 
         notif = InAppNotification(
+            account_id=account_id,
             notify_type=notify_type,
             title=title,
             body=body,
@@ -159,19 +167,28 @@ class NotificationService:
         current_price: float,
         stop_loss_price: float,
         distance_pct: float,
+        account_id: int | None = None,
     ) -> InAppNotification | None:
+        """止损预警——账户私有（G-4b §6.4）。account_id 归属用户账户，仅其可见。"""
         title, body = self._render_stop_loss_warn(
             ts_code, name, current_price, stop_loss_price, distance_pct
         )
         return await self.notify(
-            "STOP_LOSS_WARN", title, body, {"ts_code": ts_code},
+            "STOP_LOSS_WARN", title, body, {"ts_code": ts_code}, account_id=account_id,
         )
 
     async def notify_risk_warn(
-        self, event_type: str, message: str, payload: dict[str, Any] | None = None,
+        self,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        account_id: int | None = None,
     ) -> InAppNotification | None:
+        """风险告警——账户私有（G-4b §6.4）。account_id 归属用户账户，仅其可见。"""
         title, body = self._render_risk_warn(event_type, message)
-        return await self.notify("RISK_WARN", title, body, payload)
+        return await self.notify(
+            "RISK_WARN", title, body, payload, account_id=account_id,
+        )
 
     async def notify_factor_alert(
         self, alert_type: str, strategy: str, factor: str, ic_mean: float | None = None,
@@ -204,6 +221,20 @@ class NotificationService:
         )
 
     # ───────────────────── 查询/标记（Phase 10 §5.4 REST） ─────────────────────
+    @staticmethod
+    def _visible_clause(account_id: int | None):
+        """账户可见性过滤（G-4b §6.4 混合方案）。
+
+        account_id 为 int → 系统级(NULL) + 本账户私有可见；
+        account_id 为 None → 不加账户过滤（内部/管理员全量，legacy 行为）。
+        """
+        if account_id is None:
+            return None
+        return (
+            InAppNotification.account_id.is_(None)
+            | (InAppNotification.account_id == account_id)
+        )
+
     async def list_notifications(
         self,
         *,
@@ -211,13 +242,20 @@ class NotificationService:
         unread_only: bool = False,
         limit: int = 20,
         offset: int = 0,
+        account_id: int | None = None,
     ) -> tuple[list[InAppNotification], int]:
-        """列出通知（按 created_at DESC 分页）。返回 (items, total)。"""
+        """列出通知（按 created_at DESC 分页）。返回 (items, total)。
+
+        G-4b §6.4：account_id 非空时仅返回系统级(NULL) + 本账户私有通知。
+        """
         base_filters = []
         if notify_type is not None:
             base_filters.append(InAppNotification.notify_type == notify_type)
         if unread_only:
             base_filters.append(InAppNotification.read_at.is_(None))
+        visible = self._visible_clause(account_id)
+        if visible is not None:
+            base_filters.append(visible)
 
         count_stmt = select(func.count(InAppNotification.id))
         for f in base_filters:
@@ -235,16 +273,28 @@ class NotificationService:
         rows = (await self._session.execute(list_stmt)).scalars().all()
         return list(rows), int(total)
 
-    async def count_unread(self) -> int:
-        """未读通知数量（read_at IS NULL）。"""
+    async def count_unread(self, account_id: int | None = None) -> int:
+        """未读通知数量（read_at IS NULL）。account_id 非空时仅计本账户可见的未读。"""
         stmt = select(func.count(InAppNotification.id)).where(
             InAppNotification.read_at.is_(None)
         )
+        visible = self._visible_clause(account_id)
+        if visible is not None:
+            stmt = stmt.where(visible)
         return int((await self._session.execute(stmt)).scalar_one())
 
-    async def mark_read(self, notification_id: int) -> InAppNotification | None:
-        """标记单条已读，已读则保持原 read_at 不变。不存在 → None。"""
+    async def mark_read(
+        self, notification_id: int, account_id: int | None = None,
+    ) -> InAppNotification | None:
+        """标记单条已读，已读则保持原 read_at 不变。不存在/越权 → None。
+
+        G-4b §6.4：account_id 非空时只能标记系统级(NULL) + 本账户私有通知；
+        跨账户 id 查无 → None（路由转 404，不泄露他人通知存在性）。
+        """
         stmt = select(InAppNotification).where(InAppNotification.id == notification_id)
+        visible = self._visible_clause(account_id)
+        if visible is not None:
+            stmt = stmt.where(visible)
         notif = (await self._session.execute(stmt)).scalar_one_or_none()
         if notif is None:
             return None
@@ -253,13 +303,16 @@ class NotificationService:
             await self._session.flush()
         return notif
 
-    async def mark_all_read(self) -> int:
-        """批量标记全部未读为已读。返回影响行数。"""
+    async def mark_all_read(self, account_id: int | None = None) -> int:
+        """批量标记未读为已读。account_id 非空时仅标记本账户可见的未读。返回影响行数。"""
         stmt = (
             update(InAppNotification)
             .where(InAppNotification.read_at.is_(None))
             .values(read_at=datetime.now(timezone.utc))
         )
+        visible = self._visible_clause(account_id)
+        if visible is not None:
+            stmt = stmt.where(visible)
         result = await self._session.execute(stmt)
         await self._session.flush()
         return int(result.rowcount or 0)
@@ -289,8 +342,16 @@ class NotificationService:
         return h >= start or h < end
 
     async def _is_duplicate(
-        self, notify_type: str, payload: Mapping[str, Any] | None,
+        self,
+        notify_type: str,
+        payload: Mapping[str, Any] | None,
+        account_id: int | None = None,
     ) -> bool:
+        """去重按 (notify_type, payload, account_id) 24h 窗口判定（G-4b §6.4）。
+
+        account_id 纳入判据——两个账户同 ts_code 止损各自触发（不互相去重）；
+        is_not_distinct_from 让 NULL=NULL 也匹配（系统级通知按 NULL 去重）。
+        """
         if payload is None:
             return False
         cutoff = datetime.now(timezone.utc) - DEDUP_WINDOW
@@ -299,6 +360,7 @@ class NotificationService:
             .where(
                 InAppNotification.notify_type == notify_type,
                 InAppNotification.payload == dict(payload),
+                InAppNotification.account_id.is_not_distinct_from(account_id),
                 InAppNotification.created_at >= cutoff,
             )
             .limit(1)
