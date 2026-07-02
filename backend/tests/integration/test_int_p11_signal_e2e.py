@@ -5,7 +5,7 @@
   Signal 行写入 composite_z / composite_pct_in_market / trigger_reason
 - 02: pct_above_sell — 持仓 + 高 pct → SELL trigger_reason=pct_above_sell
 - 03: 旧 pool 无新列 → 自动 fallback V1.0-r5；新字段写 None
-- 04: hard_stop_loss 优先级 — 持仓浮亏超阈值时 SELL trigger_reason=hard_stop_loss
+- 04: hard_stop_loss 是账户私有信号 — V1.5-G G-4d-1 解耦后管线不再产出（移 G-4d-2 API 期）
 """
 from __future__ import annotations
 
@@ -224,23 +224,28 @@ async def test_int_p11_sg_03_legacy_pool_falls_back(db_session: AsyncSession) ->
 
 
 # ============================================================
-# INT-P11-SG-04：hard_stop_loss 优先级（pnl <-8% 即便 pct 未跌出）
+# INT-P11-SG-04：hard_stop_loss 是账户私有信号 → V1.5-G G-4d-1 解耦后管线**不再产出**
+# （持仓浮亏依赖用户成本价，移 API 请求期按用户账户叠加 G-4d-2 SignalViewService）
 # ============================================================
-async def test_int_p11_sg_04_hard_stop_loss(db_session: AsyncSession) -> None:
+async def test_int_p11_sg_04_hard_stop_loss_not_in_pipeline(db_session: AsyncSession) -> None:
+    """G-4d-1 解耦：持仓浮亏 -10% 但 pct 在中性区 → 管线不读账户 → 无任何信号。
+
+    hard_stop_loss 是账户私有 SELL（依赖用户成本价），其覆盖移至 G-4d-2
+    SignalViewService API 请求期叠加的测试套件（届时验证同一持仓 + 浮亏 → 私有 SELL）。
+    """
     repo = MarketDataRepository(db_session)
     cfg_svc = ConfigService(db_session)
-    acc_svc = AccountService(db_session)
-    sig_svc = SignalService(repo, account_service=acc_svc, config_service=cfg_svc)
+    sig_svc = SignalService(repo, config_service=cfg_svc)  # 无 account_service
 
     await _seed_stock(db_session, "P11SG04.SH", close=10.0)
-    # pct=0.30 未跌出 SELL 阈值；但持仓浮亏 -10% → 触发 hard_stop_loss
+    # pct=0.30 在中性区（未跌出 SELL 阈值 0.70、未进 BUY 区）→ 管线本无信号；
+    # 持仓浮亏 -10% 在 pre-解耦会触发 hard_stop_loss SELL，解耦后管线看不到账户 → 无 SELL。
     await _seed_pool_entry_with_phase11(
         repo, "P11SG04.SH",
         composite_score=55.0, composite_z=0.5, composite_pct=0.30,
         is_holding=True,
     )
     acc = await _seed_account(db_session)
-    # get_all_positions 不自动算 pnl_pct（仅 sync_account 算），测试里直接指定
     db_session.add(Position(
         account_id=acc.id, ts_code="P11SG04.SH",
         shares=5000, cost_price=11.2, current_price=10.0,
@@ -250,9 +255,9 @@ async def test_int_p11_sg_04_hard_stop_loss(db_session: AsyncSession) -> None:
     await _seed_market_state(repo)
 
     saved = await sig_svc.generate_for_date(_TRADE_DATE)
+    # 解耦后管线不读账户 → 不产 hard_stop_loss（账户私有 SELL 移 G-4d-2 API 期）
     sells = [s for s in saved if s.signal_type == "SELL"]
-    assert len(sells) == 1
-    assert sells[0].trigger_reason == "hard_stop_loss"
+    assert sells == []
 
 
 # ============================================================

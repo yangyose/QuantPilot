@@ -1,11 +1,15 @@
-"""unit/test_signal_service_generate.py: Phase 10 §7.1 SignalService.generate_for_date 完整化。
+"""unit/test_signal_service_generate.py: SignalService.generate_for_date（V1.5-G G-4d-1 解耦后）。
 
-验证：
-- 依赖齐全 → 完整链路（SignalGenerator → PositionSizer → RiskChecker）
-- 缺依赖 → RuntimeError（去除 V1.0 降级）
+V1.5-G G-4d-1（§2 管线与账户解耦）：generate_for_date **不再读账户**，产账户无关的
+共享信号（BUY 候选 + 客观 pct_above_sell SELL）。仓位建议（suggested_pct）/ 集中度
+BLOCK / 持仓私有 SELL / 回撤 RISK_WARN 移 API 请求期（G-4d-2）+ 每日 Job（G-4d-3）。
+
+本文件验证：
+- 依赖齐全（仅 config_service）→ 共享 BUY 信号，suggested_pct 为 None（不再 sizing）
+- 缺 config_service → RuntimeError
 - 空候选池 → []
-- RiskChecker BLOCK → 信号不保存
-- PositionSizer 正确填入 suggested_pct
+- market_state 缺失 → 默认 OSCILLATION（不抛错）
+- 评分低于 buy_threshold → 无 BUY 信号
 """
 from __future__ import annotations
 
@@ -18,7 +22,6 @@ import pandas as pd
 import pytest
 
 from quantpilot.core.config_defaults import (
-    DEFAULT_RISK_LIMITS,
     DEFAULT_SIGNAL_CONFIG,
     DEFAULT_UNIVERSE,
 )
@@ -79,7 +82,6 @@ def _make_repo(
         repo.get_latest_market_state = AsyncMock(return_value=ms)
 
     # save() 路径：upsert_signals 返回 RETURNING id
-    # id 按顺序 100, 101, ...；signal_type/ts_code 从输入 rows 回读
     async def _upsert_signals(rows: list[dict]) -> list[dict]:
         return [
             {"id": 100 + i, "ts_code": r["ts_code"], "signal_type": r["signal_type"]}
@@ -88,56 +90,33 @@ def _make_repo(
 
     repo.upsert_signals = AsyncMock(side_effect=_upsert_signals)
     repo.upsert_signal_snapshots = AsyncMock(return_value=None)
-    # get_today_signals 由 generate_for_date 尾部调用
-    #   返回 ORM 风格对象（SimpleNamespace 也可）
     return repo
-
-
-def _make_account_service(
-    positions: list[SimpleNamespace] | None = None,
-    total_assets: float = 1_000_000.0,
-    cash: float = 500_000.0,
-) -> AsyncMock:
-    svc = AsyncMock()
-    svc.get_all_positions = AsyncMock(return_value=positions or [])
-    account = SimpleNamespace(
-        id=1,
-        total_assets=Decimal(str(total_assets)),
-        cash=Decimal(str(cash)),
-    )
-    svc.get_default_account = AsyncMock(return_value=account)
-    # V1.0 整改 Batch 2 — B2-1：默认无回撤数据（< 2 个 daily_portfolio_value 行 → None）
-    svc.get_current_drawdown = AsyncMock(return_value=None)
-    return svc
 
 
 def _make_config_service() -> AsyncMock:
     svc = AsyncMock()
     svc.get_signal_params = AsyncMock(return_value=DEFAULT_SIGNAL_CONFIG)
     svc.get_universe_params = AsyncMock(return_value=DEFAULT_UNIVERSE)
-    svc.get_risk_limits = AsyncMock(return_value=DEFAULT_RISK_LIMITS)
     return svc
 
 
 async def test_generate_for_date_empty_pool_returns_empty() -> None:
     """空候选池 → 无持久化调用，返回 []。"""
     repo = _make_repo([], _snapshot_df([]))
-    account_svc = _make_account_service()
     cfg = _make_config_service()
 
-    svc = SignalService(repo, account_service=account_svc, config_service=cfg)
+    svc = SignalService(repo, config_service=cfg)
     result = await svc.generate_for_date(TRADE_DATE)
 
     assert result == []
     repo.upsert_signals.assert_not_awaited()
 
 
-async def test_generate_for_date_full_chain_writes_signals() -> None:
-    """评分 > 买入阈值 → BUY 信号经 SignalGenerator + PositionSizer + RiskChecker 后持久化。"""
+async def test_generate_for_date_writes_shared_buy_signals() -> None:
+    """评分 > 买入阈值 → 共享 BUY 信号持久化；管线不再 sizing → suggested_pct 为 None。"""
     pool = [_pool_entry("000001.SZ", 85.0), _pool_entry("000002.SZ", 82.0)]
     snapshot = _snapshot_df(["000001.SZ", "000002.SZ"])
 
-    # get_today_signals 返回本次 upsert 写入的两个 signal（用 SimpleNamespace 模拟 ORM）
     saved_signals = [
         SimpleNamespace(
             id=100, ts_code="000001.SZ", signal_type="BUY", trade_date=TRADE_DATE,
@@ -149,83 +128,29 @@ async def test_generate_for_date_full_chain_writes_signals() -> None:
     repo = _make_repo(pool, snapshot)
     repo.get_signals_by_date = AsyncMock(return_value=saved_signals)
 
-    account_svc = _make_account_service()  # 空持仓 + 现金充足
     cfg = _make_config_service()
 
-    svc = SignalService(repo, account_service=account_svc, config_service=cfg)
+    svc = SignalService(repo, config_service=cfg)
     result = await svc.generate_for_date(TRADE_DATE)
 
     assert len(result) == 2
     repo.upsert_signals.assert_awaited_once()
 
-    # 校验 upsert 参数：两条 BUY 均有 suggested_pct（PositionSizer 填充）
+    # 校验 upsert 参数：两条 BUY，suggested_pct 为 None（sizing 移 API 期），
+    # 但 stop_loss_price 由 SignalGenerator 计算，仍非 None。
     rows = repo.upsert_signals.await_args.args[0]
     assert len(rows) == 2
     assert all(r["signal_type"] == "BUY" for r in rows)
-    assert all(r["suggested_pct"] is not None for r in rows)
+    assert all(r["suggested_pct"] is None for r in rows)
     assert all(r["stop_loss_price"] is not None for r in rows)
-
-
-async def test_generate_for_date_risk_checker_blocks_concentration() -> None:
-    """行业集中度超限 → RiskChecker BLOCK → 信号在 save() 阶段被移除。
-
-    已持两只同行业股合计占 25%，行业上限 30%；新 BUY 建议 10% 导致 35% > 30% → BLOCK。
-    """
-    pool = [_pool_entry("000003.SZ", 90.0)]
-    snapshot = _snapshot_df(["000003.SZ", "000001.SZ", "000002.SZ"], industry="电子")
-
-    # 现有 2 只持仓（同行业"电子"），合计占总资产 25%
-    existing_1 = SimpleNamespace(
-        ts_code="000001.SZ",
-        market_value=Decimal("120000"),
-        pnl_pct=Decimal("0.03"),
-        cost_price=Decimal("9.5"),
-        current_price=Decimal("10.0"),
-        shares=12000,
-    )
-    existing_2 = SimpleNamespace(
-        ts_code="000002.SZ",
-        market_value=Decimal("130000"),
-        pnl_pct=Decimal("0.04"),
-        cost_price=Decimal("9.0"),
-        current_price=Decimal("10.0"),
-        shares=13000,
-    )
-
-    repo = _make_repo(pool, snapshot)
-    # BLOCK 移除后 rows 为空，upsert_signals 不会被调用 → get_today_signals 返回 []
-    repo.get_signals_by_date = AsyncMock(return_value=[])
-
-    account_svc = _make_account_service(positions=[existing_1, existing_2])
-    cfg = _make_config_service()
-
-    svc = SignalService(repo, account_service=account_svc, config_service=cfg)
-    result = await svc.generate_for_date(TRADE_DATE)
-
-    # 期望：BLOCK 后无信号持久化
-    assert result == []
-    repo.upsert_signals.assert_not_awaited()
-
-
-async def test_generate_for_date_missing_account_service_raises() -> None:
-    """缺 account_service → RuntimeError（Phase 10 §7.1 去除 V1.0 降级）。"""
-    pool = [_pool_entry("000001.SZ", 85.0)]
-    repo = _make_repo(pool, _snapshot_df(["000001.SZ"]))
-    cfg = _make_config_service()
-
-    svc = SignalService(repo, account_service=None, config_service=cfg)
-
-    with pytest.raises(RuntimeError, match="account_service"):
-        await svc.generate_for_date(TRADE_DATE)
 
 
 async def test_generate_for_date_missing_config_service_raises() -> None:
     """缺 config_service → RuntimeError。"""
     pool = [_pool_entry("000001.SZ", 85.0)]
     repo = _make_repo(pool, _snapshot_df(["000001.SZ"]))
-    account_svc = _make_account_service()
 
-    svc = SignalService(repo, account_service=account_svc, config_service=None)
+    svc = SignalService(repo, config_service=None)
 
     with pytest.raises(RuntimeError, match="config_service"):
         await svc.generate_for_date(TRADE_DATE)
@@ -241,10 +166,9 @@ async def test_generate_for_date_market_state_fallback_oscillation() -> None:
         SimpleNamespace(id=100, ts_code="000001.SZ", signal_type="BUY"),
     ])
 
-    account_svc = _make_account_service()
     cfg = _make_config_service()
 
-    svc = SignalService(repo, account_service=account_svc, config_service=cfg)
+    svc = SignalService(repo, config_service=cfg)
     result = await svc.generate_for_date(TRADE_DATE)
 
     # OSCILLATION 系数 0.75 → 仍可产生信号
@@ -260,10 +184,9 @@ async def test_generate_for_date_low_score_produces_no_buy() -> None:
     repo = _make_repo(pool, snapshot)
     repo.get_signals_by_date = AsyncMock(return_value=[])
 
-    account_svc = _make_account_service()
     cfg = _make_config_service()
 
-    svc = SignalService(repo, account_service=account_svc, config_service=cfg)
+    svc = SignalService(repo, config_service=cfg)
     result = await svc.generate_for_date(TRADE_DATE)
 
     assert result == []

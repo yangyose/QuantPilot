@@ -432,33 +432,31 @@ class SignalService:
         return count
 
     async def generate_for_date(self, trade_date: date) -> list[SignalModel]:
-        """从 candidate_pool 快照生成当日信号（Pipeline CP3 调用路径，Phase 10 §7.1 完整化）。
+        """从 candidate_pool 快照生成当日**共享**信号（Pipeline CP3 调用路径）。
+
+        V1.5-G G-4d-1（§2 管线与账户解耦）：本函数**不再读账户**，产出账户无关的
+        共享信号（BUY 候选 + 客观 pct_above_sell SELL）。仓位建议 / 集中度 BLOCK /
+        持仓私有 SELL / 回撤 RISK_WARN 移 API 请求期按用户账户叠加（G-4d-2）+
+        每日 Job（G-4d-3）。
 
         数据流：
         1. 读取 candidate_pool（按 composite_score DESC），为空直接返回 []
-        2. 加载 AccountService 持仓 / 默认账户总资产现金
-        3. 加载 market_state_history 最近一行（缺失 → OSCILLATION）
-        4. 加载 snapshot_quotes（close/amount/limit_up/is_suspended/sw_industry_l1）
-        5. 加载 ConfigService signal_params / universe_params / risk_limits
-        6. 运行 SignalGenerator → PositionSizer → RiskChecker 全链路
-        7. 调用 self.save() 持久化（BLOCK 告警移除、WARN 附加到 reason）
-        8. 返回本次写入的 Signal ORM 列表
+        2. 加载 market_state_history 最近一行（缺失 → OSCILLATION）
+        3. 加载 snapshot_quotes（close/amount/limit_up/is_suspended/sw_industry_l1）
+        4. 加载 ConfigService signal_params / universe_params
+        5. 运行 SignalGenerator（current_positions=[]）→ 共享 TradeSignal
+        6. 调用 self.save() 持久化
+        7. 返回本次写入的 Signal ORM 列表
 
-        Phase 10：移除 V1.0 降级，`account_service` 和 `config_service` 必须注入；
-        否则抛 RuntimeError。
+        `config_service` 必须注入，否则抛 RuntimeError。
         """
-        if self._account_svc is None:
-            raise RuntimeError(
-                "generate_for_date 需要注入 account_service（Phase 10 §7.1 去除降级）"
-            )
+        # V1.5-G G-4d-1（§2 管线与账户解耦）：generate_for_date 不再读账户，只需 config_service。
         if self._cfg is None:
             raise RuntimeError(
                 "generate_for_date 需要注入 config_service（Phase 10 §7.1 去除降级）"
             )
 
         from quantpilot.engine.market_state import MarketStateEnum
-        from quantpilot.engine.position import PositionConfig, PositionSizer
-        from quantpilot.engine.risk import RiskChecker
         from quantpilot.engine.signal import SignalGenerator
 
         pool_entries = await self._repo.get_pool(trade_date=trade_date)
@@ -517,14 +515,12 @@ class SignalService:
             ]
         ).set_index("ts_code")
 
-        # ── 依赖加载（持仓 / 账户 / 市场状态 / 行情 / 配置）─────────────────────
-        positions = await self._account_svc.get_all_positions()
-        account = await self._account_svc.get_default_account()
-        total_assets = (
-            float(account.total_assets) if account and account.total_assets else 0.0
-        )
-        cash = float(account.cash) if account and account.cash else 0.0
-
+        # ── 依赖加载（市场状态 / 行情 / 配置）── V1.5-G G-4d-1：管线不再读账户 ──
+        # §2 管线与账户解耦：generate_for_date 产**账户无关**的共享信号
+        # （BUY 候选 + 客观 pct_above_sell SELL）。仓位建议（suggested_pct）/ 集中度
+        # BLOCK / 持仓私有 SELL（hard_stop_loss / 加仓 / 短中期翻转）/ 回撤 RISK_WARN
+        # 全部移出管线——API 请求期按用户账户叠加（G-4d-2 SignalViewService）+ 回撤
+        # 告警并入 G-4c 每日 Job 遍历 active 账户（G-4d-3）。
         ms_row = await self._repo.get_latest_market_state(
             before_date=trade_date + timedelta(days=1)
         )
@@ -539,98 +535,31 @@ class SignalService:
 
         signal_cfg = await self._cfg.get_signal_params()
         universe_cfg = await self._cfg.get_universe_params()
-        risk_limits = await self._cfg.get_risk_limits()
 
-        # ── Phase 11 §5.2：持仓信号状态（短期 z 降幅 / 中期 ICIR 翻转）预计算 ────
-        # 旧 candidate_pool 无 factor_orthogonal / factor_ic_window_state 数据时，
-        # 本函数返回空 dict —— SignalGenerator 自然降级，不影响 hard_stop_loss 等其它条件。
-        holding_signal_states = await self._compute_holding_signal_states(
-            holdings=positions,
-            trade_date=trade_date,
-            market_state=market_state,
-        )
-
-        # ── Engine 层链路 ──────────────────────────────────────────────────────
+        # ── Engine 层链路（账户无关）──────────────────────────────────────────────
+        # current_positions=[] + holding_signal_states={}：无持仓上下文，SignalGenerator
+        # 只产共享信号（BUY 候选 + 客观 pct_above_sell SELL）。持仓派生的私有信号
+        # （hard_stop_loss / 加仓 / 短中期翻转）与仓位建议移 API 请求期按用户账户叠加。
         generator = SignalGenerator(signal_cfg=signal_cfg, universe_cfg=universe_cfg)
         trade_signals = generator.generate(
             composite_scores=composite_df,
-            current_positions=positions,
+            current_positions=[],
             market_state=market_state,
             snapshot_quotes=snapshot,
             trade_date=trade_date,
-            holding_signal_states=holding_signal_states,
+            holding_signal_states={},
         )
 
-        # PositionConfig.min_cash_pct 保留默认（RiskLimitsConfig 未含该字段）
-        position_cfg = PositionConfig(
-            single_pct=risk_limits.single_trade_pct,
-            max_single_stock_pct=risk_limits.max_single_stock_pct,
-            max_total_pct=risk_limits.max_total_position_pct,
-        )
-        sizer = PositionSizer()
-        sized_signals = sizer.suggest(
-            signals=trade_signals,
-            account_total_assets=total_assets,
-            account_cash=cash,
-            current_positions=positions,
-            market_state=market_state,
-            config=position_cfg,
-        )
-
-        checker = RiskChecker(risk_limits=risk_limits)
-        # stock_industry：从 snapshot_quotes 读取 sw_industry_l1 列
-        if "sw_industry_l1" in snapshot.columns:
-            industry_df = snapshot[["sw_industry_l1"]].copy()
-        else:
-            industry_df = pd.DataFrame()
-
-        # V1.0 整改 Batch 2 — B2-1：传入账户当前最大回撤 + 阈值，触发 SDD §10.2 WARN 级告警
-        # （此前漏传 → RiskChecker 内部跳过 drawdown 检查，回撤告警从未触发）
-        current_drawdown: float | None = None
-        if account is not None:
-            current_drawdown = await self._account_svc.get_current_drawdown(account.id)
-
-        warnings = checker.check(
-            signals=sized_signals,
-            current_positions=positions,
-            account_total_assets=total_assets,
-            stock_industry=industry_df,
-            account_max_drawdown_pct=current_drawdown,
-            max_drawdown_pct=risk_limits.max_drawdown_pct,
-        )
-
-        generated_codes = {s.ts_code for s in sized_signals}
-        await self.save(sized_signals, trade_date, composite_df, warnings)
-
-        # Phase 10 §5.4：风险告警推送（best-effort，逐条异常隔离）
-        if self._notifier is not None and warnings:
-            for w in warnings:
-                try:
-                    await self._notifier.notify_risk_warn(
-                        event_type=w.warning_type,
-                        message=w.message,
-                        payload={
-                            "ts_code": w.ts_code,
-                            "severity": w.severity,
-                            "trade_date": str(trade_date),
-                        },
-                        # G-4b §6.4：风险告警账户私有——归属当前账户（account 为 None
-                        # 时回落系统级，与 pre-G4 行为一致）。管线全量解耦见 G-4d。
-                        account_id=account.id if account is not None else None,
-                    )
-                except Exception:
-                    logger.warning(
-                        "notify_risk_warn_failed: ts_code=%s type=%s",
-                        w.ts_code, w.warning_type, exc_info=True,
-                    )
+        generated_codes = {s.ts_code for s in trade_signals}
+        await self.save(trade_signals, trade_date, composite_df)
 
         all_today = await self._repo.get_signals_by_date(
             trade_date, signal_type=None, status=None
         )
         saved = [s for s in all_today if s.ts_code in generated_codes]
         logger.info(
-            "generate_for_date_done: trade_date=%s raw=%d saved=%d warnings=%d",
-            trade_date, len(trade_signals), len(saved), len(warnings),
+            "generate_for_date_done: trade_date=%s raw=%d saved=%d",
+            trade_date, len(trade_signals), len(saved),
         )
 
         # Phase 13 §3.1.2 埋点：按 signal_type 聚合计数

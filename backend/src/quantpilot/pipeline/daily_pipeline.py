@@ -373,36 +373,25 @@ class DailyPipeline:
     async def _cp3_signals(self, run: PipelineRun, trade_date: date) -> list[Signal]:
         """CP3：信号生成（SignalService.generate_for_date）。
 
-        Phase 10 §7.1：注入 AccountService + ConfigService 驱动
-        SignalGenerator→PositionSizer→RiskChecker 全链路；
+        V1.5-G G-4d-1（§2 管线与账户解耦）：generate_for_date 产**账户无关**的共享信号，
+        不再注入 AccountService / notifier。仓位建议 / 集中度 / 私有 SELL 移 API 请求期
+        （G-4d-2），回撤 RISK_WARN 移 G-4c 每日 Job（G-4d-3）。
         返回本次新写入的 Signal ORM 列表供 `_notify_new_signals` 使用。
 
         Phase 10 §4.3 评审 C-01：ConfigService 进入 snapshot 冻结模式，
-        SignalService 内 `signal_params/universe_params/risk_limits` 全部来自快照。
+        SignalService 内 `signal_params/universe_params` 全部来自快照。
         """
         from sqlalchemy import select
 
         from quantpilot.data.repository import MarketDataRepository
         from quantpilot.models.system import PipelineRun
-        from quantpilot.services.account_service import AccountService
         from quantpilot.services.config_service import ConfigService
-        from quantpilot.services.notification_service import NotificationService
         from quantpilot.services.signal_service import SignalService
 
         async with self._session_factory() as session:
             repo = MarketDataRepository(session)
-            account_service = AccountService(session)
             config_service = ConfigService(session, self._redis, snapshot=run.config_snapshot)
-            # Phase 10 §5.4：注入 notifier，RiskChecker WARN/BLOCK 告警将推送 RISK_WARN
-            notifier = NotificationService(
-                session, config_service, self._notification_channel
-            )
-            signal_service = SignalService(
-                repo,
-                account_service=account_service,
-                config_service=config_service,
-                notification_service=notifier,
-            )
+            signal_service = SignalService(repo, config_service=config_service)
             signals = await signal_service.generate_for_date(trade_date)
             await session.commit()
             signal_count = len(signals)

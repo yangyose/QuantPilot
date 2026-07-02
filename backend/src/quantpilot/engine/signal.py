@@ -282,7 +282,34 @@ class SignalGenerator:
                     continue
 
             else:
-                # 无持仓：BUY 触发判定
+                # ─── 无持仓分支 ───
+                # V1.5-G G-4d-1：pct_above_sell 是客观市场事实（评分跌出全市场前列），
+                # 对全体持有者均有意义 → 即使无持仓上下文也产**共享** SELL。管线去账户后
+                # generate_for_date 以 current_positions=[] 调用，持仓私有 SELL（hard_stop_loss /
+                # 加仓 / 短中期翻转）移到 API 请求期按用户账户叠加（§2 派生语义）。
+                # 仅分位主路径适用（旧绝对阈值路径无市场分位，SELL 仍限持仓分支）。
+                if (
+                    use_pct_path
+                    and pct_val is not None
+                    and pct_val >= params.sell_pct_threshold
+                ):
+                    signals.append(TradeSignal(
+                        ts_code=ts_code,
+                        signal_type="SELL",
+                        trade_date=trade_date,
+                        score=score if score is not None else 0.0,
+                        reason=(
+                            f"评分跌出（市场分位 {pct_val * 100:.1f}% ≥ 阈值 "
+                            f"{params.sell_pct_threshold * 100:.1f}%）"
+                        ),
+                        composite_z=z_val,
+                        composite_pct_in_market=pct_val,
+                        weights_source=ws_val,
+                        trigger_reason="pct_above_sell",
+                    ))
+                    continue
+
+                # BUY 触发判定
                 if use_pct_path:
                     if pct_val is None or pct_val > params.buy_pct_threshold:
                         continue

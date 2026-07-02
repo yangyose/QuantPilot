@@ -259,3 +259,74 @@ def test_sig_p11_07_pct_column_missing_falls_back() -> None:
     assert by_code["F1.SZ"].trigger_reason == "pct_below_buy"  # 仍标记新 trigger_reason
     assert by_code["F1.SZ"].composite_pct_in_market is None
     assert "F2.SZ" not in by_code
+
+
+# ============================================================
+# SIG-P11-08（V1.5-G G-4d-1）：管线去账户 current_positions=[] 时，
+# 池成员评分跌入卖出区间 → 产**共享** pct_above_sell SELL（非持仓分支）。
+#
+# 背景：管线与账户解耦后 generate_for_date 以 current_positions=[] 调 generate，
+# 持仓视图（hard_stop_loss / 加仓 / 短中期翻转）移到 API 请求期按用户叠加。
+# 但 pct_above_sell 是**客观市场事实**（某股跌出全市场前列，对所有持有者有意义），
+# 设计决策（2026-07-02）保留为共享信号，即使无持仓上下文也应产出。
+# 旧代码 pct_above_sell 仅在持仓分支触发 → 本例必 RED。
+# ============================================================
+def test_sig_p11_08_shared_pct_above_sell_no_holding() -> None:
+    composite = pd.DataFrame(
+        {
+            "composite_score": [30.0],
+            "composite_pct_in_market": [0.80],  # ≥ 0.70 → 共享 SELL
+            "composite_z": [-0.8],
+            "weights_source": ["icir"],
+        },
+        index=pd.Index(["X1.SZ"], name="ts_code"),
+    )
+    quotes = _make_quotes(["X1.SZ"])
+    gen = SignalGenerator()
+    sigs = gen.generate(
+        composite_scores=composite,
+        current_positions=[],  # 管线去账户：无持仓上下文
+        market_state=MarketStateEnum.OSCILLATION,
+        snapshot_quotes=quotes,
+        trade_date=date(2026, 1, 5),
+        risk_params=RiskParams(sell_pct_threshold=0.70, buy_pct_threshold=0.05),
+    )
+    assert len(sigs) == 1
+    assert sigs[0].ts_code == "X1.SZ"
+    assert sigs[0].signal_type == "SELL"
+    assert sigs[0].trigger_reason == "pct_above_sell"
+    assert sigs[0].composite_pct_in_market == pytest.approx(0.80)
+
+
+# ============================================================
+# SIG-P11-09（V1.5-G G-4d-1）：current_positions=[] 时，
+# 非卖出区间的池成员不产 SELL（避免共享 SELL 误伤高分候选）。
+# 高分股仍走 BUY；中间区间（既非买也非卖）无信号。
+# ============================================================
+def test_sig_p11_09_shared_sell_only_in_sell_zone() -> None:
+    composite = pd.DataFrame(
+        {
+            "composite_score": [85.0, 55.0, 30.0],
+            # B1 买入区间 / M1 中间区间 / S1 卖出区间
+            "composite_pct_in_market": [0.005, 0.30, 0.80],
+            "composite_z": [2.5, 0.1, -0.8],
+            "weights_source": ["icir", "icir", "icir"],
+        },
+        index=pd.Index(["B1.SZ", "M1.SZ", "S1.SZ"], name="ts_code"),
+    )
+    quotes = _make_quotes(["B1.SZ", "M1.SZ", "S1.SZ"])
+    gen = SignalGenerator()
+    sigs = gen.generate(
+        composite_scores=composite,
+        current_positions=[],
+        market_state=MarketStateEnum.OSCILLATION,
+        snapshot_quotes=quotes,
+        trade_date=date(2026, 1, 5),
+        risk_params=RiskParams(
+            buy_pct_threshold=0.05, sell_pct_threshold=0.70, strong_pct_threshold=0.01,
+        ),
+    )
+    by_code = {s.ts_code: s.signal_type for s in sigs}
+    assert by_code.get("B1.SZ") == "BUY"      # 高分买入
+    assert "M1.SZ" not in by_code              # 中间区间无信号
+    assert by_code.get("S1.SZ") == "SELL"      # 卖出区间共享 SELL
