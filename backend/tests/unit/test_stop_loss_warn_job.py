@@ -1,4 +1,4 @@
-"""unit/test_stop_loss_warn_job.py: 止损预警 Job 单元测试（Phase 10 §5.5 + V1.5-G G-4c）。
+"""unit/test_stop_loss_warn_job.py: 止损预警 Job 单元测试（Phase 10 §5.5 + V1.5-G G-4c/G-4d-3）。
 
 覆盖：
 - 非交易日跳过
@@ -8,15 +8,18 @@
 - 缺少 current_price / BUY signal / stop_loss_price → 跳过
 - 多持仓：部分触发 + 异常隔离
 - G-4c 多用户：遍历 active 用户账户，各自持仓独立扫描 + 通知带各自 account_id
+- G-4d-3：账户回撤 ≥ 阈值 → notify_risk_warn(account_drawdown)；持仓私有 SELL →
+  notify_risk_warn(trigger_reason)；均带 account_id
 """
 from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from quantpilot.core.config_defaults import DEFAULT_RISK_LIMITS
 from quantpilot.pipeline.scheduler import _stop_loss_warn_job
 
 
@@ -71,6 +74,9 @@ def _account_service(positions_by_account: dict[int, list]) -> AsyncMock:
 
 def _patch_deps(account_service, signal_service, notifier):
     """返回一组 patch context managers；在 `with` 外联合使用覆盖 job 内部 lazy imports。"""
+    # G-4d-3：cfg.get_risk_limits() 一次性加载回撤阈值 → 须 async mock 返回真实配置
+    cfg_mock = MagicMock()
+    cfg_mock.get_risk_limits = AsyncMock(return_value=DEFAULT_RISK_LIMITS)
     return [
         patch(
             "quantpilot.services.account_service.AccountService",
@@ -84,12 +90,25 @@ def _patch_deps(account_service, signal_service, notifier):
             "quantpilot.services.notification_service.NotificationService",
             return_value=notifier,
         ),
-        patch("quantpilot.services.config_service.ConfigService"),
+        patch("quantpilot.services.config_service.ConfigService", return_value=cfg_mock),
         patch("quantpilot.data.repository.MarketDataRepository"),
     ]
 
 
-async def _run(account_service, signal_service, notifier, *, is_trade: bool = True) -> None:
+async def _run(
+    account_service,
+    signal_service,
+    notifier,
+    *,
+    is_trade: bool = True,
+    private_signals: list | None = None,
+    drawdown: float | None = None,
+) -> None:
+    # G-4d-3：默认无私有 SELL / 无回撤，既有止损用例不受新分支干扰；
+    # 新用例经 private_signals / drawdown 参数注入。
+    signal_service.evaluate_private_signals = AsyncMock(return_value=private_signals or [])
+    account_service.get_current_drawdown = AsyncMock(return_value=drawdown)
+
     patches = _patch_deps(account_service, signal_service, notifier)
     for p in patches:
         p.start()
@@ -98,6 +117,14 @@ async def _run(account_service, signal_service, notifier, *, is_trade: bool = Tr
     finally:
         for p in patches:
             p.stop()
+
+
+def _private_sell(ts_code: str, trigger_reason: str) -> SimpleNamespace:
+    """构造 evaluate_private_signals 返回的私有 SELL TradeSignal（够 Job 读取即可）。"""
+    return SimpleNamespace(
+        ts_code=ts_code, signal_type="SELL", trigger_reason=trigger_reason,
+        reason=f"{trigger_reason} 触发",
+    )
 
 
 async def test_stop_loss_warn_skipped_non_trade_date() -> None:
@@ -234,6 +261,93 @@ async def test_stop_loss_warn_empty_positions_no_notify() -> None:
     await _run(account_service, signal_service, notifier)
     notifier.notify_stop_loss_warn.assert_not_awaited()
     account_service.list_active_user_accounts.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# G-4d-3：账户回撤主动告警
+# ---------------------------------------------------------------------------
+async def test_drawdown_warn_triggers_when_at_threshold() -> None:
+    """账户回撤 ≥ max_drawdown_pct → notify_risk_warn(account_drawdown, account_id)。"""
+    account_service = _account_service({5: []})
+    signal_service = AsyncMock()
+    signal_service.get_last_buy_signal = AsyncMock(return_value=None)
+    notifier = AsyncMock()
+    notifier.notify_risk_warn = AsyncMock()
+
+    # DEFAULT_RISK_LIMITS.max_drawdown_pct 之上
+    dd = DEFAULT_RISK_LIMITS.max_drawdown_pct + 0.05
+    await _run(account_service, signal_service, notifier, drawdown=dd)
+
+    notifier.notify_risk_warn.assert_awaited_once()
+    kwargs = notifier.notify_risk_warn.await_args.kwargs
+    assert kwargs["event_type"] == "account_drawdown"
+    assert kwargs["account_id"] == 5
+
+
+async def test_drawdown_warn_skipped_below_threshold() -> None:
+    """回撤低于阈值 → 不 notify_risk_warn。"""
+    account_service = _account_service({1: []})
+    signal_service = AsyncMock()
+    signal_service.get_last_buy_signal = AsyncMock(return_value=None)
+    notifier = AsyncMock()
+    notifier.notify_risk_warn = AsyncMock()
+
+    dd = max(0.0, DEFAULT_RISK_LIMITS.max_drawdown_pct - 0.05)
+    await _run(account_service, signal_service, notifier, drawdown=dd)
+    notifier.notify_risk_warn.assert_not_awaited()
+
+
+async def test_drawdown_warn_skipped_when_none() -> None:
+    """回撤数据不足（None）→ 不 notify。"""
+    account_service = _account_service({1: []})
+    signal_service = AsyncMock()
+    signal_service.get_last_buy_signal = AsyncMock(return_value=None)
+    notifier = AsyncMock()
+    notifier.notify_risk_warn = AsyncMock()
+
+    await _run(account_service, signal_service, notifier, drawdown=None)
+    notifier.notify_risk_warn.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# G-4d-3：持仓私有 SELL 主动告警
+# ---------------------------------------------------------------------------
+async def test_private_sell_notifies_per_trigger() -> None:
+    """evaluate_private_signals 返回 hard_stop_loss → notify_risk_warn(trigger, account_id)。"""
+    position = _make_position("000001.SZ", 10.00)
+    account_service = _account_service({9: [position]})
+    signal_service = AsyncMock()
+    # 该持仓无 BUY 信号 → 不走止损预警路径，隔离验证私有 SELL 分支
+    signal_service.get_last_buy_signal = AsyncMock(return_value=None)
+    notifier = AsyncMock()
+    notifier.notify_risk_warn = AsyncMock()
+
+    private = [_private_sell("000001.SZ", "hard_stop_loss")]
+    await _run(account_service, signal_service, notifier, private_signals=private)
+
+    notifier.notify_risk_warn.assert_awaited_once()
+    kwargs = notifier.notify_risk_warn.await_args.kwargs
+    assert kwargs["event_type"] == "hard_stop_loss"
+    assert kwargs["account_id"] == 9
+    assert kwargs["payload"]["ts_code"] == "000001.SZ"
+
+
+async def test_private_sell_notify_exception_isolated() -> None:
+    """一条私有 SELL 通知失败不影响其他（异常隔离）。"""
+    position = _make_position("000001.SZ", 10.00)
+    account_service = _account_service({1: [position]})
+    signal_service = AsyncMock()
+    signal_service.get_last_buy_signal = AsyncMock(return_value=None)
+    notifier = AsyncMock()
+    notifier.notify_risk_warn = AsyncMock(side_effect=[RuntimeError("boom"), None])
+
+    private = [
+        _private_sell("000001.SZ", "hard_stop_loss"),
+        _private_sell("000002.SZ", "mid_term_icir_flip"),
+    ]
+    # 不应向外抛出
+    await _run(account_service, signal_service, notifier, private_signals=private)
+    assert notifier.notify_risk_warn.await_count == 2
 
 
 async def test_stop_loss_warn_multiuser_per_account_isolation() -> None:

@@ -249,17 +249,21 @@ async def _stop_loss_warn_job(
     redis: AsyncRedis | None,
     notification_channel: NotificationChannel | None,
 ) -> None:
-    """Phase 10 §5.5 + V1.5-G G-4c §6.4：每日 15:05 按用户扫描持仓 → 距止损 ≤ 2% 推送。
+    """Phase 10 §5.5 + V1.5-G G-4c/G-4d-3：每日 15:05 按账户主动告警（止损 / 回撤 / 私有 SELL）。
 
-    逻辑（设计文档 §5.5 + §6.4 多用户化）：
+    逻辑（设计文档 §5.5 + §6.4 多用户化 + §2 管线解耦后主动推送）：
     1. `list_active_user_accounts()` 遍历所有 is_active 用户的账户
-    2. 每账户查自己持仓；对每个持仓查最近一条 BUY Signal（共享层）取 `stop_loss_price`
-    3. 计算 `distance_pct = (current_price - stop_loss_price) / current_price`
-    4. `0 < distance_pct <= 0.02` → `notify_stop_loss_warn(..., account_id=account.id)`
-       （账户私有通知，仅归属用户可见）
+    2. **距止损预警**（§5.5）：每持仓查最近一条 BUY Signal（共享层）取 `stop_loss_price`，
+       `0 < distance_pct <= 0.02` → `notify_stop_loss_warn(..., account_id)`
+    3. **账户回撤告警**（G-4d-3，原管线 RiskChecker 回撤 WARN 移此）：`get_current_drawdown`
+       ≥ `risk_limits.max_drawdown_pct` → `notify_risk_warn(event_type="account_drawdown")`
+    4. **持仓私有 SELL**（G-4d-3，原管线持仓分支移此）：`evaluate_private_signals` 按账户
+       重跑 SignalGenerator，对 hard_stop_loss / short_term_z_drop / mid_term_icir_flip
+       各 → `notify_risk_warn(event_type=trigger_reason, account_id)`
 
-    去重由 NotificationService 内部按 `(notify_type, payload, account_id)` 24h 窗口
-    分账户完成（两用户同 ts_code 各自触发）。非交易日跳过。
+    §2 管线与账户解耦后，管线只产账户无关共享信号；账户私有的主动推送集中在本 Job
+    按账户完成。去重由 NotificationService 内部按 `(notify_type, payload, account_id)`
+    24h 窗口分账户完成。非交易日跳过。
     """
     today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
     if not calendar.is_trade_date(today):
@@ -277,9 +281,15 @@ async def _stop_loss_warn_job(
     try:
         async with session_factory() as session:
             account_service = AccountService(session)
-            signal_service = SignalService(MarketDataRepository(session))
             cfg = ConfigService(session, redis)
+            signal_service = SignalService(
+                MarketDataRepository(session), config_service=cfg
+            )
             notifier = NotificationService(session, cfg, notification_channel)
+
+            # G-4d-3：账户回撤阈值一次性加载（账户无关）
+            risk_limits = await cfg.get_risk_limits()
+            max_drawdown_pct = risk_limits.max_drawdown_pct
 
             accounts = await account_service.list_active_user_accounts()
             for account in accounts:
@@ -313,6 +323,51 @@ async def _stop_loss_warn_job(
                                 "stop_loss_warn_notify_failed: account=%d ts_code=%s",
                                 account.id, p.ts_code, exc_info=True,
                             )
+
+                # ── G-4d-3：账户回撤主动告警（原管线 RiskChecker 回撤 WARN 移此）──
+                try:
+                    dd = await account_service.get_current_drawdown(account.id)
+                    if dd is not None and dd >= max_drawdown_pct:
+                        await notifier.notify_risk_warn(
+                            event_type="account_drawdown",
+                            message=(
+                                f"账户回撤 {dd:.1%} 达到阈值 {max_drawdown_pct:.1%}，"
+                                "建议控制仓位"
+                            ),
+                            payload={"drawdown_pct": round(dd, 4), "date": str(today)},
+                            account_id=account.id,
+                        )
+                        warned += 1
+                except Exception:
+                    logger.warning(
+                        "drawdown_warn_failed: account=%d", account.id, exc_info=True
+                    )
+
+                # ── G-4d-3：持仓私有 SELL 主动告警（hard_stop_loss / 短中期因子翻转）──
+                # evaluate_private_signals 复用 SignalGenerator（止损逻辑单一实现源），
+                # 仅返回持仓派生的私有 SELL；共享 pct_above_sell / 加仓 BUY 已排除。
+                try:
+                    private = await signal_service.evaluate_private_signals(
+                        today, positions
+                    )
+                    for ps in private:
+                        try:
+                            await notifier.notify_risk_warn(
+                                event_type=ps.trigger_reason or "private_sell",
+                                message=ps.reason,
+                                payload={"ts_code": ps.ts_code, "date": str(today)},
+                                account_id=account.id,
+                            )
+                            warned += 1
+                        except Exception:
+                            logger.warning(
+                                "private_sell_notify_failed: account=%d ts_code=%s",
+                                account.id, ps.ts_code, exc_info=True,
+                            )
+                except Exception:
+                    logger.warning(
+                        "private_sell_eval_failed: account=%d", account.id, exc_info=True
+                    )
             await session.commit()
         logger.info(
             "stop_loss_warn_done: date=%s accounts=%d scanned=%d warned=%d",

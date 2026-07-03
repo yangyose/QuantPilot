@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -22,6 +23,24 @@ if TYPE_CHECKING:
     from quantpilot.services.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
+
+# V1.5-G G-4d-3：持仓派生的**私有 SELL** trigger（账户成本价 / 因子衰减依赖持仓上下文）。
+# 共享 pct_above_sell（客观市场分位，管线已产）与 加仓 BUY 不在此集合。
+_PRIVATE_SELL_TRIGGERS: frozenset[str] = frozenset(
+    {"hard_stop_loss", "short_term_z_drop", "mid_term_icir_flip"}
+)
+
+
+@dataclass
+class _GenInputs:
+    """generate_for_date / evaluate_private_signals 共享的账户无关输入。"""
+
+    composite_df: pd.DataFrame
+    ts_codes: list[str]
+    market_state: MarketStateEnum
+    snapshot: pd.DataFrame
+    signal_cfg: Any
+    universe_cfg: Any
 
 # 合法状态转换表（SDD §9.4）
 _VALID_TRANSITIONS: dict[str, set[str]] = {
@@ -458,15 +477,64 @@ class SignalService:
                 "generate_for_date 需要注入 config_service（Phase 10 §7.1 去除降级）"
             )
 
-        from quantpilot.engine.market_state import MarketStateEnum
         from quantpilot.engine.signal import SignalGenerator
 
-        pool_entries = await self._repo.get_pool(trade_date=trade_date)
-        if not pool_entries:
+        inputs = await self._load_generation_inputs(trade_date)
+        if inputs is None:
             logger.info(
                 "generate_for_date_skip: no in_pool entries for %s", trade_date
             )
             return []
+
+        # ── Engine 层链路（账户无关）──────────────────────────────────────────────
+        # current_positions=[] + holding_signal_states={}：无持仓上下文，SignalGenerator
+        # 只产共享信号（BUY 候选 + 客观 pct_above_sell SELL）。持仓派生的私有信号
+        # （hard_stop_loss / 加仓 / 短中期翻转）与仓位建议移 API 请求期按用户账户叠加
+        # （G-4d-2 SignalViewService）+ 每日 Job 按账户评估通知（G-4d-3）。
+        generator = SignalGenerator(
+            signal_cfg=inputs.signal_cfg, universe_cfg=inputs.universe_cfg
+        )
+        trade_signals = generator.generate(
+            composite_scores=inputs.composite_df,
+            current_positions=[],
+            market_state=inputs.market_state,
+            snapshot_quotes=inputs.snapshot,
+            trade_date=trade_date,
+            holding_signal_states={},
+        )
+
+        generated_codes = {s.ts_code for s in trade_signals}
+        await self.save(trade_signals, trade_date, inputs.composite_df)
+
+        all_today = await self._repo.get_signals_by_date(
+            trade_date, signal_type=None, status=None
+        )
+        saved = [s for s in all_today if s.ts_code in generated_codes]
+        logger.info(
+            "generate_for_date_done: trade_date=%s raw=%d saved=%d",
+            trade_date, len(trade_signals), len(saved),
+        )
+
+        # Phase 13 §3.1.2 埋点：按 signal_type 聚合计数
+        from quantpilot.core.metrics import SIGNALS_GENERATED
+        type_counts: dict[str, int] = {}
+        for s in saved:
+            type_counts[s.signal_type] = type_counts.get(s.signal_type, 0) + 1
+        for stype, cnt in type_counts.items():
+            SIGNALS_GENERATED.labels(type=stype).inc(cnt)
+
+        return saved
+
+    async def _load_generation_inputs(self, trade_date: date) -> _GenInputs | None:
+        """加载 SignalGenerator 的**账户无关**输入（候选池评分 / 市场状态 / 行情 / 配置）。
+
+        generate_for_date（共享信号）与 evaluate_private_signals（按账户私有 SELL）复用，
+        保证两条路径吃完全相同的评分上下文。候选池为空 → 返回 None。
+        `self._cfg` 须已注入（调用方保证）。
+        """
+        pool_entries = await self._repo.get_pool(trade_date=trade_date)
+        if not pool_entries:
+            return None
 
         ts_codes = [e.ts_code for e in pool_entries]
 
@@ -517,59 +585,74 @@ class SignalService:
             ]
         ).set_index("ts_code")
 
-        # ── 依赖加载（市场状态 / 行情 / 配置）── V1.5-G G-4d-1：管线不再读账户 ──
-        # §2 管线与账户解耦：generate_for_date 产**账户无关**的共享信号
-        # （BUY 候选 + 客观 pct_above_sell SELL）。仓位建议（suggested_pct）/ 集中度
-        # BLOCK / 持仓私有 SELL（hard_stop_loss / 加仓 / 短中期翻转）/ 回撤 RISK_WARN
-        # 全部移出管线——API 请求期按用户账户叠加（G-4d-2 SignalViewService）+ 回撤
-        # 告警并入 G-4c 每日 Job 遍历 active 账户（G-4d-3）。
         ms_row = await self._repo.get_latest_market_state(
             before_date=trade_date + timedelta(days=1)
         )
         try:
             market_state = (
-                MarketStateEnum(ms_row.market_state) if ms_row else MarketStateEnum.OSCILLATION
+                MarketStateEnum(ms_row.market_state)
+                if ms_row
+                else MarketStateEnum.OSCILLATION
             )
         except ValueError:
             market_state = MarketStateEnum.OSCILLATION
 
         snapshot = await self._repo.get_snapshot_quotes(ts_codes, trade_date)
-
         signal_cfg = await self._cfg.get_signal_params()
         universe_cfg = await self._cfg.get_universe_params()
 
-        # ── Engine 层链路（账户无关）──────────────────────────────────────────────
-        # current_positions=[] + holding_signal_states={}：无持仓上下文，SignalGenerator
-        # 只产共享信号（BUY 候选 + 客观 pct_above_sell SELL）。持仓派生的私有信号
-        # （hard_stop_loss / 加仓 / 短中期翻转）与仓位建议移 API 请求期按用户账户叠加。
-        generator = SignalGenerator(signal_cfg=signal_cfg, universe_cfg=universe_cfg)
-        trade_signals = generator.generate(
-            composite_scores=composite_df,
-            current_positions=[],
+        return _GenInputs(
+            composite_df=composite_df,
+            ts_codes=ts_codes,
             market_state=market_state,
-            snapshot_quotes=snapshot,
+            snapshot=snapshot,
+            signal_cfg=signal_cfg,
+            universe_cfg=universe_cfg,
+        )
+
+    async def evaluate_private_signals(
+        self, trade_date: date, positions: list
+    ) -> list[TradeSignal]:
+        """V1.5-G G-4d-3：为某账户持仓评估**私有 SELL**（不落库，供每日 Job 通知）。
+
+        管线只产账户无关的共享信号（G-4d-1）；每日 Job 按账户重跑 SignalGenerator
+        评估持仓派生的私有 SELL（hard_stop_loss / short_term_z_drop / mid_term_icir_flip）。
+        复用 `_load_generation_inputs` + SignalGenerator——止损逻辑**单一实现源**，
+        杜绝在 Job 里另写一份 hard_stop_loss 判定造成语义漂移。
+
+        过滤规则：仅保留 ts_code 在持仓集合内、且 trigger_reason ∈ 私有 SELL 三类的信号。
+        共享 pct_above_sell（管线已产）与 加仓 BUY 被排除。空持仓 / 空候选池 → []。
+        """
+        if not positions:
+            return []
+        if self._cfg is None:
+            raise RuntimeError("evaluate_private_signals 需要注入 config_service")
+
+        from quantpilot.engine.signal import SignalGenerator
+
+        inputs = await self._load_generation_inputs(trade_date)
+        if inputs is None:
+            return []
+
+        holding_signal_states = await self._compute_holding_signal_states(
+            holdings=positions,
             trade_date=trade_date,
-            holding_signal_states={},
+            market_state=inputs.market_state,
         )
-
-        generated_codes = {s.ts_code for s in trade_signals}
-        await self.save(trade_signals, trade_date, composite_df)
-
-        all_today = await self._repo.get_signals_by_date(
-            trade_date, signal_type=None, status=None
+        generator = SignalGenerator(
+            signal_cfg=inputs.signal_cfg, universe_cfg=inputs.universe_cfg
         )
-        saved = [s for s in all_today if s.ts_code in generated_codes]
-        logger.info(
-            "generate_for_date_done: trade_date=%s raw=%d saved=%d",
-            trade_date, len(trade_signals), len(saved),
+        signals = generator.generate(
+            composite_scores=inputs.composite_df,
+            current_positions=positions,
+            market_state=inputs.market_state,
+            snapshot_quotes=inputs.snapshot,
+            trade_date=trade_date,
+            holding_signal_states=holding_signal_states,
         )
-
-        # Phase 13 §3.1.2 埋点：按 signal_type 聚合计数
-        from quantpilot.core.metrics import SIGNALS_GENERATED
-        type_counts: dict[str, int] = {}
-        for s in saved:
-            type_counts[s.signal_type] = type_counts.get(s.signal_type, 0) + 1
-        for stype, cnt in type_counts.items():
-            SIGNALS_GENERATED.labels(type=stype).inc(cnt)
-
-        return saved
+        holding_codes = {p.ts_code for p in positions}
+        return [
+            s
+            for s in signals
+            if s.ts_code in holding_codes and s.trigger_reason in _PRIVATE_SELL_TRIGGERS
+        ]
