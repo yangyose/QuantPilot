@@ -7,10 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query  # noqa: F401
 from fastapi.responses import JSONResponse
 
 from quantpilot.api.deps import (
+    get_current_account_id,
     get_current_user_id,
     get_lineage_service,
     get_repo,
     get_signal_service,
+    get_signal_view_service,
 )
 from quantpilot.core.exceptions import SignalNotFoundError
 from quantpilot.data.repository import MarketDataRepository
@@ -21,6 +23,7 @@ from quantpilot.schemas.signals import (
 )
 from quantpilot.services.lineage_service import LineageService
 from quantpilot.services.signal_service import SignalService
+from quantpilot.services.signal_view_service import SignalViewService
 
 router = APIRouter()
 
@@ -55,14 +58,19 @@ async def get_signals(
     signal_type: str | None = Query(default=None, description="BUY / SELL"),
     status: str | None = Query(default=None, description="NEW / VIEWED / ACTED / EXPIRED"),
     _: int = Depends(get_current_user_id),
+    account_id: int = Depends(get_current_account_id),
     service: SignalService = Depends(get_signal_service),
     repo: MarketDataRepository = Depends(get_repo),
+    view_service: SignalViewService = Depends(get_signal_view_service),
 ):
     """GET /api/v1/signals — 最新可用信号列表（或指定日期）。
 
     信号是收盘后每日一次产出，缺省查字面今天在盘中/周末/节假日必然为空。
     故 trade_date 缺省时回退到最近一个有信号的交易日；显式传 trade_date 则查该日。
     响应 trade_date 反映实际信号日期（无任何信号时为 null）。
+
+    V1.5-G G-4d-2（§2 派生语义）：信号本身是账户无关的共享数据（管线产出），响应
+    组装期经 SignalViewService 按当前账户叠加 is_holding + 仓位建议 suggested_pct。
     """
     if trade_date is not None:
         target_date: date | None = trade_date
@@ -70,6 +78,7 @@ async def get_signals(
     else:
         signals, target_date = await service.get_latest_signals(signal_type, status)
     signal_dicts = await _enrich_with_names(signals, repo)
+    await view_service.apply_account_overlay(signal_dicts, account_id)
     return {
         "code": 0,
         "data": {

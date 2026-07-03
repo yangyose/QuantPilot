@@ -36,9 +36,11 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
 class SignalService:
     """信号 CRUD + 过期扫描（Engine 层负责具体计算）。
 
-    Phase 10 §7.1：`generate_for_date` 完整化需要 `account_service` + `config_service` 注入；
-    未提供时仅支持 CRUD 方法（save/get_*/update_status/expire_old_signals），
-    调用 `generate_for_date` 会抛 RuntimeError（去除 V1.0 降级）。
+    V1.5-G G-4d-1（§2 管线与账户解耦）：`generate_for_date` **不再读账户**，只需
+    `config_service` 注入即可产出账户无关的共享信号（缺失抛 RuntimeError）。
+    `account_service` / `notification_service` 仅供历史兼容保留（可选、当前路径不使用）；
+    账户维度叠加（is_holding / 仓位建议 / 私有 SELL）移至 API 请求期的 SignalViewService
+    （G-4d-2），回撤主动推送并入 G-4c 每日 Job（G-4d-3）。
     """
 
     def __init__(

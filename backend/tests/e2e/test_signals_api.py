@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 from httpx import AsyncClient
 
-from quantpilot.api.deps import get_lineage_service, get_signal_service
+from quantpilot.api.deps import (
+    get_lineage_service,
+    get_signal_service,
+    get_signal_view_service,
+)
 from quantpilot.core.security import create_token
 from quantpilot.main import app
 from quantpilot.models.business import Signal
@@ -128,6 +132,53 @@ async def test_sapi_07_get_signals_explicit_date(client: AsyncClient) -> None:
     assert data["total"] == 1
     mock_service.get_today_signals.assert_awaited_once()
     mock_service.get_latest_signals.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# SAPI-08: GET /signals 经 SignalViewService 按账户叠加 is_holding + suggested_pct
+# （V1.5-G G-4d-2 §2 派生语义：管线产共享信号，API 期按当前账户叠加账户维度视图）
+# ---------------------------------------------------------------------------
+async def test_sapi_08_get_signals_account_overlay(client: AsyncClient) -> None:
+    """SAPI-08: GET /signals 组装期调用 SignalViewService.apply_account_overlay，
+    响应 dict 携带按账户叠加的 is_holding + suggested_pct。"""
+    sigs = [_mock_signal(1, "000001.SZ"), _mock_signal(2, "000002.SZ")]
+    mock_service = AsyncMock()
+    mock_service.get_latest_signals = AsyncMock(return_value=(sigs, date(2026, 4, 8)))
+
+    async def _fake_overlay(signal_dicts: list, account_id: int) -> None:
+        # 模拟：持仓命中 000001.SZ，为其标 is_holding；BUY 叠加 suggested_pct
+        for d in signal_dicts:
+            d["is_holding"] = d["ts_code"] == "000001.SZ"
+            if d["signal_type"] == "BUY":
+                d["suggested_pct"] = 0.08
+
+    mock_view = MagicMock()
+    mock_view.apply_account_overlay = AsyncMock(side_effect=_fake_overlay)
+
+    app.dependency_overrides[get_signal_service] = lambda: mock_service
+    app.dependency_overrides[get_signal_view_service] = lambda: mock_view
+    try:
+        resp = await client.get("/api/v1/signals", headers=_auth_header())
+    finally:
+        app.dependency_overrides.pop(get_signal_service, None)
+        app.dependency_overrides.pop(get_signal_view_service, None)
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    by_code = {s["ts_code"]: s for s in data["signals"]}
+    assert by_code["000001.SZ"]["is_holding"] is True
+    assert by_code["000002.SZ"]["is_holding"] is False
+    assert by_code["000001.SZ"]["suggested_pct"] == 0.08
+    mock_view.apply_account_overlay.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# SAPI-09: GET /signals 无 token → 401（守卫在 get_current_user_id）
+# ---------------------------------------------------------------------------
+async def test_sapi_09_get_signals_requires_auth(client: AsyncClient) -> None:
+    """SAPI-09: GET /signals 无 Authorization 头 → 401。"""
+    resp = await client.get("/api/v1/signals")
+    assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ from quantpilot.services.report_service import ReportService
 from quantpilot.services.settings_service import SettingsService
 from quantpilot.services.setup_service import SetupService
 from quantpilot.services.signal_service import SignalService
+from quantpilot.services.signal_view_service import SignalViewService
 from quantpilot.services.strategy_service import ScoringService
 from quantpilot.services.watchlist_service import WatchlistService
 
@@ -194,6 +195,22 @@ def get_config_service(
     """按请求构造 ConfigService；Redis 从 app.state 取（未配置时降级为无缓存）。"""
     redis = getattr(request.app.state, "redis", None)
     return ConfigService(session, redis)
+
+
+def get_signal_view_service(
+    session: AsyncSession = Depends(get_db),
+    config_service: ConfigService = Depends(get_config_service),
+) -> SignalViewService:
+    """按请求构造 SignalViewService（V1.5-G G-4d-2：GET /signals 账户维度叠加）。
+
+    repo / account_service 与 config_service 共用同一 per-request session（FastAPI
+    对 get_db 结果按请求缓存），保证叠加读到的是同一事务视图。
+    """
+    return SignalViewService(
+        MarketDataRepository(session),
+        account_service=AccountService(session),
+        config_service=config_service,
+    )
 
 
 def get_notification_service(

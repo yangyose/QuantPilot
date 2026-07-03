@@ -23,6 +23,9 @@ class SignalResponse(BaseModel):
     reason: str | None
     status: str
     created_at: datetime | None
+    # V1.5-G G-4d-2（§2 派生语义）：API 请求期按当前账户叠加的已持仓标记。
+    # 管线产的共享信号无此语义（默认 False）；GET /signals 经 SignalViewService 叠加。
+    is_holding: bool = False
     # Phase 11 §9.1：分位主路径三层输出 + trigger_reason 细分
     # 注：weights_source 不在 Signal ORM（仅在 candidate_pool / signal_score_snapshot
     # 上下文有意义），Phase 12 评审 R12-P2-2 删除该字段避免响应永远 null 误导前端。
