@@ -127,6 +127,15 @@ def _private_sell(ts_code: str, trigger_reason: str) -> SimpleNamespace:
     )
 
 
+def _private_buy(ts_code: str, score: float = 85.0) -> SimpleNamespace:
+    """构造 evaluate_private_signals 返回的加仓 BUY TradeSignal（G-4d-4）。"""
+    return SimpleNamespace(
+        ts_code=ts_code, signal_type="BUY", trigger_reason="pct_below_buy",
+        reason="加仓条件满足", score=score,
+        suggested_price_low=9.9, suggested_price_high=10.2,
+    )
+
+
 async def test_stop_loss_warn_skipped_non_trade_date() -> None:
     account_service = _account_service({1: []})
     signal_service = AsyncMock()
@@ -330,6 +339,49 @@ async def test_private_sell_notifies_per_trigger() -> None:
     assert kwargs["event_type"] == "hard_stop_loss"
     assert kwargs["account_id"] == 9
     assert kwargs["payload"]["ts_code"] == "000001.SZ"
+
+
+async def test_private_add_buy_notifies_signal_buy() -> None:
+    """G-4d-4：加仓 BUY → notifier.notify("SIGNAL_BUY", ..., account_id)（不走 risk_warn）。"""
+    position = _make_position("000001.SZ", 10.00)
+    account_service = _account_service({3: [position]})
+    signal_service = AsyncMock()
+    signal_service.get_last_buy_signal = AsyncMock(return_value=None)
+    notifier = AsyncMock()
+    notifier.notify = AsyncMock()
+    notifier.notify_risk_warn = AsyncMock()
+
+    private = [_private_buy("000001.SZ")]
+    await _run(account_service, signal_service, notifier, private_signals=private)
+
+    notifier.notify.assert_awaited_once()
+    args = notifier.notify.await_args
+    assert args.args[0] == "SIGNAL_BUY"
+    assert args.kwargs["account_id"] == 3
+    assert args.kwargs["payload"]["ts_code"] == "000001.SZ"
+    notifier.notify_risk_warn.assert_not_awaited()
+
+
+async def test_private_mixed_buy_and_sell_routed_separately() -> None:
+    """G-4d-4：同账户同时有私有 SELL + 加仓 BUY → 各走各的通知入口。"""
+    position = _make_position("000001.SZ", 10.00)
+    account_service = _account_service({1: [position]})
+    signal_service = AsyncMock()
+    signal_service.get_last_buy_signal = AsyncMock(return_value=None)
+    notifier = AsyncMock()
+    notifier.notify = AsyncMock()
+    notifier.notify_risk_warn = AsyncMock()
+
+    private = [
+        _private_sell("000001.SZ", "hard_stop_loss"),
+        _private_buy("000002.SZ"),
+    ]
+    await _run(account_service, signal_service, notifier, private_signals=private)
+
+    notifier.notify_risk_warn.assert_awaited_once()
+    assert notifier.notify_risk_warn.await_args.kwargs["event_type"] == "hard_stop_loss"
+    notifier.notify.assert_awaited_once()
+    assert notifier.notify.await_args.args[0] == "SIGNAL_BUY"
 
 
 async def test_private_sell_notify_exception_isolated() -> None:

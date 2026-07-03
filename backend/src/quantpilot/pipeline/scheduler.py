@@ -343,30 +343,46 @@ async def _stop_loss_warn_job(
                         "drawdown_warn_failed: account=%d", account.id, exc_info=True
                     )
 
-                # ── G-4d-3：持仓私有 SELL 主动告警（hard_stop_loss / 短中期因子翻转）──
-                # evaluate_private_signals 复用 SignalGenerator（止损逻辑单一实现源），
-                # 仅返回持仓派生的私有 SELL；共享 pct_above_sell / 加仓 BUY 已排除。
+                # ── G-4d-3/4：持仓私有信号主动推送 ──────────────────────────────
+                # evaluate_private_signals 复用 SignalGenerator（止损/加仓逻辑单一
+                # 实现源），返回持仓派生的私有 SELL（hard_stop_loss / 短中期因子翻转
+                # → notify_risk_warn）+ 加仓 BUY（SDD §10.1 can_add，用户 2026-07-03
+                # 拍板同路走 Job 通知 → notify("SIGNAL_BUY")）；共享 pct_above_sell
+                # 已排除（管线已产）。
                 try:
                     private = await signal_service.evaluate_private_signals(
                         today, positions
                     )
                     for ps in private:
                         try:
-                            await notifier.notify_risk_warn(
-                                event_type=ps.trigger_reason or "private_sell",
-                                message=ps.reason,
-                                payload={"ts_code": ps.ts_code, "date": str(today)},
-                                account_id=account.id,
-                            )
+                            if ps.signal_type == "BUY":
+                                await notifier.notify(
+                                    "SIGNAL_BUY",
+                                    f"加仓提示：{ps.ts_code}",
+                                    ps.reason or "持仓达买入条件且满足加仓规则",
+                                    payload={
+                                        "ts_code": ps.ts_code,
+                                        "date": str(today),
+                                        "kind": "add_position",
+                                    },
+                                    account_id=account.id,
+                                )
+                            else:
+                                await notifier.notify_risk_warn(
+                                    event_type=ps.trigger_reason or "private_sell",
+                                    message=ps.reason,
+                                    payload={"ts_code": ps.ts_code, "date": str(today)},
+                                    account_id=account.id,
+                                )
                             warned += 1
                         except Exception:
                             logger.warning(
-                                "private_sell_notify_failed: account=%d ts_code=%s",
+                                "private_signal_notify_failed: account=%d ts_code=%s",
                                 account.id, ps.ts_code, exc_info=True,
                             )
                 except Exception:
                     logger.warning(
-                        "private_sell_eval_failed: account=%d", account.id, exc_info=True
+                        "private_signal_eval_failed: account=%d", account.id, exc_info=True
                     )
             await session.commit()
         logger.info(

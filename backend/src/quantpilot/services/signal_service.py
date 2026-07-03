@@ -25,7 +25,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # V1.5-G G-4d-3：持仓派生的**私有 SELL** trigger（账户成本价 / 因子衰减依赖持仓上下文）。
-# 共享 pct_above_sell（客观市场分位，管线已产）与 加仓 BUY 不在此集合。
+# 共享 pct_above_sell（客观市场分位，管线已产）不在此集合；加仓 BUY（G-4d-4）走
+# signal_type == "BUY" 判定，不经此 trigger 集合。
 _PRIVATE_SELL_TRIGGERS: frozenset[str] = frozenset(
     {"hard_stop_loss", "short_term_z_drop", "mid_term_icir_flip"}
 )
@@ -613,15 +614,20 @@ class SignalService:
     async def evaluate_private_signals(
         self, trade_date: date, positions: list
     ) -> list[TradeSignal]:
-        """V1.5-G G-4d-3：为某账户持仓评估**私有 SELL**（不落库，供每日 Job 通知）。
+        """V1.5-G G-4d-3/4：为某账户持仓评估**私有信号**（不落库，供每日 Job 通知）。
 
         管线只产账户无关的共享信号（G-4d-1）；每日 Job 按账户重跑 SignalGenerator
-        评估持仓派生的私有 SELL（hard_stop_loss / short_term_z_drop / mid_term_icir_flip）。
-        复用 `_load_generation_inputs` + SignalGenerator——止损逻辑**单一实现源**，
-        杜绝在 Job 里另写一份 hard_stop_loss 判定造成语义漂移。
+        评估持仓派生的私有信号：
+        - **私有 SELL**（hard_stop_loss / short_term_z_drop / mid_term_icir_flip）
+        - **加仓 BUY**（持仓 + 达买入条件 + SDD §10.1 加仓规则 can_add；用户
+          2026-07-03 拍板与私有 SELL 同路走每日 Job 通知）——持仓股经 SignalGenerator
+          持仓分支产出的 BUY 即加仓 BUY（无持仓不会走该分支）。
+        复用 `_load_generation_inputs` + SignalGenerator——止损/加仓逻辑**单一实现源**，
+        杜绝在 Job 里另写一份判定造成语义漂移。
 
-        过滤规则：仅保留 ts_code 在持仓集合内、且 trigger_reason ∈ 私有 SELL 三类的信号。
-        共享 pct_above_sell（管线已产）与 加仓 BUY 被排除。空持仓 / 空候选池 → []。
+        过滤规则：仅保留 ts_code 在持仓集合内、且（trigger_reason ∈ 私有 SELL 三类
+        或 signal_type == "BUY"）的信号。共享 pct_above_sell（管线已产）被排除。
+        空持仓 / 空候选池 → []。
         """
         if not positions:
             return []
@@ -630,13 +636,20 @@ class SignalService:
 
         from quantpilot.engine.signal import SignalGenerator
 
-        inputs = await self._load_generation_inputs(trade_date)
+        # G-4d-4 时序修正：止损 Job（15:05）早于每日管线（17:30），当日池尚不存在。
+        # 精确匹配 trade_date 会让私有信号每天静默评估为空（SUCCESS 但产出为零），
+        # 故回落到 ≤ trade_date 的最新池日期（= 最近一次管线产出的评分上下文）。
+        pool_date = await self._repo.get_latest_pool_date(trade_date)
+        if pool_date is None:
+            return []
+
+        inputs = await self._load_generation_inputs(pool_date)
         if inputs is None:
             return []
 
         holding_signal_states = await self._compute_holding_signal_states(
             holdings=positions,
-            trade_date=trade_date,
+            trade_date=pool_date,
             market_state=inputs.market_state,
         )
         generator = SignalGenerator(
@@ -654,5 +667,6 @@ class SignalService:
         return [
             s
             for s in signals
-            if s.ts_code in holding_codes and s.trigger_reason in _PRIVATE_SELL_TRIGGERS
+            if s.ts_code in holding_codes
+            and (s.trigger_reason in _PRIVATE_SELL_TRIGGERS or s.signal_type == "BUY")
         ]

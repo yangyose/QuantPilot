@@ -874,6 +874,19 @@ class MarketDataRepository:
         )
         return {row[0] for row in result.all()}
 
+    async def get_latest_pool_date(self, as_of: date) -> date | None:
+        """返回 ≤ as_of 的最新 candidate_pool trade_date（无任何池数据 → None）。
+
+        V1.5-G G-4d-4：止损 Job（15:05）早于每日管线（17:30），当日池尚不存在；
+        `evaluate_private_signals` 用此方法回落到最近一次管线产出的评分上下文。
+        """
+        result = await self._session.execute(
+            select(func.max(CandidatePool.trade_date)).where(
+                CandidatePool.trade_date <= as_of
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_pool(
         self,
         trade_date: date | None = None,
