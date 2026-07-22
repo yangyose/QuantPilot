@@ -1051,12 +1051,23 @@ class MarketDataRepository:
         as_of_date: date,
         n: int = 2,
     ) -> pd.DataFrame:
-        """按 PIT 原则返回每只股票最近 n 个报告期的财务数据。
+        """按 PIT 原则返回每只股票最近 n 个**报告期**的财务数据。
         index=(ts_code, report_period)，columns=FinancialData 各字段。
+
+        两级去重（2026-07 生产事故修复）：先按 (ts_code, report_period) 保留
+        publish_date 最新的一行，再对不同报告期倒序取前 n。
+        必须去重的原因：每日快照 `fetch_financial_data` 对未披露报告期（如 7 月的
+        Q2 2026-06-30）每天写一条 publish_date=当日 的全 NULL 行，UNIQUE 含
+        publish_date → 同一报告期堆积多条重复行。若直接按 report_period 排序取前 n
+        行，重复的同期 NULL 行会占满 n=2 窗口、挤出真实的上一期数据 → F-5 连续亏损
+        过滤失效 → 候选池近翻倍 → 生产评分卡死（连续 12 交易日无信号）。
+        这些每日行携带合法的当日 pe/pb（get_pe_pb_history_bulk 依赖），不能删，故
+        修在此消费端。
         """
         if not ts_codes:
             return pd.DataFrame()
-        subq = (
+        # 第一级：每个 (ts_code, report_period) 只保留 publish_date 最新一行
+        deduped = (
             select(
                 FinancialData.ts_code,
                 FinancialData.report_period,
@@ -1066,14 +1077,32 @@ class MarketDataRepository:
                 FinancialData.debt_to_asset,
                 FinancialData.total_equity,
                 func.row_number().over(
-                    partition_by=FinancialData.ts_code,
-                    order_by=FinancialData.report_period.desc(),
-                ).label("rn"),
+                    partition_by=(FinancialData.ts_code, FinancialData.report_period),
+                    order_by=FinancialData.publish_date.desc(),
+                ).label("prn"),
             )
             .where(
                 FinancialData.ts_code.in_(ts_codes),
                 FinancialData.publish_date <= as_of_date,
             )
+            .subquery()
+        )
+        # 第二级：在去重后的报告期上倒序取前 n 期
+        subq = (
+            select(
+                deduped.c.ts_code,
+                deduped.c.report_period,
+                deduped.c.net_profit_yoy,
+                deduped.c.roe,
+                deduped.c.revenue_yoy,
+                deduped.c.debt_to_asset,
+                deduped.c.total_equity,
+                func.row_number().over(
+                    partition_by=deduped.c.ts_code,
+                    order_by=deduped.c.report_period.desc(),
+                ).label("rn"),
+            )
+            .where(deduped.c.prn == 1)
             .subquery()
         )
         stmt = select(subq).where(subq.c.rn <= n)
