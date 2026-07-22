@@ -7,10 +7,16 @@ _ensure_schema / 红线护栏）仍在 tests/conftest.py。
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 import pytest
 
 from quantpilot.core.database import engine as app_engine
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from quantpilot.models.user import User
 
 
 @pytest.fixture(autouse=True)
@@ -34,3 +40,19 @@ async def _drop_stale_app_engine_pool() -> AsyncGenerator[None, None]:
     """
     await app_engine.dispose(close=False)
     yield
+
+
+@pytest.fixture
+async def test_user(db_session: AsyncSession) -> User:
+    """多用户测试用户（G-2b §11：取代旧 override_admin_password settings 替换方案）。
+
+    经真实 AuthService.register 建 user 行（level=L1）+ 自动空账户，密码为
+    tests.conftest.TEST_PASSWORD；随 db_session 事务回滚，不污染共享 DB。
+    需要其他 level 的测试可在拿到后 `await AuthService(db_session).update_me(user, level=...)`。
+    """
+    from quantpilot.services.auth_service import AuthService
+    from tests.conftest import TEST_PASSWORD
+
+    return await AuthService(db_session).register(
+        "g2b-testuser", "g2b-testuser@example.com", TEST_PASSWORD
+    )

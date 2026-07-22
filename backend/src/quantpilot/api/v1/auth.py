@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from quantpilot.api.deps import get_auth_service, get_current_user
+from quantpilot.core.config import settings
 from quantpilot.core.exceptions import AuthError
+from quantpilot.core.rate_limit import limiter
 from quantpilot.core.security import (
     create_token,
     decode_token,
@@ -29,7 +31,12 @@ _DUMMY_HASH = hash_password("dummy-password-never-matches-any-input")
 
 
 @router.post("/login")
-async def login(body: LoginRequest, auth: AuthService = Depends(get_auth_service)):
+@limiter.limit(settings.rate_limit_login)
+async def login(
+    request: Request,  # slowapi 装饰器要求端点显式接收 Request（取 IP 分桶）
+    body: LoginRequest,
+    auth: AuthService = Depends(get_auth_service),
+):
     user = await auth.get_user_by_username(body.username.strip())
     # 先执行 bcrypt（约 100ms），再比对结果，避免短路求值暴露用户名枚举侧信道
     password_ok = verify_password(
@@ -70,8 +77,11 @@ async def refresh(body: RefreshRequest):
 
 
 @router.post("/register")
+@limiter.limit(settings.rate_limit_register)
 async def register(
-    body: RegisterRequest, auth: AuthService = Depends(get_auth_service)
+    request: Request,  # slowapi 装饰器要求端点显式接收 Request（取 IP 分桶）
+    body: RegisterRequest,
+    auth: AuthService = Depends(get_auth_service),
 ):
     """开放自助注册：建 user(level=L1) + 自动建空账户。
 

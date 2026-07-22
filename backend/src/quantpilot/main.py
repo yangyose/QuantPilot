@@ -239,6 +239,19 @@ async def _api_request_duration_middleware(request, call_next):
     return response
 
 register_exception_handlers(app)
+
+# V1.5-G G-2b §4.3：/auth/login + /auth/register 按 IP 限频（slowapi）。
+# app.state.limiter 为 slowapi 装饰器查找入口；429 handler 统一项目响应格式。
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+
+from quantpilot.core.rate_limit import (  # noqa: E402
+    limiter,
+    rate_limit_exceeded_handler,
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["认证"])
 app.include_router(data.router, prefix="/api/v1/data", tags=["数据"])
 app.include_router(market.router, prefix="/api/v1/market", tags=["市场状态"])

@@ -16,12 +16,22 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # JWT 认证
-    admin_username: str
-    admin_password_hash: str
+    # admin_username / admin_password_hash（V1.5-G 起）仅供 alembic 0018 迁移种子
+    # 首用户消费，应用运行时不再读取；0018 跑过后可从 env 移除（留空则 0018 跳过种子）。
+    admin_username: str = ""
+    admin_password_hash: str = ""
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60
     jwt_refresh_token_expire_days: int = 7
+
+    # 认证接口按 IP 限频（V1.5-G G-2b §4.3）。字符串遵循 limits 库语法（如 "10/minute"）。
+    # storage_uri 留空 = memory://（生产为单 uvicorn 进程，进程内计数够用）；
+    # 未来多 worker 部署时配 redis URI 共享计数。
+    rate_limit_enabled: bool = True
+    rate_limit_login: str = "10/minute"
+    rate_limit_register: str = "5/hour"
+    rate_limit_storage_uri: str = ""
 
     # 数据源
     tushare_token: str = ""

@@ -18,7 +18,6 @@ from quantpilot.api.deps import (
     get_current_user_level,
 )
 from quantpilot.core.config import settings
-from quantpilot.core.security import hash_password
 from quantpilot.main import app
 
 BACKEND_DIR = Path(__file__).parents[1]  # tests/ → backend/
@@ -27,13 +26,24 @@ BACKEND_DIR = Path(__file__).parents[1]  # tests/ → backend/
 TEST_PASSWORD = "ci-test-password-only"
 
 
+# G-2b：原 override_admin_password autouse fixture（替换 settings.admin_password_hash）
+# 已退役——G-2a 起登录走 DB user 表，运行时不再读该 settings；0018 迁移种子在
+# 子进程 alembic 中读真实 .env，也不受 fixture 影响。需要真实登录用户的集成测试
+# 改用 tests/integration/conftest.py 的 `test_user` 多用户 fixture（建 user 行 + 真实 level）。
+
+
 @pytest.fixture(autouse=True, scope="session")
-def override_admin_password() -> Generator[None, None, None]:
-    """将 settings 中的密码哈希替换为测试专用值，解耦 .env"""
-    original = settings.admin_password_hash
-    settings.admin_password_hash = hash_password(TEST_PASSWORD)
+def disable_rate_limiter() -> Generator[None, None, None]:
+    """全套件默认关闭认证限频（G-2b §4.3），防止连续 e2e 请求互相触发 429。
+
+    限频专项 e2e（tests/e2e/test_rate_limit_api.py）用局部 fixture 打开并 reset。
+    """
+    from quantpilot.core.rate_limit import limiter
+
+    original = limiter.enabled
+    limiter.enabled = False
     yield
-    settings.admin_password_hash = original
+    limiter.enabled = original
 
 
 @pytest.fixture

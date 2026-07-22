@@ -1,19 +1,10 @@
-import re
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
-# 轻量 email 格式校验（避免引入 email-validator 依赖；严格验证待 G-2b 升 EmailStr）
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def _validate_email(value: str) -> str:
-    if not _EMAIL_RE.match(value):
-        raise ValueError("邮箱格式不正确")
-    return value
-
-
-EmailStr = Annotated[str, AfterValidator(_validate_email)]
+# G-2b：email 校验升级为 pydantic EmailStr（email-validator 后端，
+# 默认 check_deliverability=False 不做 DNS 查询）。自制正则会放行
+# 连续点/点开头/域标签连字符首尾等畸形地址，已移除。
 
 
 class LoginRequest(BaseModel):

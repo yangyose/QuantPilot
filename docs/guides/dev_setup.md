@@ -94,8 +94,8 @@ cp .env.example .env
 
 | 变量 | 说明 | 生成命令 |
 |------|------|---------|
-| `ADMIN_USERNAME` | 管理员用户名 | 直接填，默认 `admin` |
-| `ADMIN_PASSWORD_HASH` | 密码 bcrypt 哈希（**禁止填明文**） | 见 §3.3 |
+| `ADMIN_USERNAME` | 首用户用户名（V1.5-G 起仅供 alembic 0018 迁移种子消费，运行时不读；0018 跑过后可移除） | 直接填，默认 `admin` |
+| `ADMIN_PASSWORD_HASH` | 首用户密码 bcrypt 哈希（**禁止填明文**；同上仅迁移种子用） | 见 §3.3 |
 | `JWT_SECRET_KEY` | JWT 签名密钥，≥ 64 字符随机 | `openssl rand -hex 64` |
 | `DB_PASSWORD` | PostgreSQL 密码 | 自定义强密码，避免 `changeme` |
 | `REDIS_PASSWORD` | Redis 密码 | 同上 |
@@ -409,9 +409,10 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 
 ## 8. 常见问题
 
-### Q1: `settings` 报错 `field required: ADMIN_PASSWORD_HASH`
+### Q1: `settings` 报错 `field required: JWT_SECRET_KEY`
 
 **原因**：`.env` 缺少必填变量，或运行目录不对（`pydantic-settings` 优先读环境变量，再读 `.env`）。
+（V1.5-G 起 `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` 已改为可选——仅 alembic 0018 迁移种子首用户时消费，缺失则 0018 跳过种子。）
 
 **解决**：
 - Docker 模式：确认根目录有 `.env` 且变量已填

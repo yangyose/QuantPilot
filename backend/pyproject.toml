@@ -13,7 +13,7 @@ dependencies = [
     # Web 框架
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
-    "pydantic>=2.6",
+    "pydantic[email]>=2.6",
     "pydantic-settings>=2.2",
     # 数据库
     "sqlalchemy[asyncio]>=2.0",
@@ -41,6 +41,7 @@ dependencies = [
     # 配置导入导出（Phase 10 §6.9 YAML 备份/恢复）
     "PyYAML>=6.0",
     "prometheus-client>=0.25.0",
+    "slowapi>=0.1.10",
 ]
 
 [dependency-groups]
