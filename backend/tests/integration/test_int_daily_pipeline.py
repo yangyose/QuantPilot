@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from quantpilot.models.account import Account, DailyPortfolioValue, Position
+from quantpilot.models.business import InAppNotification
 from quantpilot.models.market import DailyQuote
 from quantpilot.models.system import PipelineRun
 from quantpilot.pipeline.daily_pipeline import DailyPipeline
@@ -378,6 +379,20 @@ async def test_int_dp_04_empty_quotes_fails_cp1(db_engine: AsyncEngine) -> None:
             run = await pipeline.run(_DATE_04)
     finally:
         await _delete_pipeline_run(factory, _DATE_04)
+        # 清理 _notify_pipeline_failure 真 commit 写入的系统级 HEALTH_ALERT——
+        # 不清会泄漏给按字母序后跑的 test_int_notification_isolation（CI 抓到：
+        # notif_01 可见集合多出 HEALTH_ALERT / notif_03 mark_all_read 计数 3≠2）。
+        async with factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(InAppNotification).where(
+                        InAppNotification.notify_type == "HEALTH_ALERT",
+                        InAppNotification.payload["trade_date"].astext
+                        == str(_DATE_04),
+                    )
+                )
+                for notif in result.scalars().all():
+                    await session.delete(notif)
 
     assert run.status == "FAILED"
     # 关键：护栏必须阻止在空行情下标记 CP1 就绪（否则 re-trigger 跳过 CP1 复现崩溃）
