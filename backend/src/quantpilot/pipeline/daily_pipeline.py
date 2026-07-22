@@ -249,6 +249,18 @@ class DailyPipeline:
                 "cp1_ingest_done: quotes=%d financials=%d version=%s",
                 ingest_result.quote_count, ingest_result.financial_count, version,
             )
+            # 护栏（2026-07-21 事故）：行情摄入为空 = 数据源（Tushare）超时/不可用。
+            # 交易日必有行情，quotes=0 一定是摄入失败。必须在标记 cp1_data_ready 之前
+            # 中止——否则整体 cp1_data_ready=True 会让 CP2 拿空快照崩 KeyError，且后续
+            # re-trigger 跳过 CP1、复现同错，需人工重置标志才能自愈。抛异常 → run() 落
+            # FAILED（cp1_data_ready 保持 False）+ 触发失败告警 → 数据源恢复后重新
+            # trigger 将自动重新摄入行情。
+            if ingest_result.quote_count == 0:
+                raise RuntimeError(
+                    f"CP1 行情摄入为空（quotes=0，trade_date={trade_date}）——"
+                    "数据源不可用，中止流水线；cp1_data_ready 保持 False，"
+                    "数据源恢复后重新 trigger 将自动重新摄入。"
+                )
             # R13-P1-1：CP1 入库成功后即时刷新 DATA_LATENCY Gauge
             # （即时反馈，不等 /health/data 端点被调用才更新）
             if ingest_result.quote_count > 0:

@@ -20,6 +20,7 @@ from tests.integration._helpers import seeded_user_id
 _DATE_01 = date(2026, 3, 10)  # INT-DP-01 全流程
 _DATE_02 = date(2026, 3, 11)  # INT-DP-02 断点续传
 _DATE_03 = date(2026, 3, 12)  # INT-DP-03 mark_to_market
+_DATE_04 = date(2026, 3, 13)  # INT-DP-04 行情摄入为空 → CP1 失败护栏
 _TS_CODE = "INTDP1.SZ"        # INT-DP-03 专用股票代码
 
 
@@ -320,3 +321,65 @@ async def test_int_dp_03_mark_to_market_writes_dpv(db_engine: AsyncEngine) -> No
                     await session.delete(account_row)
 
     assert run.status == "SUCCESS"
+
+
+# ---------------------------------------------------------------------------
+# INT-DP-04: 行情摄入为空（quotes=0）→ CP1 失败护栏（2026-07 生产事故）
+# ---------------------------------------------------------------------------
+
+async def test_int_dp_04_empty_quotes_fails_cp1(db_engine: AsyncEngine) -> None:
+    """INT-DP-04: ingest_daily 返回 quotes=0（数据源超时）→ 流水线 FAILED 且
+    cp1_data_ready 保持 False。
+
+    事故背景（2026-07-21）：Tushare 超时导致当天 daily_quote 一条未入库，但 CP1
+    旧实现无条件 `cp1_data_ready=True` → CP2 拿空快照崩 KeyError，且 re-trigger
+    会跳过 CP1 复现同错、必须人工重置标志。护栏要求：quotes=0 时在标记 ready 前
+    中止 → run 落 FAILED、cp1_data_ready=False → 数据源恢复后 re-trigger 自动重摄。
+    """
+    factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    pipeline = _make_pipeline(factory)
+
+    mock_ds = AsyncMock()
+    empty_result = MagicMock()
+    empty_result.quote_count = 0
+    empty_result.financial_count = 0
+    mock_ds.ingest_daily.return_value = empty_result
+
+    # 下游服务全 mock：若没有护栏，全流程会 mock 通过 → SUCCESS + cp1_ready=True；
+    # 有护栏则 CP1 在空行情处即中止 → 唯一失败来源是护栏本身（隔离断言）。
+    mock_scoring = AsyncMock()
+    mock_scoring.run_daily_scoring.return_value = []
+    mock_signal = AsyncMock()
+    mock_signal.generate_for_date.return_value = []
+    mock_signal.expire_old_signals.return_value = 0
+    mock_account = AsyncMock()
+    mock_account.mark_to_market.return_value = []
+
+    try:
+        with (
+            patch("quantpilot.services.data_service.DataService", return_value=mock_ds),
+            patch(
+                "quantpilot.services.market_state_service.MarketStateService",
+                return_value=AsyncMock(),
+            ),
+            patch(
+                "quantpilot.services.strategy_service.ScoringService",
+                return_value=mock_scoring,
+            ),
+            patch(
+                "quantpilot.services.signal_service.SignalService",
+                return_value=mock_signal,
+            ),
+            patch(
+                "quantpilot.services.account_service.AccountService",
+                return_value=mock_account,
+            ),
+        ):
+            run = await pipeline.run(_DATE_04)
+    finally:
+        await _delete_pipeline_run(factory, _DATE_04)
+
+    assert run.status == "FAILED"
+    # 关键：护栏必须阻止在空行情下标记 CP1 就绪（否则 re-trigger 跳过 CP1 复现崩溃）
+    assert run.cp1_data_ready is False
+    assert run.cp2_scoring_done is False
