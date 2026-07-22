@@ -377,6 +377,23 @@ class DailyPipeline:
             db_run.cp2_at = datetime.now(tz=timezone.utc)
             await session.commit()
 
+            # 护栏（2026-07 事故）：候选池规模较上一交易日突变 → best-effort 告警。
+            # F-5 崩塌当天池 2290→4379 无告警致静默 3 周；此检查令异常当天即暴露。
+            # 失败不影响 CP2 主流程（内部已吞异常，此处再包一层防 notifier 构造异常）。
+            try:
+                from quantpilot.services.config_service import ConfigService
+                from quantpilot.services.notification_service import NotificationService
+                from quantpilot.services.pipeline_monitor import check_pool_size_anomaly
+
+                cfg = ConfigService(session, self._redis, snapshot=run.config_snapshot)
+                notifier = NotificationService(session, cfg, self._notification_channel)
+                await check_pool_size_anomaly(repo, notifier, trade_date)
+                await session.commit()
+            except Exception:
+                logger.warning(
+                    "cp2_pool_anomaly_check_failed: trade_date=%s", trade_date, exc_info=True
+                )
+
         run.cp2_scoring_done = True
         logger.info("cp2_done: trade_date=%s", trade_date)
 

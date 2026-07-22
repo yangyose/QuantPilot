@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis as AsyncRedis
@@ -100,6 +101,18 @@ def create_scheduler(
         id="trade_calendar_refresh",
         replace_existing=True,
         misfire_grace_time=7200,
+    )
+
+    # 流水线卡死看门狗 Job（每 30min）：扫描 RUNNING 超时未完成的 pipeline_run 告警。
+    # 2026-07 事故：12 个 run 长期 RUNNING 无人知、静默 3 周。看门狗独立于管线进程，
+    # 挂起的管线无法自报，必须由此周期扫描兜底（pipeline_monitor.scan_stuck_runs）。
+    scheduler.add_job(
+        _pipeline_watchdog_job,
+        trigger=IntervalTrigger(minutes=30),
+        args=[session_factory, redis, notification_channel],
+        id="pipeline_watchdog",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
 
     return scheduler
@@ -391,3 +404,30 @@ async def _stop_loss_warn_job(
         )
     except Exception:
         logger.exception("stop_loss_warn_job_failed: date=%s", today)
+
+
+async def _pipeline_watchdog_job(
+    session_factory: async_sessionmaker,
+    redis: AsyncRedis | None,
+    notification_channel: NotificationChannel | None,
+) -> None:
+    """流水线卡死看门狗（每 30min）：扫描 RUNNING 超时未完成的 run 并告警。
+
+    2026-07 事故复盘产出。自建 session 显式 commit（调度 job 不走 get_db 自动 commit）。
+    去重由 NotificationService 按 (notify_type, payload, account_id) 24h 窗口完成，
+    同一卡死 run 每天至多告警一次。
+    """
+    from quantpilot.services.config_service import ConfigService
+    from quantpilot.services.notification_service import NotificationService
+    from quantpilot.services.pipeline_monitor import scan_stuck_runs
+
+    try:
+        async with session_factory() as session:
+            cfg = ConfigService(session, redis)
+            notifier = NotificationService(session, cfg, notification_channel)
+            n = await scan_stuck_runs(session, notifier)
+            await session.commit()
+        if n:
+            logger.warning("pipeline_watchdog_alerted: stuck=%d", n)
+    except Exception:
+        logger.exception("pipeline_watchdog_job_failed")
