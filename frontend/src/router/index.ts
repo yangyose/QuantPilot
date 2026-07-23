@@ -12,6 +12,13 @@ const router = createRouter({
       meta: { public: true },
     },
     {
+      // V1.5-G G-5：注册页（公开；注册成功跳登录页手动登录 §4.4）
+      path: '/register',
+      name: 'register',
+      component: () => import('@/views/RegisterView.vue'),
+      meta: { public: true },
+    },
+    {
       path: '/onboarding',
       name: 'onboarding',
       component: () => import('@/views/OnboardingView.vue'),
@@ -70,11 +77,15 @@ const router = createRouter({
 
 // 路由守卫：
 // 1) 未登录 → 强制 /login
-// 2) 已登录但向导未完成 → 强制 /onboarding（避免直接刷新 /dashboard 绕过向导）
+// 2) 已登录访问 /login 或 /register → 跳首页（V1.5-G G-5）
+// 3) 已登录但向导未完成 → 强制 /onboarding（避免直接刷新 /dashboard 绕过向导）
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!to.meta.public && !auth.isLoggedIn) {
     return { name: 'login' }
+  }
+  if (auth.isLoggedIn && (to.name === 'login' || to.name === 'register')) {
+    return { name: 'dashboard' }
   }
   if (auth.isLoggedIn && to.name !== 'onboarding' && to.name !== 'login') {
     try {

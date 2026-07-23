@@ -156,7 +156,8 @@ async function syncAccount() {
 
 async function submitTrade() {
   try {
-    await store.recordTrade({ ...tradeForm.value, account_id: store.account?.id ?? 1 })
+    // V1.5-G G-5：account_id 由后端按 token 推，前端不再传
+    await store.recordTrade({ ...tradeForm.value })
     message.success('交易录入成功')
     addTradeOpen.value = false
   } catch (err: unknown) {
@@ -169,7 +170,6 @@ async function submitTrade() {
 async function submitFund() {
   try {
     const fundBody = {
-      account_id: store.account?.id ?? 1,
       amount: fundForm.value.amount,
       trade_date: fundForm.value.trade_date,
       note: fundForm.value.note,

@@ -12,6 +12,16 @@ export interface LoginResponse {
   refresh_token?: string
 }
 
+// V1.5-G：用户层级（自选偏好，非权限；控制内容深浅）
+export type UserLevel = 'L1' | 'L2' | 'L3'
+
+/** GET /auth/me 响应（UserMeResponse） */
+export interface UserMe {
+  username: string
+  email: string
+  level: UserLevel
+}
+
 // ── 市场状态 ─────────────────────────────────────────────────────────
 export type MarketStateEnum = 'UPTREND' | 'OSCILLATION' | 'DOWNTREND'
 

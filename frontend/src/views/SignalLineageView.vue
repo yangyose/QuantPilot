@@ -5,10 +5,14 @@
  * L1 默认展开（业务可解释 trigger_reason 翻译 + market_state + composite_score）
  * L2 默认折叠（4 strategy_z + weights_source/hysteresis + 中性化前/后 JSONB tree）
  * L3 默认折叠（正交化残差 + 5 步管线 JSONB + pipeline_run 审计）
+ *
+ * V1.5-G G-5（设计 §6.2）：默认展开层数跟随用户 level（L1 只展开 L1 摘要，
+ * L2/L3 逐层默认展开）；偏好非硬墙——任何层级用户仍可手动展开全部层。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeftOutlined } from '@ant-design/icons-vue'
+import { useAuthStore } from '@/stores/auth'
 import AttributionPanel from '@/components/AttributionPanel.vue'
 import TermLabel from '@/components/TermLabel.vue'
 import { getSignalLineage } from '@/api/signals'
@@ -24,10 +28,15 @@ import type { SignalLineage } from '@/types/api'
 const route = useRoute()
 const router = useRouter()
 
+const auth = useAuthStore()
+
 const lineage = ref<SignalLineage | null>(null)
 const loading = ref(false)
 const errorMsg = ref('')
-const activeKeys = ref<string[]>(['L1'])
+// 默认展开层数随用户 level：L1→仅 L1；L2→L1+L2；L3→全部
+const activeKeys = ref<string[]>(
+  auth.levelNum >= 3 ? ['L1', 'L2', 'L3'] : auth.levelNum === 2 ? ['L1', 'L2'] : ['L1'],
+)
 
 const signalId = computed(() => Number(route.params.id))
 

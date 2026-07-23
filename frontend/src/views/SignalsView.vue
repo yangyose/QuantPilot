@@ -133,8 +133,8 @@ function openTradeModal(signal: Signal) {
 async function submitTrade() {
   tradeLoading.value = true
   try {
+    // V1.5-G G-5：account_id 由后端按 token 推，前端不再传
     await positionStore.recordTrade({
-      account_id: positionStore.account?.id ?? 1,
       ts_code: tradeForm.value.ts_code,
       trade_type: tradeForm.value.trade_type as 'BUY' | 'SELL',
       price: tradeForm.value.price,

@@ -146,16 +146,16 @@ async function saveInitialCash() {
   }
   loading.value = true
   try {
-    // Phase 10 §6.6：通过 POST /account/deposit 在默认账户记入入金（FundFlow.DEPOSIT）。
+    // Phase 10 §6.6：通过 POST /account/deposit 记入入金（FundFlow.DEPOSIT）。
     // 不再写 user_config（合法 key 仅 12 项白名单，见 phase10 §6.9）。
+    // V1.5-G G-5：account_id 由后端按 token 推，前端不再传。
     const today = new Date().toISOString().slice(0, 10)
     await deposit({
-      account_id: 1,
       amount: initialCash.value,
       trade_date: today,
       note: '首次向导设置初始资金',
     })
-    message.success('已记录初始资金到默认账户，后续可在账户页调整')
+    message.success('已记录初始资金到当前账户，后续可在账户页调整')
     next()
   } catch {
     message.error('保存失败，可跳过后续在账户页手动入金')

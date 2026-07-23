@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import {
@@ -47,6 +47,11 @@ function logout() {
   auth.logout()
   router.push('/login')
 }
+
+// V1.5-G G-5：布局挂载时刷新用户资料（level 驱动分层显隐）；失败沿用本地缓存
+onMounted(() => {
+  if (auth.isLoggedIn) auth.fetchMe().catch(() => undefined)
+})
 </script>
 
 <template>
@@ -75,6 +80,7 @@ function logout() {
       <a-layout-header style="background: #fff; padding: 0 16px; display: flex; justify-content: flex-end; align-items: center; gap: 12px">
         <NotificationBell />
         <span v-if="auth.username" style="color: rgba(0,0,0,.65)">{{ auth.username }}</span>
+        <a-tag color="blue" style="margin: 0">{{ auth.level }}</a-tag>
         <a-button type="link" @click="logout">
           <template #icon><LogoutOutlined /></template>
           退出

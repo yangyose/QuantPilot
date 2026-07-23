@@ -6,9 +6,14 @@
  * - Tab 3 黑白名单：/watchlist API 的 CRUD
  * - Tab 4 变更历史：已有
  * - Tab 5 导入/导出：YAML
+ *
+ * V1.5-G G-5：
+ * - Tab 6 个人资料：账号信息 + L1/L2/L3 层级选择器（PATCH /auth/me）
+ * - 参数面板按用户 level 显隐（requiredLevel 镜像 backend CONFIG_KEY_LEVEL；
+ *   偏好非权限——用户随时可在个人资料切换层级解锁）
  */
 import { message, Modal } from 'ant-design-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import {
   exportSettingsYaml,
@@ -25,7 +30,9 @@ import {
 } from '@/api/watchlist'
 import { getWxStatus } from '@/api/notifications'
 import TermLabel from '@/components/TermLabel.vue'
+import { useAuthStore } from '@/stores/auth'
 import type {
+  UserLevel,
   ImportChange,
   ImportResponse,
   UserConfigHistory,
@@ -63,6 +70,9 @@ interface ConfigDefinition {
   consumer: string
   // 默认分层（字段未指定时回退此值）；同时决定该 def 在哪个 panel 显示其默认字段集
   tier: Tier
+  // V1.5-G G-5：该 config_key 要求的最低用户层级（镜像 backend
+  // core/config_defaults.py CONFIG_KEY_LEVEL；notification_prefs=L1 在独立 Tab）
+  requiredLevel: 'L2' | 'L3'
   fields: ConfigField[]
 }
 
@@ -72,6 +82,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   // basic：日常使用参数
   {
     config_key: 'signal_params',
+    requiredLevel: 'L2',
     title: '信号阈值',
     description: '综合评分驱动的买入/卖出/强信号阈值与建议价区间',
     consumer: 'SignalGenerator',
@@ -88,6 +99,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   },
   {
     config_key: 'risk_limits',
+    requiredLevel: 'L2',
     title: '风控上限',
     description: '单股/行业/账户持仓与单笔仓位上限',
     consumer: 'RiskChecker + PositionSizer',
@@ -101,6 +113,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   },
   {
     config_key: 'universe_params',
+    requiredLevel: 'L2',
     title: '股票池',
     description: '候选股池容量 / 信号有效期 / 上市时长 / 流动性阈值',
     consumer: 'UniverseFilter + CandidatePoolManager',
@@ -115,6 +128,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   // advanced：策略/回测参数
   {
     config_key: 'market_state_params',
+    requiredLevel: 'L3',
     title: '市场状态识别',
     description: 'ADX + 双 MA 均线三态识别参数',
     consumer: 'MarketStateEngine',
@@ -129,6 +143,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   },
   {
     config_key: 'strategy_params_trend',
+    requiredLevel: 'L2',
     title: '趋势策略参数',
     description: 'MA 周期 + MACD 参数（v1.1 ClosePrice 复权已修正）',
     consumer: 'TrendStrategy',
@@ -143,6 +158,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   },
   {
     config_key: 'strategy_params_momentum',
+    requiredLevel: 'L2',
     title: '动量策略参数',
     description: '3/6 月收益动量 + 反转剔除阈值',
     consumer: 'MomentumStrategy',
@@ -155,6 +171,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   },
   {
     config_key: 'strategy_params_mean_reversion',
+    requiredLevel: 'L2',
     title: '均值回归策略参数',
     description: 'RSI + 布林带',
     consumer: 'MeanReversionStrategy',
@@ -168,6 +185,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   },
   {
     config_key: 'strategy_params_value',
+    requiredLevel: 'L2',
     title: '价值策略参数',
     description: 'PE-PB 历史分位窗口',
     consumer: 'ValueStrategy',
@@ -178,6 +196,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   },
   {
     config_key: 'backtest_defaults',
+    requiredLevel: 'L2',
     title: '回测成本默认',
     description: '回测 POST 端点 partial-overlay 兜底值',
     consumer: 'BacktestEngine',
@@ -191,6 +210,7 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
   // expert：因子监控
   {
     config_key: 'factor_monitor_params',
+    requiredLevel: 'L3',
     title: '因子质量监控',
     description: 'IC 窗口 / 告警阈值 / 半衰期窗口（月末计算）',
     consumer: 'FactorMonitorService',
@@ -237,6 +257,7 @@ const NOTIFICATION_FIELDS: ConfigField[] = [
 
 // ─────────────────── state ───────────────────
 
+const auth = useAuthStore()
 const activeTab = ref('config')
 const loading = ref(false)
 const saveLoading = ref(false)
@@ -280,6 +301,33 @@ const yamlUploadLoading = ref(false)
 // wx-status
 const wxStatus = ref<WxStatusData>({ wx_configured: false, uid_masked: null })
 
+// V1.5-G G-5：个人资料 / 层级切换
+const LEVEL_OPTIONS: { value: UserLevel; label: string; desc: string }[] = [
+  { value: 'L1', label: 'L1 · 新手', desc: '只看核心信号与提醒设置，隐藏进阶参数' },
+  { value: 'L2', label: 'L2 · 进阶', desc: '开放信号阈值、风控、股票池与策略参数配置' },
+  { value: 'L3', label: 'L3 · 专业', desc: '开放策略权重矩阵、市场状态识别与因子监控参数' },
+]
+const levelDraft = ref<UserLevel>(auth.level)
+const levelSaving = ref(false)
+// auth.level 外部变化（如登录后 fetchMe）时同步草稿
+watch(() => auth.level, (v) => { levelDraft.value = v })
+
+async function saveLevel() {
+  if (levelDraft.value === auth.level) return
+  levelSaving.value = true
+  try {
+    await auth.updateLevel(levelDraft.value)
+    message.success(`已切换到 ${levelDraft.value}`)
+    // level 变化影响 GET /settings 可见集，重新拉取
+    await loadConfigs()
+  } catch {
+    message.error('层级切换失败')
+    levelDraft.value = auth.level
+  } finally {
+    levelSaving.value = false
+  }
+}
+
 /** 字段有效 tier：未声明则回退到 def.tier。 */
 function effectiveFieldTier(def: ConfigDefinition, field: ConfigField): Tier {
   return field.tier ?? def.tier
@@ -290,9 +338,15 @@ function fieldsForPanel(def: ConfigDefinition, panelTier: Tier): ConfigField[] {
   return def.fields.filter((f) => effectiveFieldTier(def, f) === panelTier)
 }
 
-/** 给定 panel tier，返回该 panel 下应渲染的 def 列表（仅当 def 至少有一个字段属于该 tier）。*/
+/** 给定 panel tier，返回该 panel 下应渲染的 def 列表（仅当 def 至少有一个字段属于该 tier）。
+ * V1.5-G G-5：同时按用户 level 过滤（requiredLevel > 用户 level 的 def 隐藏）。 */
+const LEVEL_NUM: Record<string, number> = { L1: 1, L2: 2, L3: 3 }
 function defsForPanel(panelTier: Tier): ConfigDefinition[] {
-  return CONFIG_CATALOG.filter((d) => fieldsForPanel(d, panelTier).length > 0)
+  return CONFIG_CATALOG.filter(
+    (d) =>
+      LEVEL_NUM[d.requiredLevel] <= auth.levelNum &&
+      fieldsForPanel(d, panelTier).length > 0,
+  )
 }
 
 const panelDefs = computed(() => ({
@@ -315,6 +369,8 @@ onMounted(async () => {
     loadHistory(),
     loadWatchlist(),
     loadWxStatus(),
+    // G-5：刷新用户资料（level 可能在其他会话被改过）；失败沿用本地缓存
+    auth.fetchMe().catch(() => undefined),
   ])
 })
 
@@ -666,7 +722,19 @@ const watchlistColumns = [
     <a-tabs v-model:active-key="activeTab">
       <!-- Tab 1: 参数配置（三段折叠） -->
       <a-tab-pane key="config" tab="参数配置">
-        <a-spin :spinning="loading">
+        <!-- V1.5-G G-5：L1 用户不展示参数面板（偏好非权限，可随时切换层级解锁） -->
+        <template v-if="auth.levelNum < 2">
+          <a-alert
+            type="info"
+            show-icon
+            message="参数配置面向 L2 及以上层级"
+            description="当前层级为 L1（新手），系统使用 SDD 推荐默认参数。如需调整信号阈值、风控与策略参数，请先在『个人资料』中切换到 L2/L3。"
+          />
+          <a-button type="primary" ghost style="margin-top: 12px" @click="activeTab = 'profile'">
+            前往个人资料切换层级
+          </a-button>
+        </template>
+        <a-spin v-else :spinning="loading">
           <a-alert
             type="info"
             show-icon
@@ -757,8 +825,8 @@ const watchlistColumns = [
 
             <!-- advanced -->
             <a-collapse-panel key="advanced" header="【高级】策略参数 / 权重矩阵 / 回测成本">
-              <!-- 策略权重矩阵（唯一嵌套 dict） -->
-              <div class="config-block">
+              <!-- 策略权重矩阵（唯一嵌套 dict；G-5：CONFIG_KEY_LEVEL 定为 L3） -->
+              <div v-if="auth.levelNum >= 3" class="config-block">
                 <div class="config-header">
                   <div>
                     <span class="config-title">策略权重矩阵</span>
@@ -1151,6 +1219,50 @@ const watchlistColumns = [
           </a-table>
         </a-card>
       </a-tab-pane>
+
+      <!-- Tab 6: 个人资料（V1.5-G G-5） -->
+      <a-tab-pane key="profile" tab="个人资料">
+        <a-card size="small" title="账号信息" style="max-width: 560px; margin-bottom: 16px">
+          <a-descriptions :column="1" size="small">
+            <a-descriptions-item label="用户名">
+              {{ auth.username ?? '—' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="邮箱">
+              {{ auth.email ?? '—' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="当前层级">
+              <a-tag color="blue">{{ auth.level }}</a-tag>
+            </a-descriptions-item>
+          </a-descriptions>
+        </a-card>
+
+        <a-card size="small" title="用户层级" style="max-width: 560px">
+          <a-alert
+            type="info"
+            show-icon
+            message="层级是内容深浅偏好，不是权限——随时可改，立即生效。"
+            style="margin-bottom: 16px"
+          />
+          <a-radio-group v-model:value="levelDraft">
+            <a-space direction="vertical" size="middle">
+              <a-radio v-for="opt in LEVEL_OPTIONS" :key="opt.value" :value="opt.value">
+                <b>{{ opt.label }}</b>
+                <div class="level-desc">{{ opt.desc }}</div>
+              </a-radio>
+            </a-space>
+          </a-radio-group>
+          <div style="margin-top: 16px">
+            <a-button
+              type="primary"
+              :loading="levelSaving"
+              :disabled="levelDraft === auth.level"
+              @click="saveLevel"
+            >
+              保存层级
+            </a-button>
+          </div>
+        </a-card>
+      </a-tab-pane>
     </a-tabs>
   </div>
 </template>
@@ -1204,5 +1316,11 @@ const watchlistColumns = [
 .weights-table td.invalid {
   color: #cf1322;
   font-weight: 600;
+}
+
+.level-desc {
+  color: #8c8c8c;
+  font-size: 12px;
+  margin-top: 2px;
 }
 </style>

@@ -62,6 +62,10 @@ async function onSubmit() {
           </a-button>
         </a-form-item>
       </a-form>
+      <!-- V1.5-G G-5：注册入口 -->
+      <div class="login-register-link">
+        还没有账号？<router-link to="/register">注册</router-link>
+      </div>
       <!-- V1.0 整改 Batch 2 — B2-4：投顾边界合规声明 -->
       <div class="login-footer">
         本系统为<strong>个人量化交易决策辅助工具</strong>，
@@ -83,6 +87,12 @@ async function onSubmit() {
 }
 .login-card {
   width: 360px;
+}
+.login-register-link {
+  margin-top: 4px;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.55);
 }
 .login-footer {
   margin-top: 12px;

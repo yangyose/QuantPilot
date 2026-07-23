@@ -6,17 +6,20 @@ import type {
   TradeRecord,
 } from '@/types/api'
 
+// V1.5-G G-5：所有账户层端点的 account_id 由后端按 token 推
+// （get_current_account_id），前端不再传 account_id。
+
 export async function getAccount(): Promise<AccountSummary> {
   const res = await client.get('/api/v1/account')
   return res.data.data as AccountSummary
 }
 
-export async function syncAccount(account_id = 1): Promise<void> {
-  await client.post('/api/v1/account/sync', null, { params: { account_id } })
+export async function syncAccount(): Promise<void> {
+  await client.post('/api/v1/account/sync')
 }
 
-export async function getPositions(account_id = 1): Promise<PositionItem[]> {
-  const res = await client.get('/api/v1/positions', { params: { account_id } })
+export async function getPositions(): Promise<PositionItem[]> {
+  const res = await client.get('/api/v1/positions')
   return res.data.data as PositionItem[]
 }
 
@@ -28,7 +31,6 @@ export async function patchPosition(
 }
 
 export interface TradeBody {
-  account_id: number
   ts_code: string
   trade_type: 'BUY' | 'SELL'
   shares: number
@@ -47,12 +49,9 @@ export async function recordTrade(body: TradeBody): Promise<TradeRecord> {
 // 单账户个人场景成交/流水总量有限，一次性拉全（后端默认 limit=50 会截断分页）。
 const LIST_FETCH_LIMIT = 5000
 
-export async function getTrades(
-  account_id = 1,
-  include_voided = false,
-): Promise<TradeRecord[]> {
+export async function getTrades(include_voided = false): Promise<TradeRecord[]> {
   const res = await client.get('/api/v1/account/trades', {
-    params: { account_id, include_voided, limit: LIST_FETCH_LIMIT },
+    params: { include_voided, limit: LIST_FETCH_LIMIT },
   })
   return (res.data.data?.items ?? []) as TradeRecord[]
 }
@@ -66,7 +65,6 @@ export async function voidCashflow(flow_id: number, void_note?: string): Promise
 }
 
 export interface DepositBody {
-  account_id: number
   amount: number
   trade_date: string
   note?: string
@@ -81,7 +79,6 @@ export async function withdraw(body: DepositBody): Promise<void> {
 }
 
 export interface CashflowParams {
-  account_id?: number
   start_date?: string
   end_date?: string
   flow_type?: string
@@ -92,7 +89,7 @@ export interface CashflowParams {
 
 export async function getCashflows(params?: CashflowParams): Promise<FundFlow[]> {
   const res = await client.get('/api/v1/account/cashflow', {
-    params: { account_id: 1, limit: LIST_FETCH_LIMIT, ...params },
+    params: { limit: LIST_FETCH_LIMIT, ...params },
   })
   return (res.data.data?.items ?? []) as FundFlow[]
 }

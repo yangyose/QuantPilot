@@ -35,7 +35,7 @@ export const usePositionStore = defineStore('positions', () => {
   async function fetchTrades(includeVoided = false): Promise<void> {
     loading.value = true
     try {
-      trades.value = await posApi.getTrades(account.value?.id ?? 1, includeVoided)
+      trades.value = await posApi.getTrades(includeVoided)
     } finally {
       loading.value = false
     }
