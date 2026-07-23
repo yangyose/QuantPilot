@@ -91,6 +91,21 @@ async def test_login_wrong_username(client: AsyncClient, login_auth: AsyncMock):
     assert resp.status_code == 401
 
 
+async def test_login_inactive_user_returns_401(client: AsyncClient, login_auth: AsyncMock):
+    """AUTH-03b（G-6，§9 INT-AUTH-01 e2e 侧）: is_active=False + 正确密码 → 401。
+
+    停用用户即使密码正确也不得签发 token（auth.py 登录分支 not user.is_active）。
+    """
+    user = await login_auth.get_user_by_username(settings.admin_username)
+    user.is_active = False
+    resp = await client.post(
+        "/api/v1/auth/login",
+        json={"username": settings.admin_username, "password": TEST_PASSWORD},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["code"] == 401
+
+
 # ---------------------------------------------------------------------------
 # AUTH-04 : health 端点（无需鉴权，验证 client 正常）
 # ---------------------------------------------------------------------------

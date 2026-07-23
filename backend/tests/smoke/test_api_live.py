@@ -23,6 +23,9 @@
     Phase 13 可观测     GET /metrics + /api/v1/health/scheduler + /health/data
                         + WS /api/v1/pipeline/progress (API-96~101)
     Phase 14 §14-1     RM-13 deposit 幂等 (API-102~103)
+    Phase 14 §14-10    作废订正 (API-104~107)
+    V1.5-G  多用户认证  POST /auth/register + GET/PATCH /auth/me (API-108~114)
+                        账户层端点 account_id 改由 token 推（G-3），冒烟传参已同步清理
 
 运行条件：
     1. 服务已启动（默认 http://localhost:8000，可用 API_BASE_URL 覆盖）
@@ -623,7 +626,7 @@ def test_api_35_account_with_auth(
 
 def test_api_36_account_sync_no_auth(client: httpx.Client) -> None:
     """API-36: POST /api/v1/account/sync 无鉴权 → 401"""
-    r = client.post("/api/v1/account/sync", params={"account_id": 1})
+    r = client.post("/api/v1/account/sync")
     assert r.status_code == 401
     _assert_error(r.json(), 401)
 
@@ -631,7 +634,7 @@ def test_api_36_account_sync_no_auth(client: httpx.Client) -> None:
 def test_api_37_account_trades_no_auth(client: httpx.Client) -> None:
     """API-37: POST /api/v1/account/trades 无鉴权 → 401"""
     r = client.post("/api/v1/account/trades", json={
-        "account_id": 1, "ts_code": "000001.SZ", "trade_type": "BUY",
+        "ts_code": "000001.SZ", "trade_type": "BUY",
         "trade_date": "2026-04-10", "price": 10.0, "shares": 100,
     })
     assert r.status_code == 401
@@ -642,7 +645,7 @@ def test_api_38_account_trades_bad_body(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
     """API-38: POST /api/v1/account/trades 缺少必填字段 → 422"""
-    r = client.post("/api/v1/account/trades", json={"account_id": 1}, headers=auth_headers)
+    r = client.post("/api/v1/account/trades", json={}, headers=auth_headers)
     assert r.status_code == 422
     body = r.json()
     assert body.get("code") == 422
@@ -652,7 +655,7 @@ def test_api_38_account_trades_bad_body(
 def test_api_39_account_deposit_no_auth(client: httpx.Client) -> None:
     """API-39: POST /api/v1/account/deposit 无鉴权 → 401"""
     r = client.post("/api/v1/account/deposit", json={
-        "account_id": 1, "amount": 10000.0, "trade_date": "2026-04-10",
+        "amount": 10000.0, "trade_date": "2026-04-10",
     })
     assert r.status_code == 401
     _assert_error(r.json(), 401)
@@ -661,7 +664,7 @@ def test_api_39_account_deposit_no_auth(client: httpx.Client) -> None:
 def test_api_40_account_withdraw_no_auth(client: httpx.Client) -> None:
     """API-40: POST /api/v1/account/withdraw 无鉴权 → 401"""
     r = client.post("/api/v1/account/withdraw", json={
-        "account_id": 1, "amount": 1000.0, "trade_date": "2026-04-10",
+        "amount": 1000.0, "trade_date": "2026-04-10",
     })
     assert r.status_code == 401
     _assert_error(r.json(), 401)
@@ -669,27 +672,27 @@ def test_api_40_account_withdraw_no_auth(client: httpx.Client) -> None:
 
 def test_api_41_account_cashflow_no_auth(client: httpx.Client) -> None:
     """API-41: GET /api/v1/account/cashflow 无鉴权 → 401"""
-    r = client.get("/api/v1/account/cashflow", params={"account_id": 1})
+    r = client.get("/api/v1/account/cashflow")
     assert r.status_code == 401
     _assert_error(r.json(), 401)
 
 
-def test_api_42_account_cashflow_missing_param(
+def test_api_42_account_cashflow_token_derived_account(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
-    """API-42: GET /api/v1/account/cashflow 缺少 account_id → 422"""
+    """API-42: GET /api/v1/account/cashflow 不带 account_id → 200（V1.5-G G-3 起
+    account_id 由 token 推，query 参数已删除；原「缺少 account_id → 422」契约作废）。"""
     r = client.get("/api/v1/account/cashflow", headers=auth_headers)
-    assert r.status_code == 422
-    body = r.json()
-    assert body.get("code") == 422
-    assert "errors" in body
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert "items" in data and "total" in data
 
 
 # ── 作废订正端点冒烟（API-104~107）─────────────────────────────────────────────
 
 def test_api_104_account_trades_list_no_auth(client: httpx.Client) -> None:
     """API-104: GET /api/v1/account/trades 无鉴权 → 401"""
-    r = client.get("/api/v1/account/trades", params={"account_id": 1})
+    r = client.get("/api/v1/account/trades")
     assert r.status_code == 401
     _assert_error(r.json(), 401)
 
@@ -698,9 +701,7 @@ def test_api_105_account_trades_list_ok(
     client: httpx.Client, auth_headers: dict[str, str]
 ) -> None:
     """API-105: GET /api/v1/account/trades 有鉴权 → 200，含 items/total 分页结构"""
-    r = client.get(
-        "/api/v1/account/trades", params={"account_id": 1}, headers=auth_headers
-    )
+    r = client.get("/api/v1/account/trades", headers=auth_headers)
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert "items" in data and "total" in data
@@ -727,7 +728,7 @@ def test_api_107_void_cashflow_no_auth(client: httpx.Client) -> None:
 
 def test_api_43_positions_no_auth(client: httpx.Client) -> None:
     """API-43: GET /api/v1/positions 无鉴权 → 401"""
-    r = client.get("/api/v1/positions", params={"account_id": 1})
+    r = client.get("/api/v1/positions")
     assert r.status_code == 401
     _assert_error(r.json(), 401)
 
@@ -738,7 +739,7 @@ def test_api_44_positions_post_removed(client: httpx.Client) -> None:
     持仓改为由成交流水派生，建仓走 POST /account/trades。该路由不再注册，
     任何方法/鉴权状态下 POST 均返回 405（路由匹配 GET 但方法不允许）。"""
     r = client.post("/api/v1/positions", json={
-        "account_id": 1, "ts_code": "000001.SZ", "shares": 100,
+        "ts_code": "000001.SZ", "shares": 100,
         "cost_price": 10.0, "trade_date": "2026-04-10",
     })
     assert r.status_code == 405
@@ -1527,7 +1528,7 @@ def test_api_102_deposit_invalid_idempotency_key_422(
     r = client.post(
         "/api/v1/account/deposit",
         json={
-            "account_id": 1, "amount": 0.01,
+            "amount": 0.01,
             "trade_date": "2026-04-10",
             "idempotency_key": "a" * 37,  # 超 36 字符
         },
@@ -1553,13 +1554,13 @@ def test_api_103_deposit_idempotent_same_key(
     key = uuid.uuid4().hex
 
     # 取一次基线 cash
-    r0 = client.get("/api/v1/account?account_id=1", headers=auth_headers)
+    r0 = client.get("/api/v1/account", headers=auth_headers)
     if r0.status_code != 200:
-        pytest.skip(f"account_id=1 不存在或未就绪，跳过冒烟：{r0.status_code}")
+        pytest.skip(f"当前用户账户不存在或未就绪，跳过冒烟：{r0.status_code}")
     cash_before = float(r0.json()["data"]["cash"] or 0)
 
     payload = {
-        "account_id": 1, "amount": 0.01,
+        "amount": 0.01,
         "trade_date": "2026-04-10",
         "idempotency_key": key,
         "note": "smoke-test-idempotency",
@@ -1573,9 +1574,99 @@ def test_api_103_deposit_idempotent_same_key(
     assert r1.json()["data"]["idempotency_key"] == key
     assert r2.json()["data"]["idempotency_key"] == key
 
-    r3 = client.get("/api/v1/account?account_id=1", headers=auth_headers)
+    r3 = client.get("/api/v1/account", headers=auth_headers)
     cash_after = float(r3.json()["data"]["cash"] or 0)
     # cash 增量必须 = 0.01（重复调用不二次累加）
     assert cash_after - cash_before == pytest.approx(0.01, abs=1e-6), (
         f"幂等命中 cash 应仅加 0.01：before={cash_before} after={cash_after}"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API-108~114：V1.5-G 多用户认证（register / me；G-2a 端点 + G-2b 限频）
+#
+# 冒烟安全性说明（生产可跑）：
+# - API-108 缺字段 422 在 pydantic schema 层拒绝，不进端点、不消耗 register 限频额度
+# - API-109 弱密码 / API-110 重复用户名均不写库；但会各消耗 1 次 register
+#   限频额度（默认 5/hour）——1 小时内反复全量冒烟可能命中 429，此时按 skip
+#   处理（限频本身即 G-2b 交付行为，非失败）
+# - API-114 PATCH level 写当前值（幂等无状态变更），对生产安全
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_api_108_register_missing_fields_422(client: httpx.Client) -> None:
+    """API-108: POST /auth/register 缺字段 → 422 含 errors（schema 层拒绝，不写库）。"""
+    r = client.post("/api/v1/auth/register", json={"username": "smokeonly"})
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["code"] == 422
+    assert "errors" in body
+
+
+def test_api_109_register_weak_password_422(client: httpx.Client) -> None:
+    """API-109: POST /auth/register 8 位纯数字弱密码 → 422（服务层强度校验，不写库）。"""
+    r = client.post("/api/v1/auth/register", json={
+        "username": "smoke-weak-pw",
+        "email": "smoke-weak-pw@example.com",
+        "password": "12345678",
+    })
+    if r.status_code == 429:
+        pytest.skip("register 限频（5/hour）命中——限频行为正常，跳过弱密码断言")
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == 422
+
+
+def test_api_110_register_duplicate_username_409(client: httpx.Client) -> None:
+    """API-110: POST /auth/register 已存在用户名 + 合法密码 → 409（唯一性拒绝，不写库）。
+
+    复用 API_USERNAME（环境必然已存在的登录用户）作为冲突源，避免真实建户。
+    """
+    r = client.post("/api/v1/auth/register", json={
+        "username": API_USERNAME,
+        "email": "smoke-dup-check@example.com",
+        "password": "Smoke-dup-2026!",
+    })
+    if r.status_code == 429:
+        pytest.skip("register 限频（5/hour）命中——限频行为正常，跳过重复注册断言")
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == 409
+
+
+def test_api_111_me_no_auth_401(client: httpx.Client) -> None:
+    """API-111: GET /auth/me 无鉴权 → 401。"""
+    r = client.get("/api/v1/auth/me")
+    assert r.status_code == 401
+    _assert_error(r.json(), 401)
+
+
+def test_api_112_me_ok(client: httpx.Client, auth_headers: dict[str, str]) -> None:
+    """API-112: GET /auth/me → 200，含 username/email/level（L1/L2/L3）。"""
+    r = client.get("/api/v1/auth/me", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert data["username"] == API_USERNAME
+    assert "email" in data
+    assert data["level"] in ("L1", "L2", "L3")
+
+
+def test_api_113_patch_me_invalid_level_422(
+    client: httpx.Client, auth_headers: dict[str, str],
+) -> None:
+    """API-113: PATCH /auth/me 非法 level（L9）→ 422（Literal 校验，不写库）。"""
+    r = client.patch("/api/v1/auth/me", json={"level": "L9"}, headers=auth_headers)
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == 422
+
+
+def test_api_114_patch_me_level_noop_roundtrip(
+    client: httpx.Client, auth_headers: dict[str, str],
+) -> None:
+    """API-114: PATCH /auth/me 写回当前 level → 200 幂等（无状态变更，生产安全）。"""
+    r0 = client.get("/api/v1/auth/me", headers=auth_headers)
+    assert r0.status_code == 200, r0.text
+    current_level = r0.json()["data"]["level"]
+
+    r = client.patch(
+        "/api/v1/auth/me", json={"level": current_level}, headers=auth_headers
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["level"] == current_level

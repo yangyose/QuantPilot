@@ -1,8 +1,8 @@
 # QuantPilot 系统设计文档
 
-> **版本：** v1.11
+> **版本：** v1.12
 > **基线依据：** QuantPilot_SDD（规范文档，专家审定版）
-> **日期：** 2026-06-26
+> **日期：** 2026-07-23
 > **说明：** 本文档为顶层架构基线，保持稳定。各开发阶段的详细设计见 `docs/design/phases/` 目录，按需创建。
 
 ---
@@ -25,6 +25,7 @@
 | **v1.8** | 2026-04-20 | **Phase 10 评审同步**（来自 `docs/reviews/phase10_design_review_2026-04-20.md` 驱动 Phase 10 v1.1 修订）：§9 Phase 10 行精化——①config_key 数由 11 改为 12（新增 `factor_monitor_params`，对齐 SDD 附录 B "IC 下期收益窗口"默认参数）；②消费端新增 FactorMonitorService（IC 窗口参数化）；③`pipeline_run.config_snapshot` 显式标注"启动时一次性写入"语义（禁 CP 内再访问 ConfigService）；④WxPusherAdapter 路径由 `data/adapters/` 迁至 `notification/`（与 §3 / §5.10 目录规划一致），新增 `NotificationChannel` ABC；⑤通知端点数 3 → 5（含 wx-status / read-all）；⑥NotificationService 日志级别三级（单次失败 WARN / 链路降级 ERROR / 兜底失败 ERROR）。评审同步推迟项：WS 前端消费 G-1（Pipeline WS 后端未实装，Backtest WS 后端已实装但前端推迟 V1.5）、AKShare 自动降级 G-2（`akshare.py::AKShareAdapter` 已存在但 DataService 未接降级路径，推迟 V1.5）、多账户 UI 切换 G-4（推迟 V1.5） |
 | **v1.9** | 2026-05-25 | **Phase 14 估算同步**（来自 `docs/reviews/phase14_design_review_2026-05-25.md` v1.0 P2-3 + Phase 14 设计 v1.1 修订）：§9 Phase 14 行 `~3-5 pd` → `~5-8 pd`（2026-05-14 V1.0 重新定位时锁定 8 子项，原估算仅含 RM-13 + 回测 IC 验证，未含 5y 回填 + ICIR 历史回算 + BacktestEngine 真 5 步 + Phase 13 P2 6 项 + Phase 12 P2 2 项）；§9 注尾 Phase 11~15 估算合计 ~38-55 pd 中 Phase 14 拆分同步；§9 Phase 14 文件名引用更新为 `phase14_account_integrity.md v1.1`（评审 P1×3 + P2×4 + P3×6 全收口）；R12-P1-2 标注「已在 Phase 13 启动核查交付，不重列入本 phase」 |
 | **v1.10** | 2026-06-01 | **交易日历持久化 + 完整性核验基准 + 集成测试红线护栏**（V1.0 收尾期数据基础设施加固，对齐 SDD v1.4-r1）：§4.1 新增 `trade_calendar` 表（全历法日 + is_open，alembic 0015）；§9 注新增日历持久化条目（落地件清单：repo 三方法 + `TradingCalendar.from_repo` + `bootstrap_trade_calendar` 自愈 + main.py 启动 DB 优先 + APScheduler 月度刷新 Job + `scripts/audit_data_integrity.py`）。动机：`TradingCalendar` 原纯内存 + 启动实时拉数据源 + 不落库 → 数据完整性核验缺权威参照（只能假日交叉验证启发式）、离线不可用。附带红线加固：`tests/conftest.py::_guard_test_db_or_abort()` 阻止集成测试误对非 `:5433` 库跑 `alembic downgrade base`（CLAUDE.md C-1）；`auto_test.sh` 钩子改为仅 `DATABASE_URL` 含 `:5433` 才跑集成测试。回归 736 passed + ruff 0 error |
+| **v1.12** | 2026-07-23 | **V1.5-G 实施回写（G-6 收尾）**：§3 结构树补入实施落位模块——`models/user.py::User`、`account.py` Account.user_id FK、`services/auth_service.py`、`services/signal_view_service.py`（API 期账户叠加）、`services/pipeline_monitor.py`（管线护栏，2026-07 生产事故产物）、`core/rate_limit.py`（slowapi 限频）、`security.py` 注释更新（sub=user_id + 密码强度）、`api/v1/auth.py` 端点扩展注释；§6 表新增 `/auth/register`、`GET/PATCH /auth/me` 三行 + login 限频注记 + 表前多用户约定块（账户层 account_id 由 token 推 + ownership 404 + 共享层不变 + GET /signals API 期叠加）；§6 删除 `POST /positions` 行（§14-10 已作废，此前漏回写）。实施细节权威见 `phases/v1_5_g_multiuser.md` + memory 进度档 |
 | **v1.11** | 2026-06-26 | **V1.5-G 多用户化 + L1/L2/L3 分层兑现（仅设计登记，实现排 RC 后）**：§9 Phase 6 行④「user_level…V1.5 实现分层」推迟标记翻转，指向新设计文档 `docs/design/phases/v1_5_g_multiuser.md` §6 + roadmap §2.2。V1.5-G = 开放自助注册 + 账户层数据完整隔离（新增 `user` 表 + `account.user_id` + JWT 带真实身份 + ownership 强制）+ 兑现 SDD §2/§9.3/§14 被 V1.0 折衷推迟的 L1/L2/L3 分层（`user.level` 自选偏好，默认 L1）。per-user/shared 边界：账户层（account 及其派生）隔离，市场/信号/评分计算层共享。env admin 迁移为首个 DB 用户后废弃。本条仅范围登记（C-5 先回写后实现），不触发任何 V1.0 §9 表变更——V1.5-G 权威登记在 roadmap §2.2/§6 V1.5-G 行 |
 
 ---
@@ -309,7 +310,8 @@ QuantPilot/
 │   │   │   ├── market.py              # StockInfo, DailyQuote, IndexHistory, FinancialData, IndexComponent, TradeCalendar
 │   │   │   ├── business.py            # CandidatePool, Signal, SignalScoreSnapshot
 │   │   │   │                          # FactorIcHistory, Report, MarketStateHistory
-│   │   │   ├── account.py             # Account, Position, TradeRecord, FundFlow
+│   │   │   ├── user.py                # User（V1.5-G：username/email UNIQUE + level L1/L2/L3 + is_active）
+│   │   │   ├── account.py             # Account（含 user_id FK，V1.5-G）, Position, TradeRecord, FundFlow
 │   │   │   └── system.py              # PipelineRun, SystemConfig, UserConfig
 │   │   │                              # UserConfigHistory
 │   │   ├── schemas/                   # Pydantic 请求/响应模型
@@ -346,9 +348,12 @@ QuantPilot/
 │   │   │   └── report.py              # 绩效报告生成（含 SDD §7.7.4 免责声明）
 │   │   ├── services/                  # Service 层（编排，含 IO）
 │   │   │   ├── data_service.py
+│   │   │   ├── auth_service.py        # V1.5-G：注册（密码强度+唯一+自动建空账户）/用户管理
 │   │   │   ├── market_state_service.py
 │   │   │   ├── strategy_service.py
 │   │   │   ├── signal_service.py      # 含信号过期扫描（每日流水线完成后更新 EXPIRED）
+│   │   │   ├── signal_view_service.py # V1.5-G：API 期按账户叠加 is_holding/仓位建议（共享信号不落账户字段）
+│   │   │   ├── pipeline_monitor.py    # 管线护栏：候选池规模突变告警 + RUNNING 卡死看门狗
 │   │   │   ├── account_service.py     # 含资金流水 CRUD（FundFlow）
 │   │   │   ├── performance_service.py # 绩效指标计算（含行为分析）
 │   │   │   ├── factor_monitor_service.py  # IC/IR 存储、告警触发（SDD §7.4）
@@ -366,7 +371,7 @@ QuantPilot/
 │   │   ├── api/
 │   │   │   ├── deps.py                # 统一依赖注入函数（get_current_user / get_*_service）
 │   │   │   └── v1/
-│   │   │       ├── auth.py            # 认证端点（login/refresh）
+│   │   │       ├── auth.py            # 认证端点（login/refresh/register/me，V1.5-G 扩展；login/register 限频）
 │   │   │       ├── data.py            # 数据采集端点（status/ingest/refresh）
 │   │   │       ├── market.py
 │   │   │       ├── watchlist.py       # 黑白名单管理 API
@@ -382,7 +387,8 @@ QuantPilot/
 │   │   ├── core/
 │   │   │   ├── config.py              # 环境配置（pydantic-settings）
 │   │   │   ├── database.py            # DB 连接池
-│   │   │   ├── security.py            # JWT 签发/验证
+│   │   │   ├── security.py            # JWT 签发/验证（sub=user_id）+ 密码强度校验（V1.5-G）
+│   │   │   ├── rate_limit.py          # slowapi 限频（真实 IP 优先链，V1.5-G）
 │   │   │   └── exceptions.py
 │   │   └── main.py
 │   ├── tests/
@@ -1182,10 +1188,19 @@ class NotificationService:
 所有接口前缀：`/api/v1`，响应格式：`{"code": 0, "data": ..., "msg": "ok"}`
 WebSocket 端点见 §2.7（流水线进度、回测进度）。
 
+> **V1.5-G 多用户约定**：账户层端点（账户/持仓/绩效/报告）的 `account_id` 一律由
+> token 推导（`get_current_account_id`），不再接受 query/body 传入；按资源 id 访问的
+> 端点做 ownership 校验，跨用户 → 404。共享层端点（信号/市场/因子/流水线/数据）
+> 仅要求登录，不加账户过滤；`GET /signals` 响应在 API 期按当前账户叠加
+> is_holding/仓位建议。详见 `phases/v1_5_g_multiuser.md` §5/§8。
+
 | 分组 | 方法 | 路径 | 说明 |
 |------|------|------|------|
-| **认证** | POST | `/auth/login` | 用户登录，返回 JWT access_token + refresh_token |
+| **认证** | POST | `/auth/login` | 用户登录，返回 JWT access_token + refresh_token（按 IP 限频，V1.5-G） |
 | **认证** | POST | `/auth/refresh` | 刷新 access_token |
+| **认证** | POST | `/auth/register` | 开放自助注册（限频 + 密码强度 + 唯一性；成功不签发 token，V1.5-G） |
+| **认证** | GET | `/auth/me` | 当前用户资料（username/email/level，V1.5-G） |
+| **认证** | PATCH | `/auth/me` | 更新当前用户（level/email/password，V1.5-G） |
 | **数据** | GET | `/data/status` | 数据新鲜度摘要（各类数据最新采集日期、行数） |
 | **数据** | POST | `/data/ingest/daily` | 手动触发指定日期的单日数据采集 |
 | **数据** | POST | `/data/ingest/history` | 触发历史数据回填（指定起止日期范围） |
@@ -1198,8 +1213,7 @@ WebSocket 端点见 §2.7（流水线进度、回测进度）。
 | **信号** | PATCH | `/signals/{id}/status` | 更新信号状态（接受/忽略） |
 | **信号** | GET | `/signals/{id}/lineage` | 信号数据血缘（评分快照） |
 | **持仓** | GET | `/positions` | 当前持仓列表 |
-| **持仓** | POST | `/positions` | 新增持仓记录 |
-| **持仓** | PATCH | `/positions/{id}` | 更新持仓价格/阶段 |
+| **持仓** | PATCH | `/positions/{id}` | 更新持仓价格/阶段（POST /positions 已随 §14-10 作废——持仓由成交流水派生，建仓走 POST /account/trades） |
 | **账户** | GET | `/account` | 账户概览（总资产/现金/当日盈亏） |
 | **账户** | POST | `/account/sync` | 手动同步账户 |
 | **账户** | POST | `/account/trades` | 录入成交记录（同时写入 fund_flow） |
