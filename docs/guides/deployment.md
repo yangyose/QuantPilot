@@ -134,6 +134,11 @@ scripts/deploy.sh
 5. `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d nginx`
 6. `curl http://localhost:${HTTP_PORT}/health` 健康检查
 
+> **只重建 backend 时的 502 坑（2026-07-23 实证）**：`up -d backend` 重建容器后其
+> 内网 IP 变化，常驻的 nginx 仍持有旧 IP 的 DNS 解析缓存 → 站点外部 502 而
+> backend 容器自身 healthy。修复：`docker exec quantpilot-nginx-1 nginx -s reload`。
+> 凡不重启 nginx 的部署（如仅更新 backend/frontend-builder）都要在 up 后补一次 reload。
+
 ### 4.3 验证部署
 
 ```bash
