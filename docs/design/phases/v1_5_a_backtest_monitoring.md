@@ -176,18 +176,22 @@ SDD §7.7.5 列 V1.0 回测 4 项 P0 缺陷（T+1 撮合违反 / quotes_t 字段
 
 相对 B3-1：更宽松（放行有量涨停）；相对 SDD 原始 V1.0：更严（一字板不可成交）——落到现实中值。方向影响：动量策略回测收益相对当前会**小幅上升**（放行了合理入场），但模型更贴近实盘。
 
-**符号与阈值**：
-- `turnover_rate` 单位实施期必须核实（`fetch_daily_quotes` adapter 内单位换算）——Tushare `daily_basic.turnover_rate` 是**百分比**（如 1.5 = 1.5%），若入库已 ×0.01 成比例则阈值用 0.01，若原样存百分比则阈值用 1.0。**【设计待定：turnover_rate 入库单位——实施首步查 daily_quote 实际值域（`SELECT max/min` 本地 5434），据此定阈值常量 `_LIMIT_UP_ILLIQUID_TURNOVER`，写死注释单位】**
-- `turnover_rate` 为 NULL（数据缺失）→ 保守视为无量（跳过 BUY），并 `logger.warning`（不静默）。
+**符号与阈值**（实施已核实 2026-07-24）：
+- `turnover_rate` 入库为**小数**：`TushareAdapter.fetch_daily_quotes` 有 `df["turnover_rate"] /= 100  # % → 小数`（tushare.py:175），DB `Numeric(8,6)`。故阈值常量 `_LIMIT_UP_ILLIQUID_TURNOVER = 0.01`（= 1%），注释写死单位。
+- `turnover_rate` 为 NULL / quotes 无该列（旧 bundle 降级）→ 保守视为无量（跳过 BUY），并 `logger.warning`（不静默）。
+- **数据管道补齐**：`BacktestService._load_data_bundle` 的 `daily_quotes` DataFrame 原未选 `turnover_rate` 列（只 close/open/limit_up/...），A2 补入该列，否则引擎恒读不到 → 恒保守跳过、退化回旧全量跳过行为。
 
 **SELL 侧对称性**：SDD-EXT-02s 只规定 BUY。跌停无量板卖不出（对称约束）暂不在本 phase scope（SDD 未定义简化版 SELL 规则）→ 保留现状 SELL 总允许，§10 推迟项登记「跌停无量板 SELL 约束」归 V2.0 SDD-EXT-02f 一并。
 
 ### 3.3 A2 DoD
 
-- [ ] `_execute_signals` BUY 涨停跳过改为 `limit_up AND turnover_rate < _LIMIT_UP_ILLIQUID_TURNOVER`
-- [ ] `turnover_rate` 入库单位核实 + 阈值常量注释单位 + NULL 保守降级 + `logger.warning`
-- [ ] 单测：涨停无量→跳过 / 涨停有量→成交 / 非涨停→成交 / turnover NULL→跳过（4 场景纯函数）
-- [ ] 涨停 caveat 按 §2.5 审计——注意涨停一刀切 caveat 在 **`DISCLAIMER`/`BacktestLimitationsBanner`**（非 §7.7.5 四项内），A2 交付后删该 caveat
+- [x] `_execute_signals` BUY 涨停跳过改为 `limit_up AND turnover_rate < _LIMIT_UP_ILLIQUID_TURNOVER`（涨停有量放行）
+- [x] `turnover_rate` 入库单位核实（小数，阈值 0.01）+ 阈值常量注释单位 + NULL/无列保守降级 + `logger.warning`
+- [x] `BacktestService._load_data_bundle` daily_quotes 补 `turnover_rate` 列（否则引擎恒读不到）
+- [x] 单测：涨停无量→跳过 / 涨停有量→成交 / 非涨停→成交 / turnover NULL→跳过 / 无列→跳过（5 场景纯函数）
+- [ ] 涨停 caveat 按 §2.5 审计——涨停一刀切 caveat 在 **`DISCLAIMER`/`BacktestLimitationsBanner`**（非 §7.7.5），A2 交付后删该 caveat（**待 phase 收尾批**，与前端 banner 一并）
+
+**A2 状态（2026-07-24）**：引擎 + bundle 改毕，unit+e2e 738 passed（+5 A2 UT）/ ruff 0，零生产写（本地算力中心）。余涨停 caveat 删除 → phase 收尾批。
 
 ---
 

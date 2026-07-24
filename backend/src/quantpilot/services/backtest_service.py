@@ -262,6 +262,10 @@ class BacktestService:
                 "is_st": bool(r.is_st),
                 "limit_up": bool(r.limit_up),
                 "limit_down": bool(r.limit_down),
+                # SDD-EXT-02s（V1.5-A A2）：无量一字板判定所需换手率（入库为小数）
+                "turnover_rate": (
+                    float(r.turnover_rate) if r.turnover_rate is not None else None
+                ),
                 # Phase 14 §14-3：market_cap 中性化所需 PIT 流通市值
                 "float_mkt_cap": float(r.float_mkt_cap) if r.float_mkt_cap is not None else None,
             } for r in dq_rows])

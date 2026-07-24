@@ -14,6 +14,11 @@ from quantpilot.engine.market_state import MarketStateEnum
 
 logger = logging.getLogger(__name__)
 
+# SDD-EXT-02s（V1.5-A A2）：无量一字板换手率阈值。turnover_rate 入库为小数
+# （TushareAdapter.fetch_daily_quotes `df["turnover_rate"] /= 100`），故 0.01 = 1%。
+# 收盘涨停且换手率 < 该值 → 判定 BUY 不可成交（无量一字板特征）。
+_LIMIT_UP_ILLIQUID_TURNOVER = 0.01
+
 
 # ---------------------------------------------------------------------------
 # 数据结构
@@ -884,13 +889,34 @@ def _execute_signals(
         else:
             continue
 
-        # B3-1：涨停日跳过 BUY（无法成交），SELL 仍允许
+        # SDD-EXT-02s（V1.5-A A2）：涨停成交可行性精细化。原 B3-1 对 BUY 一律跳过
+        # limit_up（过度保守）；改为仅「收盘涨停 AND 换手率 < 1%（无量一字板）」判定
+        # 不可成交，涨停但有量（盘中打开过）→ 可成交。turnover_rate 入库为小数
+        # （adapter `/100`），阈值 _LIMIT_UP_ILLIQUID_TURNOVER=0.01=1%。turnover 缺失
+        # （NULL / 无列，旧 bundle 降级）→ 保守视为无量、跳过 BUY，并 logger.warning
+        # 不静默。SELL 不受此约束（跌停无量 SELL 对称约束归 V2.0 SDD-EXT-02f）。
         if sig.signal_type == "BUY" and "limit_up" in quotes.columns:
             try:
-                if bool(quotes.loc[ts_code, "limit_up"]):
-                    continue
+                is_limit_up = bool(quotes.loc[ts_code, "limit_up"])
             except Exception:
-                pass
+                is_limit_up = False
+            if is_limit_up:
+                turnover: float | None = None
+                if "turnover_rate" in quotes.columns:
+                    try:
+                        _tv = quotes.loc[ts_code, "turnover_rate"]
+                        turnover = float(_tv) if pd.notna(_tv) else None
+                    except Exception:
+                        turnover = None
+                if turnover is None:
+                    logger.warning(
+                        "backtest_limit_up_turnover_missing ts_code=%s date=%s "
+                        "→ 保守视为无量一字板跳过 BUY",
+                        ts_code, trade_date,
+                    )
+                    continue
+                if turnover < _LIMIT_UP_ILLIQUID_TURNOVER:
+                    continue  # 无量一字板 → 不可成交
 
         if sig.signal_type == "BUY":
             # 确定买入金额 = suggested_pct × initial_capital（或默认 10%）
