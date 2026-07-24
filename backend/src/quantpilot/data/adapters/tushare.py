@@ -30,6 +30,15 @@ def _last_quarter_end(d: date) -> date:
 
 logger = logging.getLogger(__name__)
 
+# Tushare 限流异常特征词（中文接口文案 + 英文兜底）——用于 TUSHARE_CALLS 埋点区分
+# status=rate_limit vs error（V1.5-A A4 / R13-P3-4）。
+_RATE_LIMIT_MARKERS = ("每分钟", "每天", "最多访问", "访问频率", "rate limit", "too many")
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(m.lower() in msg for m in _RATE_LIMIT_MARKERS)
+
 
 class TushareAdapter(DataSourceAdapter):
     """Tushare Pro 适配器。
@@ -49,9 +58,24 @@ class TushareAdapter(DataSourceAdapter):
         self._fina_cache: dict[str, pd.DataFrame] = {}
 
     async def _call(self, func: Any, **kwargs: Any) -> pd.DataFrame:
-        """受限并发的异步包装器"""
+        """受限并发的异步包装器。
+
+        V1.5-A A4（R13-P3-4）：所有 13 个 Tushare 接口的统一入口——在此一处
+        埋 ``TUSHARE_CALLS{interface, status}``（success / rate_limit / error），
+        覆盖全接口。interface 取被调方法名（``func.__name__``）。
+        """
+        from quantpilot.core.metrics import TUSHARE_CALLS
+
+        interface = getattr(func, "__name__", "unknown")
         async with self._semaphore:
-            return await asyncio.to_thread(func, **kwargs)
+            try:
+                result = await asyncio.to_thread(func, **kwargs)
+            except Exception as exc:
+                status = "rate_limit" if _is_rate_limit_error(exc) else "error"
+                TUSHARE_CALLS.labels(interface=interface, status=status).inc()
+                raise
+            TUSHARE_CALLS.labels(interface=interface, status="success").inc()
+            return result
 
     @staticmethod
     def _fmt(d: date) -> str:

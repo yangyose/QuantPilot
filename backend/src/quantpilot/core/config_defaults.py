@@ -206,6 +206,10 @@ class FactorMonitorConfig:
     state_min_samples: int = 60
     ic_bootstrap_iterations: int = 1000
     half_life_window_days: int = 504
+    # V1.5-A A4（R13-P3-3）：因子衰减持续告警阈值/月数收纳（原硬编码在
+    # FactorMonitorService.PERSISTENT_DECAY_THRESHOLD/MONTHS，Phase 13 P3 推迟项）
+    persistent_decay_threshold: float = 0.05
+    persistent_decay_months: int = 3
 
 
 DEFAULT_FACTOR_MONITOR = FactorMonitorConfig()

@@ -256,13 +256,15 @@ SDD §7.7.5 列 V1.0 回测 4 项 P0 缺陷（T+1 撮合违反 / quotes_t 字段
 
 ### 5.1 A4 DoD
 
-- [ ] R13-P3-1~5 逐项交付
-- [ ] SecretFilter record.__dict__ extra 字段脱敏单测（extra 含密钥 → 被 mask）
-- [ ] factor_monitor_params 收纳后 check_persistent_decay 读 config 而非硬编码（单测）
-- [ ] TushareAdapter._call TUSHARE_CALLS 埋点单测（mock 调用 → Counter inc）
-- [ ] 冒烟 API-101 Upgrade header 探测真机 PASS
-- [ ] Grafana provisioning 3 panel（监控栈 profile 起后目视 / provisioning JSON 校验）
-- [ ] 收尾从 roadmap §4.5 移除 5 行
+- [x] R13-P3-1~5 逐项交付（代码完成 2026-07-24）
+- [x] SecretFilter record.__dict__ extra 字段脱敏单测（extra 含密钥 → 被 mask；2 UT）
+- [x] factor_monitor_params 收纳后 check_persistent_decay 读 config 而非硬编码（2 config 字段 + threshold/months 参数 + monthly_scheduler 传参；2 UT）
+- [x] TushareAdapter._call TUSHARE_CALLS 埋点单测（success/error/rate_limit 分类，覆盖全 13 接口；3 UT）
+- [x] 冒烟 API-101 Upgrade header 探测（代码改毕：发 WS 握手头，禁 404、要 101/400/426）；**真机 live PASS 待 phase 收尾对本地/生产栈跑**
+- [x] Grafana provisioning 3 panel（健康告警 HEALTH_ALERT / APScheduler failed job_id / Validator 错误；JSON 校验 10 panel v2）
+- [ ] 收尾从 roadmap §4.5 移除 5 行（**待 phase 收尾**，API-101 live 验证后一并）
+
+**A4 状态（2026-07-24）**：代码全交付，unit+e2e 733 passed（+7 A4 UT）/ ruff 0 / Grafana JSON 校验通过。余 API-101 live 冒烟 + roadmap §4.5 移除 → phase 收尾批。
 
 ---
 

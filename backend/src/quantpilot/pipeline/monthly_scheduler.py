@@ -128,8 +128,12 @@ class MonthlyScheduler:
                 # 告警（3 个月连续 ICIR < 0.05）。
                 cfg_svc = ConfigService(session)
                 notifier = NotificationService(session, cfg_svc)
+                # R13-P3-3：持续告警阈值/月数从 factor_monitor_params config_key 取
+                fmc = await cfg_svc.get_factor_monitor_params()
                 result = await service.apply_monthly_rebalance(
                     session, month_end, notifier=notifier,
+                    persistent_decay_threshold=fmc.persistent_decay_threshold,
+                    persistent_decay_months=fmc.persistent_decay_months,
                 )
                 await session.commit()
                 logger.info(

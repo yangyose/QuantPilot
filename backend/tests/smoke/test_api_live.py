@@ -1502,15 +1502,30 @@ def test_api_100_health_data_with_auth(
 
 
 def test_api_101_ws_pipeline_progress_endpoint_registered(client: httpx.Client) -> None:
-    """API-101: WS /api/v1/pipeline/progress 端点已注册（HTTP GET 应返回 426 升级要求或 400/405）。
+    """API-101 (V1.5-A R13-P3-1): 用 WebSocket Upgrade 握手探测 /api/v1/pipeline/progress，
+    区分「WS 端点已注册」vs「路由未注册」。
 
-    冒烟仅校验路由存在，不真连 WS（避免依赖运行中的 redis）。404 视为未注册失败。
+    改进动机：旧版发普通 GET，Starlette 对 WS-only 路由与不存在的路由**都返回 404**，
+    无法区分「端点存在」与「未注册」。带 `Upgrade: websocket` 握手头后：已注册的 WS
+    端点（本端点 `websocket.accept()` 无鉴权）走握手路径 → 101 切换协议；未注册路由
+    仍返回 404/405（HTTP 路由未命中 WS）。故禁 404、要求 WS-aware 响应。
     """
-    r = client.get("/api/v1/pipeline/progress")
-    # FastAPI WS-only endpoint 对 HTTP 请求返回 404（路由不匹配）或 405/426；
-    # 但 starlette 实测返回 404。改为多容忍但禁 200/500：
-    assert r.status_code in (400, 404, 405, 426), (
-        f"WS 端点对 HTTP GET 应返回 4xx upgrade-required，实际 {r.status_code}"
+    ws_headers = {
+        "Connection": "Upgrade",
+        "Upgrade": "websocket",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version": "13",
+    }
+    try:
+        r = client.get("/api/v1/pipeline/progress", headers=ws_headers)
+        status = r.status_code
+    except (httpx.RemoteProtocolError, httpx.ReadError):
+        # 服务器切换协议（101）后 httpx 无法按普通 HTTP 收尾 → 证明 WS 端点已注册并握手
+        return
+    assert status != 404, "带 Upgrade 头的 WS 握手不应 404（=路由未注册）"
+    # WS-aware：101 切换协议 / 400 握手不全 / 426 需升级（禁 404/405/2xx-业务/5xx）
+    assert status in (101, 400, 426), (
+        f"WS 端点握手探测应返回 101/400/426，实际 {status}"
     )
 
 

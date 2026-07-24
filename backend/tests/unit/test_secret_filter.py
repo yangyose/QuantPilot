@@ -105,3 +105,41 @@ def test_ut_p13_c_05_args_cleared_after_filter() -> None:
     assert f.filter(rec) is True
     assert rec.args == ()
     assert "secret_token_xyz" not in rec.getMessage()
+
+
+# ── V1.5-A A4（R13-P3-2）：SecretFilter 扫描 record.__dict__ 覆盖 structured logging extra ──
+
+
+def test_a4_secret_filter_scrubs_extra_dict_fields() -> None:
+    """A4-R13P3-2: logger.info(..., extra={...}) 的敏感字段落在 record.__dict__，
+    SecretFilter 须遍历非标准属性脱敏，防止 extra 字段泄漏密钥。
+    """
+    f = SecretFilter()
+    rec = _make_record("data ingest done")
+    # 模拟 structured logging extra 注入的自定义属性
+    rec.tushare_cfg = "TUSHARE_TOKEN=abc123def456secret"   # KEY=VALUE 型
+    rec.auth_header = "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig_here"  # Bearer 型
+    rec.wxpusher = "AT_abcDEF12345678ghijKL"                # AT_ 型
+    rec.plain = "ts_code=000001.SZ score=0.9"              # 业务字段不误杀
+
+    assert f.filter(rec) is True
+    assert "abc123def456secret" not in rec.tushare_cfg
+    assert "***REDACTED***" in rec.tushare_cfg
+    assert "eyJhbGciOiJIUzI1NiJ9" not in rec.auth_header
+    assert "AT_abcDEF12345678ghijKL" not in rec.wxpusher
+    # 业务字段保留
+    assert rec.plain == "ts_code=000001.SZ score=0.9"
+
+
+def test_a4_secret_filter_extra_ignores_non_str_and_standard_attrs() -> None:
+    """A4-R13P3-2: 非字符串 extra 值 + 标准 LogRecord 属性不被改写/不报错。"""
+    f = SecretFilter()
+    rec = _make_record("x")
+    rec.count = 42            # 非 str
+    rec.ratio = 0.85          # 非 str
+    assert f.filter(rec) is True
+    assert rec.count == 42
+    assert rec.ratio == 0.85
+    # 标准属性（levelname/name 等）保持不变
+    assert rec.levelname == "INFO"
+    assert rec.name == "quantpilot.test"

@@ -470,6 +470,9 @@ class FactorMonitorService:
     # Phase 13 §3.5：因子衰减持续告警（连续 N 月 ICIR < 阈值）
     # ============================================================
 
+    # 默认常量（回退值）；运行时由 factor_monitor_params config_key 覆盖
+    # （V1.5-A A4 / R13-P3-3：收纳进 ConfigService，check_persistent_decay 的
+    # threshold/months 参数为 None 时回退这两个常量）。
     PERSISTENT_DECAY_THRESHOLD = 0.05
     PERSISTENT_DECAY_MONTHS = 3
 
@@ -482,15 +485,22 @@ class FactorMonitorService:
         icir_now: float | None,
         notifier=None,  # type: ignore[no-untyped-def]
         as_of: date | None = None,
+        threshold: float | None = None,
+        months: int | None = None,
     ) -> bool:
-        """连续 ``PERSISTENT_DECAY_MONTHS`` (默认 3) 月末 icir < ``PERSISTENT_DECAY_THRESHOLD``
-        (默认 0.05) → 触发 ``notify_factor_alert("factor_decayed_persistent")``。
+        """连续 ``months`` (默认 3) 月末 icir < ``threshold`` (默认 0.05) →
+        触发 ``notify_factor_alert("factor_decayed_persistent")``。
 
         与 Phase 11 ``_maybe_alert`` 单月告警独立：本方法看 ``factor_ic_window_state``
-        近 N 行聚合行（``get_recent_aggregates``）；触发阈值同 V1.0 _maybe_alert 使用
-        固定常量（P3-1 推迟到 ConfigService）。
+        近 N 行聚合行（``get_recent_aggregates``）。
+
+        V1.5-A A4（R13-P3-3）：``threshold``/``months`` 由调用方从
+        ``factor_monitor_params`` config_key（``persistent_decay_threshold`` /
+        ``persistent_decay_months``）传入；为 None 时回退类常量。
         """
-        if icir_now is None or icir_now >= self.PERSISTENT_DECAY_THRESHOLD:
+        threshold = threshold if threshold is not None else self.PERSISTENT_DECAY_THRESHOLD
+        months = months if months is not None else self.PERSISTENT_DECAY_MONTHS
+        if icir_now is None or icir_now >= threshold:
             return False
         as_of = as_of or date.today()
         history = await self._repo.get_recent_aggregates(
@@ -499,12 +509,12 @@ class FactorMonitorService:
             factor=factor,
             state=state,
             as_of=as_of,
-            limit=self.PERSISTENT_DECAY_MONTHS,
+            limit=months,
         )
-        if len(history) < self.PERSISTENT_DECAY_MONTHS:
+        if len(history) < months:
             return False
         all_below = all(
-            h.icir is not None and float(h.icir) < self.PERSISTENT_DECAY_THRESHOLD
+            h.icir is not None and float(h.icir) < threshold
             for h in history
         )
         if not all_below:
@@ -664,6 +674,8 @@ class FactorMonitorService:
         session: AsyncSession,
         month_end_date: date,
         notifier: object | None = None,
+        persistent_decay_threshold: float | None = None,
+        persistent_decay_months: int | None = None,
     ) -> dict[str, list[StrategyWeightsRow]]:
         """每月最后一个交易日收盘后调用：
 
@@ -735,6 +747,8 @@ class FactorMonitorService:
                         icir_now=float(snap.icir),
                         notifier=notifier,
                         as_of=month_end_date,
+                        threshold=persistent_decay_threshold,
+                        months=persistent_decay_months,
                     )
                     if persistent_hit:
                         persistent_decay_hits.add((strategy, strategy, state))

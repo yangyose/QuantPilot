@@ -27,22 +27,42 @@ _SECRET_PATTERNS = [
 ]
 
 
+# 标准 LogRecord 属性集合——SecretFilter 扫描 record.__dict__ 时跳过这些，
+# 仅对 structured logging 经 extra={...} 注入的自定义字符串字段脱敏
+# （V1.5-A R13-P3-2）。以一个空 LogRecord 的 __dict__ 键为准 + msg/args（已单独处理）。
+_STD_LOGRECORD_ATTRS = frozenset(
+    logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
+) | {"message", "asctime", "taskName"}
+
+
 class SecretFilter(logging.Filter):
     """Phase 13 S5-GAP-03：过滤日志中潜在敏感字段。
 
-    匹配后整段替换为 ***REDACTED***。仅扫描 record.msg + record.args 的字符串表示，
-    不修改原 dict/对象引用。匹配后清空 record.args，避免格式化时重新插入。
+    匹配后整段替换为 ***REDACTED***。扫描 record.msg + record.args 的字符串表示，
+    并（V1.5-A R13-P3-2）遍历 record.__dict__ 中 structured logging `extra={...}`
+    注入的**非标准**字符串字段，防止密钥经 extra 字段泄漏。不修改原 dict/对象引用，
+    非字符串 extra 值原样保留。匹配后清空 record.args，避免格式化时重新插入。
     """
+
+    @staticmethod
+    def _scrub(text: str) -> str:
+        for pat in _SECRET_PATTERNS:
+            text = pat.sub("***REDACTED***", text)
+        return text
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
         except Exception:
             msg = str(record.msg)
-        for pat in _SECRET_PATTERNS:
-            msg = pat.sub("***REDACTED***", msg)
-        record.msg = msg
+        record.msg = self._scrub(msg)
         record.args = ()
+        # R13-P3-2：脱敏 extra 注入的自定义字符串属性（跳过标准 LogRecord 属性 + 非 str 值）
+        for key, val in record.__dict__.items():
+            if key in _STD_LOGRECORD_ATTRS:
+                continue
+            if isinstance(val, str):
+                record.__dict__[key] = self._scrub(val)
         return True
 
 

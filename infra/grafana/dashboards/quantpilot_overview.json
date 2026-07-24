@@ -68,6 +68,33 @@
       "targets": [
         {"expr": "histogram_quantile(0.95, sum(rate(quantpilot_api_request_duration_seconds_bucket[5m])) by (endpoint, le))", "legendFormat": "{{endpoint}}"}
       ]
+    },
+    {
+      "title": "健康告警发送量（HEALTH_ALERT，按 channel/status）",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 28},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "sum by (channel, status) (increase(quantpilot_notifications_sent_total{notify_type=\"HEALTH_ALERT\"}[1h]))", "legendFormat": "{{channel}}/{{status}}"}
+      ]
+    },
+    {
+      "title": "APScheduler 失败 Job（按 job_id）",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 28},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "sum by (job_id) (increase(quantpilot_scheduler_jobs_total{status=\"failed\"}[1h]))", "legendFormat": "{{job_id}}"}
+      ]
+    },
+    {
+      "title": "数据质量：Validator 错误（按 data_type/error_type）",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 28},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "sum by (data_type, error_type) (increase(quantpilot_validator_errors_total[1h]))", "legendFormat": "{{data_type}}/{{error_type}}"}
+      ]
     }
   ],
   "refresh": "30s",
@@ -77,5 +104,5 @@
   "time": {"from": "now-6h", "to": "now"},
   "title": "QuantPilot Overview",
   "uid": "quantpilot-overview",
-  "version": 1
+  "version": 2
 }

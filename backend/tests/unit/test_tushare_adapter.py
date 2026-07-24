@@ -535,3 +535,67 @@ async def test_td_11_fetch_dividend_data_filters_other_dates(adapter: TushareAda
 
     assert len(result) == 1  # 仅 000001.SZ 满足 ex_date == 1/2 且 cash_div > 0
     assert result.iloc[0]["ts_code"] == "000001.SZ"
+
+
+# ── V1.5-A A4（R13-P3-4）：TushareAdapter._call 统一 TUSHARE_CALLS Counter 埋点 ──
+
+
+def _fresh_adapter() -> TushareAdapter:
+    with patch("quantpilot.data.adapters.tushare.ts") as mock_ts:
+        mock_ts.pro_api.return_value = MagicMock()
+        return TushareAdapter(token="test-token")
+
+
+async def test_a4_call_emits_tushare_calls_success() -> None:
+    """A4-R13P3-4: _call 成功 → TUSHARE_CALLS{interface=func.__name__,status=success} +1。"""
+    from quantpilot.core.metrics import TUSHARE_CALLS
+
+    adp = _fresh_adapter()
+
+    def fake_daily(**kwargs: object) -> pd.DataFrame:
+        return pd.DataFrame({"ts_code": ["000001.SZ"]})
+
+    fake_daily.__name__ = "daily"
+    before = TUSHARE_CALLS.labels(interface="daily", status="success")._value.get()
+    result = await adp._call(fake_daily, trade_date="20260102")
+    after = TUSHARE_CALLS.labels(interface="daily", status="success")._value.get()
+    assert after - before == 1
+    assert not result.empty
+
+
+async def test_a4_call_emits_tushare_calls_error_and_reraises() -> None:
+    """A4-R13P3-4: _call 异常 → status=error +1 且原异常上抛（不吞）。"""
+    import pytest
+
+    from quantpilot.core.metrics import TUSHARE_CALLS
+
+    adp = _fresh_adapter()
+
+    def fake_err(**kwargs: object) -> pd.DataFrame:
+        raise RuntimeError("boom")
+
+    fake_err.__name__ = "fina_indicator"
+    before = TUSHARE_CALLS.labels(interface="fina_indicator", status="error")._value.get()
+    with pytest.raises(RuntimeError):
+        await adp._call(fake_err)
+    after = TUSHARE_CALLS.labels(interface="fina_indicator", status="error")._value.get()
+    assert after - before == 1
+
+
+async def test_a4_call_classifies_rate_limit() -> None:
+    """A4-R13P3-4: Tushare 限流异常（含"每分钟"/"每天"/"最多访问"）→ status=rate_limit。"""
+    import pytest
+
+    from quantpilot.core.metrics import TUSHARE_CALLS
+
+    adp = _fresh_adapter()
+
+    def fake_rl(**kwargs: object) -> pd.DataFrame:
+        raise Exception("抱歉，您每分钟最多访问该接口 500 次")
+
+    fake_rl.__name__ = "daily_basic"
+    before = TUSHARE_CALLS.labels(interface="daily_basic", status="rate_limit")._value.get()
+    with pytest.raises(Exception):
+        await adp._call(fake_rl)
+    after = TUSHARE_CALLS.labels(interface="daily_basic", status="rate_limit")._value.get()
+    assert after - before == 1
