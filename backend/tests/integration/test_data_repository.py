@@ -99,6 +99,43 @@ async def test_repo_03_get_latest_financial_pit(repo: MarketDataRepository) -> N
     assert result.iloc[0]["publish_date"] == date(2025, 8, 30)
 
 
+async def test_repo_a5_forecast_upsert_and_pit(repo: MarketDataRepository) -> None:
+    """REPO-A5（V1.5-A A5）：upsert_financial_forecast 幂等 + get_latest_forecast PIT。
+
+    同 (ts_code, 20251231) 有 forecast(priority1) + express(priority2) →
+    get_latest_forecast 取 data_priority 高者（express）；PIT 不返回 as_of 之后的发布。
+    """
+    df = pd.DataFrame({
+        "ts_code": ["000001.SZ", "000001.SZ", "000001.SZ"],
+        "report_period": [date(2025, 12, 31), date(2025, 12, 31), date(2025, 9, 30)],
+        "pre_announce_date": [date(2026, 2, 20), date(2026, 2, 28), date(2025, 10, 30)],
+        "est_net_profit": [9.0e7, 1.0e8, 8.0e7],
+        "est_net_profit_yoy": [0.18, 0.20, 0.10],
+        "data_priority": [1, 2, 1],
+        "source_type": ["forecast", "express", "forecast"],
+    })
+    n1 = await repo.upsert_financial_forecast(df)
+    assert n1 == 3
+    # 幂等：再 upsert 同数据不新增行
+    await repo.upsert_financial_forecast(df)
+
+    # as_of 覆盖到 2/28（express 已发）→ 取 20251231 express（priority 2 优先）
+    result = await repo.get_latest_forecast(["000001.SZ"], as_of_date=date(2026, 3, 1))
+    assert len(result) == 1
+    assert result.index[0] == "000001.SZ"
+    assert result.iloc[0]["report_period"] == date(2025, 12, 31)
+    assert result.iloc[0]["source_type"] == "express"
+    assert float(result.iloc[0]["est_net_profit"]) == 1.0e8
+
+    # PIT：as_of 在 express 发布前（2/25）→ 取 20251231 forecast（唯一已发布该期）
+    result2 = await repo.get_latest_forecast(["000001.SZ"], as_of_date=date(2026, 2, 25))
+    assert result2.iloc[0]["source_type"] == "forecast"
+
+    # PIT：as_of 早于所有 20251231 发布（1/1）→ 回退到 20250930 forecast
+    result3 = await repo.get_latest_forecast(["000001.SZ"], as_of_date=date(2026, 1, 1))
+    assert result3.iloc[0]["report_period"] == date(2025, 9, 30)
+
+
 @pytest.mark.asyncio
 async def test_repo_05_active_codes_as_of_pit(repo: MarketDataRepository) -> None:
     """REPO-05: get_active_stock_codes_as_of PIT 过滤 — RM-18 修复。

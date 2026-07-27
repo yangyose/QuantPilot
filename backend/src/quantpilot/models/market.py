@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     Index,
     Numeric,
+    SmallInteger,
     String,
     UniqueConstraint,
     desc,
@@ -153,4 +154,32 @@ class TradeCalendar(Base):
 
     __table_args__ = (
         Index("idx_trade_calendar_open", "exchange", "is_open", "cal_date"),
+    )
+
+
+class FinancialForecast(Base):
+    """业绩预告/快报（V1.5-A A5 / SDD-EXT-03）。PIT 存储，pre_announce_date 为可用时点。
+
+    信息真空期（快报/预告已发、正式财报未发）用 est_net_profit 派生前瞻 ROE 修正估值
+    （见 v1_5_a §6.3）。data_priority：正式财报(3) > 业绩快报(2) > 业绩预告(1)；同
+    (ts_code, report_period) 下 express 覆盖 forecast。est_net_profit 归一化为元。
+    """
+
+    __tablename__ = "financial_forecast"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ts_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    report_period: Mapped[date] = mapped_column(Date, nullable=False)
+    pre_announce_date: Mapped[date] = mapped_column(Date, nullable=False)  # PIT 关键
+    est_net_profit: Mapped[float | None] = mapped_column(Numeric(18, 2))   # 元（预告取区间中值）
+    est_net_profit_yoy: Mapped[float | None] = mapped_column(Numeric(10, 4))  # 同比增速（小数）
+    data_priority: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 快报2 / 预告1
+    source_type: Mapped[str] = mapped_column(String(10), nullable=False)      # 'forecast'/'express'
+
+    __table_args__ = (
+        UniqueConstraint(
+            "ts_code", "report_period", "source_type",
+            name="uq_forecast_code_period_source",
+        ),
+        Index("idx_forecast_code_announce", "ts_code", "pre_announce_date"),
     )

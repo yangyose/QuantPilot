@@ -339,7 +339,13 @@ default 权重实证压制有效：uptrend `trend=0.40` → oscillation `trend=0
 
 估值/评分链路取财务数据时，同一 `(ts_code, report_period)` 若既有正式财报（`financial_data`，priority 3）又有快报/预告（`financial_forecast`，priority 2/1）：**PIT 时点下取 data_priority 最高的已发布数据**。信息真空期（快报已发、正式财报未发）→ 用快报修正估值。
 
-**消费点**：`ScoringService._build_market_snapshot`（实盘）+ `BacktestEngine._get_financials_at`（回测 PIT 切片）。**【设计待定：forecast/express 与 financial_data 的字段映射——est_net_profit 如何并入 ValueStrategy 的 pe_ttm/pb 修正路径；SDD-EXT-03 原文「优先修正估值指标」需明确修正哪些因子（EP / 净利润增速），实施期定字段级映射，避免只建表不真消费（C-4 禁占位）】**
+**消费点**：`ScoringService._build_market_snapshot`（实盘）+ `BacktestEngine._get_financials_at`（回测 PIT 切片）。
+
+**字段映射 = 前瞻 ROE 覆盖**（2026-07-27 用户拍板）。调研实证：`net_profit_yoy`/`revenue_yoy` 虽入库但**无策略消费**；被评分真消费的估值因子仅 `roe`（ValueStrategy roe_quality 权重 0.35 + 价值陷阱规避）+ `pe_ttm`/`pb`。forecast/express 的 `est_net_profit`/`est_net_profit_yoy` 与这些因子不直接对应 → 选**前瞻 ROE 覆盖**（真消费已有 total_equity 列派生）：
+
+> **信息真空期判定**：PIT 时点 T 下，若存在报告期 `R_f` 的已发布 forecast/express（`pre_announce_date ≤ T`），且 `R_f` **晚于** 最近一期已发布正式财报的报告期 `R_o`（`financial_data.publish_date ≤ T`）——即快报/预告已出、正式财报未出——则计算 `roe_forecast = est_net_profit / total_equity`（`total_equity` 取最近一期 `R_o` 的净资产，元；est_net_profit 归一化到元），**PIT 覆盖 `financials.roe`**。同 `R_f` 若 express+forecast 并存取 data_priority 高者（express 2 > forecast 1）。非真空期（正式财报已出 `R_o ≥ R_f`）→ 用正式财报 roe，不覆盖。
+>
+> 建模说明（降级注释）：`roe_forecast` 用快报净利润 ÷ 上期净资产，是一阶近似（净资产未同步更新）；仅在真空期生效以修正估值滞后，正式财报出后即回归。est_net_profit 单位归一化到元（forecast 万元 ×10000 / express n_income 元）。total_equity NULL（未回填 balance_sheet 的股）→ roe_forecast NaN → 不覆盖（保守，C-4 不占位）。
 
 ### 6.4 生产回填（C-1 红线）
 

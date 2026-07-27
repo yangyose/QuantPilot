@@ -19,6 +19,7 @@ from quantpilot.models.business import (
 from quantpilot.models.market import (
     DailyQuote,
     FinancialData,
+    FinancialForecast,
     IndexComponent,
     IndexHistory,
     StockInfo,
@@ -512,6 +513,77 @@ class MarketDataRepository:
         # 假设 financials 以 ts_code 为索引。修复前返回 RangeIndex DataFrame，
         # reindex(ts_code 列表) 全部返回 NaN → value_score 全 NULL → 价值因子失效。
         return df.set_index("ts_code")
+
+    # ── financial_forecast（V1.5-A A5 / SDD-EXT-03）────────────────────────────
+
+    async def upsert_financial_forecast(self, df: pd.DataFrame) -> int:
+        """批量 upsert financial_forecast，_BATCH_SIZE 行/批（asyncpg 32767 占位符上限）。
+        ON CONFLICT (ts_code, report_period, source_type) DO UPDATE。est_net_profit_yoy
+        clip 到 Numeric(10,4) 范围防 OutOfRange（换手扭亏股 yoy 可能极端）。"""
+        if df.empty:
+            return 0
+        df = df.copy()
+        if "est_net_profit_yoy" in df.columns:
+            df["est_net_profit_yoy"] = pd.to_numeric(
+                df["est_net_profit_yoy"], errors="coerce"
+            ).clip(lower=-999999.0, upper=999999.0)
+        rows = _df_to_dict_with_nulls(df)
+        total = 0
+        for i in range(0, len(rows), _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            stmt = pg_insert(FinancialForecast).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["ts_code", "report_period", "source_type"],
+                set_={
+                    "pre_announce_date": stmt.excluded.pre_announce_date,
+                    "est_net_profit": stmt.excluded.est_net_profit,
+                    "est_net_profit_yoy": stmt.excluded.est_net_profit_yoy,
+                    "data_priority": stmt.excluded.data_priority,
+                },
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount
+        return total
+
+    async def get_latest_forecast(
+        self, ts_codes: list[str], as_of_date: date
+    ) -> pd.DataFrame:
+        """PIT 查询：每股取 ``pre_announce_date <= as_of_date`` 中**报告期最新**、
+        同报告期取 data_priority 高者（express 2 > forecast 1）的一行。
+
+        DISTINCT ON (ts_code) ORDER BY ts_code, report_period DESC, data_priority DESC,
+        pre_announce_date DESC。返回 index=ts_code；无数据 → 空 DataFrame。供 A5b 前瞻
+        ROE 覆盖判定「快报报告期是否晚于最近一期正式财报报告期（真空期）」。
+        """
+        if not ts_codes:
+            return pd.DataFrame()
+        stmt = (
+            select(
+                FinancialForecast.ts_code,
+                FinancialForecast.report_period,
+                FinancialForecast.pre_announce_date,
+                FinancialForecast.est_net_profit,
+                FinancialForecast.est_net_profit_yoy,
+                FinancialForecast.data_priority,
+                FinancialForecast.source_type,
+            )
+            .distinct(FinancialForecast.ts_code)
+            .where(
+                FinancialForecast.ts_code.in_(ts_codes),
+                FinancialForecast.pre_announce_date <= as_of_date,
+            )
+            .order_by(
+                FinancialForecast.ts_code,
+                FinancialForecast.report_period.desc(),
+                FinancialForecast.data_priority.desc(),
+                FinancialForecast.pre_announce_date.desc(),
+            )
+        )
+        result = await self._session.execute(stmt)
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows, columns=result.keys()).set_index("ts_code")
 
     # ── index_history ──────────────────────────────────────────────────────────
 

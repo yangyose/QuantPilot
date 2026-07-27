@@ -499,6 +499,91 @@ class TushareAdapter(DataSourceAdapter):
                 result[col] = pd.to_numeric(result[col], errors="coerce") / 100.0
         return result.reset_index(drop=True)
 
+    # 业绩预告/快报归一化输出列（V1.5-A A5 / SDD-EXT-03）
+    _FORECAST_COLS = [
+        "ts_code", "report_period", "pre_announce_date",
+        "est_net_profit", "est_net_profit_yoy", "data_priority", "source_type",
+    ]
+
+    async def fetch_forecast_express(
+        self,
+        ts_codes: list[str],
+        start_date: date,
+        end_date: date,
+    ) -> pd.DataFrame:
+        """V1.5-A A5（SDD-EXT-03）：业绩预告（forecast）+ 业绩快报（express）PIT 数据。
+
+        逐股每批 50 只、批间 sleep(0.3s)（同 fetch_financial_by_stock）。归一化为统一
+        schema（``_FORECAST_COLS``），forecast/express 各产行，concat 返回。
+        - forecast：``est_net_profit`` = mid(net_profit_min, net_profit_max)（**万元 ×10000
+          → 元**）；``est_net_profit_yoy`` = mid(p_change_min, p_change_max)/100；priority=1。
+        - express：``est_net_profit`` = n_income（**元**）；``est_net_profit_yoy`` =
+          yoy_net_profit/100；priority=2。
+        - ``pre_announce_date`` = ann_date（发布日 PIT）；``report_period`` = end_date。
+
+        【单位/字段 quirk：net_profit_min/max 万元、n_income 元的假设需 5y 回填首步小样本
+        对 5433/5434 实证（CLAUDE.md §4.3 同类），偏差在 adapter 内订正】。
+        """
+        empty = pd.DataFrame(columns=self._FORECAST_COLS)
+        if not ts_codes:
+            return empty
+
+        batch_size = 50
+        fc_frames: list[pd.DataFrame] = []
+        ex_frames: list[pd.DataFrame] = []
+        for i in range(0, len(ts_codes), batch_size):
+            batch = ",".join(ts_codes[i : i + batch_size])
+            fc = await self._call(
+                self._pro.forecast, ts_code=batch,
+                start_date=self._fmt(start_date), end_date=self._fmt(end_date),
+                fields="ts_code,ann_date,end_date,p_change_min,p_change_max,"
+                       "net_profit_min,net_profit_max",
+            )
+            if fc is not None and not fc.empty:
+                fc_frames.append(fc)
+            ex = await self._call(
+                self._pro.express, ts_code=batch,
+                start_date=self._fmt(start_date), end_date=self._fmt(end_date),
+                fields="ts_code,ann_date,end_date,n_income,yoy_net_profit",
+            )
+            if ex is not None and not ex.empty:
+                ex_frames.append(ex)
+            if i + batch_size < len(ts_codes):
+                await asyncio.sleep(0.3)
+
+        out: list[pd.DataFrame] = []
+        if fc_frames:
+            fc = pd.concat(fc_frames, ignore_index=True)
+            npmin = pd.to_numeric(fc.get("net_profit_min"), errors="coerce")
+            npmax = pd.to_numeric(fc.get("net_profit_max"), errors="coerce")
+            pcmin = pd.to_numeric(fc.get("p_change_min"), errors="coerce")
+            pcmax = pd.to_numeric(fc.get("p_change_max"), errors="coerce")
+            out.append(pd.DataFrame({
+                "ts_code": fc["ts_code"],
+                "report_period": fc["end_date"].apply(self._to_date),
+                "pre_announce_date": fc["ann_date"].apply(self._to_date),
+                "est_net_profit": ((npmin + npmax) / 2.0) * 10_000.0,  # 万元 → 元
+                "est_net_profit_yoy": ((pcmin + pcmax) / 2.0) / 100.0,
+                "data_priority": 1,
+                "source_type": "forecast",
+            }))
+        if ex_frames:
+            ex = pd.concat(ex_frames, ignore_index=True)
+            out.append(pd.DataFrame({
+                "ts_code": ex["ts_code"],
+                "report_period": ex["end_date"].apply(self._to_date),
+                "pre_announce_date": ex["ann_date"].apply(self._to_date),
+                "est_net_profit": pd.to_numeric(ex.get("n_income"), errors="coerce"),  # 元
+                "est_net_profit_yoy": pd.to_numeric(
+                    ex.get("yoy_net_profit"), errors="coerce"
+                ) / 100.0,
+                "data_priority": 2,
+                "source_type": "express",
+            }))
+        if not out:
+            return empty
+        return pd.concat(out, ignore_index=True)[self._FORECAST_COLS].reset_index(drop=True)
+
     async def fetch_balance_sheet(
         self,
         ts_codes: list[str],
