@@ -514,11 +514,14 @@ def test_int_be_09_market_state_real_engine_int_indexed_hs300() -> None:
         price_provider=None,
         calendar=_make_calendar([dates[-1]]),
     )
-    state = engine._get_market_state(hs300_history, dates[-1])
+    # V1.5-A A3：_get_market_state 返回 (market_state, breadth_weak) 元组
+    state, breadth_weak = engine._get_market_state(hs300_history, dates[-1])
     assert state == MarketStateEnum.UPTREND, (
         f"强上行序列应识别 UPTREND，实际 {state}——整数索引未转 date 索引，"
         "identify 报错被吞 → 回落 OSCILLATION"
     )
+    # 未传 daily_quotes → NH-NL 无从计算 → breadth_weak 恒 False
+    assert breadth_weak is False
 
 
 # ─── INT-BE-10：真实 UniverseFilter + stock_info 缺 is_st（回归 bug #1）───
