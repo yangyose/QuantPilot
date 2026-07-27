@@ -285,3 +285,33 @@ async def test_int_08_whitelist_in_pool(db_session: AsyncSession) -> None:
 
     pool_codes = await repo.get_pool_codes(_TRADE_DATE)
     assert whitelist_code in pool_codes, "白名单股票应在候选池中"
+
+
+# ── V1.5-A A5b（SDD-EXT-03）：前瞻 ROE 覆盖生产路径端到端 ──────────────────────
+
+
+async def test_int_a5b_forecast_roe_override_in_snapshot(db_session: AsyncSession) -> None:
+    """A5b：真空期业绩预告（报告期晚于正式财报）→ _build_market_snapshot 的
+    financials.roe 被 est_net_profit/total_equity 覆盖（ValueStrategy 真消费）。"""
+    repo = MarketDataRepository(db_session)
+    await _setup_base_data(repo)  # financial_data: report_period=2025-09-30, roe=0.10, equity=1e10
+
+    ts = _STOCK_CODES[0]
+    # 业绩预告：报告期 2025-12-31（晚于三季报）+ 2025-12-20 发布（<= trade_date 12-31）→ 真空期
+    await repo.upsert_financial_forecast(pd.DataFrame({
+        "ts_code": [ts],
+        "report_period": [date(2025, 12, 31)],
+        "pre_announce_date": [date(2025, 12, 20)],
+        "est_net_profit": [2.5e9],   # 元 → roe=2.5e9/1e10=0.25
+        "est_net_profit_yoy": [0.30],
+        "data_priority": [1],
+        "source_type": ["forecast"],
+    }))
+    await db_session.flush()
+
+    svc = _make_scoring_service(db_session)
+    snap = await svc._build_market_snapshot(_TRADE_DATE, [ts])
+
+    fin = snap["financials"]
+    assert ts in fin.index
+    assert abs(float(fin.at[ts, "roe"]) - 0.25) < 1e-6  # 覆盖为前瞻 ROE

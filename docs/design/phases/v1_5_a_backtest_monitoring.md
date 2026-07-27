@@ -353,13 +353,22 @@ default 权重实证压制有效：uptrend `trend=0.40` → oscillation `trend=0
 
 ### 6.5 A5 DoD
 
-- [ ] `financial_forecast` 表 + alembic 迁移
-- [ ] `TushareAdapter.fetch_forecast_express`（_call 包装 + 单位换算 + quirks 核对）
-- [ ] data_priority PIT 优先级消费（ScoringService + BacktestEngine 两路径真消费，非占位）
-- [ ] 5y 回填脚本（本地先验证 → C-1 确认 + pg_dump → 生产回填 → 行数实证）
+**A5a 数据层（2026-07-27 交付，commit e63b3ce）**：
+- [x] `financial_forecast` 表 + alembic **0023**（唯一 (ts_code,report_period,source_type)，对 5433 实证）
+- [x] `TushareAdapter.fetch_forecast_express`（_call 包装 + forecast 万元→元区间中值 / express 元 + data_priority；单位/字段 quirk 标注待 5y 回填首步小样本实证）
+- [x] `repo.upsert_financial_forecast`（幂等 + yoy clip）+ `get_latest_forecast`（PIT DISTINCT ON 报告期最新 + 同期 priority 高者）；3 UT + 1 INT(REPO-A5)
+
+**A5b 前瞻 ROE 覆盖消费（2026-07-27 交付，commit 待记）**：
+- [x] `engine/forecast_override.py::apply_forecast_roe_override`（纯函数：真空期 roe=est_net_profit/total_equity 覆盖；5 UT）
+- [x] **生产路径真消费**：`ScoringService._build_market_snapshot` gather 加 `get_latest_forecast` + apply override（INT：真空期预告 → snapshot.roe 覆盖为 0.25 端到端）
+- [ ] **回测路径真消费（A5 收尾）**：需 `BacktestDataBundle.forecast` 字段 + `_load_data_bundle` 加载 financial_forecast + `_get_financials_at` 保留 report_period（现 groupby(level=0).last() 丢失）+ 应用 override。回测生产禁用、本地跑，2nd 优先级，随 A5c 一并
+
+**A5c 生产回填 + 收尾（待做，C-1）**：
+- [ ] 5y 回填脚本（本地先验证 Tushare quirk → C-1 确认 + pg_dump → 生产 0021/0022/0023 一并部署 → 行数实证）
 - [ ] 回写 SDD §4.2（新增子表 4.2.1）+ §5.1（快报优先规则）+ system_design §3 数据模型
-- [ ] 单测：data_priority 排序 / PIT 时点取最高优先级；INT：forecast+财报共存时估值修正生效
-- [ ] 财务快报 caveat 按 §2.5 审计——在 **`DISCLAIMER`/`BacktestLimitationsBanner`**（非 §7.7.5），A5 交付后删
+- [x] 财务快报 caveat 审计——A1c 已确认 **DISCLAIMER/banner 无财务快报 caveat**（§2.5 判定表），A5 无 caveat 需删
+
+**A5a+A5b 状态（2026-07-27）**：数据层 + 生产消费全交付。unit+e2e +8 UT（adapter 3 + override 5）+ INT REPO-A5 + 生产 snapshot override 端到端。回测路径 + 5y 回填 → A5 收尾（C-1）。
 
 ---
 

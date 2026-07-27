@@ -249,6 +249,7 @@ class ScoringService:
             pe_pb_history,
             index_history,
             market_cap_series,
+            forecast,
         ) = await asyncio.gather(
             self._repo.get_adj_prices_bulk(ts_codes, start_prices, trade_date),
             self._repo.get_snapshot_quotes(ts_codes, trade_date),
@@ -256,7 +257,13 @@ class ScoringService:
             self._repo.get_pe_pb_history_bulk(ts_codes, start_pepb, trade_date),
             self._repo.get_index_history(_BENCHMARK_INDEX, start_prices, trade_date),
             self._repo.get_market_cap_pit(ts_codes, trade_date),
+            self._repo.get_latest_forecast(ts_codes, trade_date),
         )
+
+        # A5b（SDD-EXT-03）：信息真空期前瞻 ROE 覆盖——快报/预告已发、正式财报未发时，
+        # 用 est_net_profit / total_equity 修正 financials.roe（ValueStrategy 真消费）。
+        from quantpilot.engine.forecast_override import apply_forecast_roe_override
+        financials = apply_forecast_roe_override(financials, forecast)
 
         # 构建 index_adj_prices（wide：index=index_code, columns=trade_date）
         if not index_history.empty and "close" in index_history.columns:
