@@ -151,6 +151,7 @@ class BacktestEngine:
         config: BacktestConfig,
         data: BacktestDataBundle,
         progress_cb: Callable[[str, int, float], None] | None = None,
+        position_sink: Callable[[date, list[dict]], None] | None = None,
     ) -> BacktestResult:
         """
         回测主循环（同步；由 BacktestService 通过 asyncio.to_thread 包装）。
@@ -159,6 +160,11 @@ class BacktestEngine:
           config      — 回测参数
           data        — BacktestService 预加载的历史数据
           progress_cb — 可选进度回调 (trade_date_str, progress_pct, current_nav)，每 100 日触发一次
+          position_sink — V1.5-A A1（S6-GAP-02）：可选每日持仓 sink 回调
+                          (trade_date, day_snapshots)。非 None 时引擎**不在内存累积**
+                          position_snapshots（result.daily_positions 返回空 DataFrame），
+                          每交易日把当日持仓明细交给 sink 流式落库（内存 O(batch) 常量）；
+                          None 时保留旧行为（累积成 result.daily_positions，兼容既有测试/mock）。
         """
         trade_dates = self._calendar.get_trade_dates(config.start_date, config.end_date)
         if not trade_dates:
@@ -514,14 +520,22 @@ class BacktestEngine:
             )
 
             # ---------- k. 记录持仓快照 ----------
-            for ts_code, pos in virtual_positions.items():
-                position_snapshots.append({
+            # A1（S6-GAP-02）：当日持仓明细。有 sink → 流式交出、不累积（内存 O(batch)）；
+            # 无 sink → 累积到 position_snapshots（旧行为，兼容既有测试/mock）。
+            day_snapshots = [
+                {
                     "trade_date": trade_date,
                     "ts_code": ts_code,
                     "shares": pos.shares,
                     "cost_price": pos.cost_price,
                     "market_value": pos.market_value,
-                })
+                }
+                for ts_code, pos in virtual_positions.items()
+            ]
+            if position_sink is not None:
+                position_sink(trade_date, day_snapshots)
+            else:
+                position_snapshots.extend(day_snapshots)
 
             # ---------- l. 进度回调 ----------
             # 每个交易日都回调（短回测也能看到实时进度）

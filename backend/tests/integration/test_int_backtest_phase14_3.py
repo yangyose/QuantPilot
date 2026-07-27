@@ -126,3 +126,54 @@ async def test_int_p14_3_01b_load_data_bundle_includes_float_mkt_cap(
     # 数值合理（10 亿量级）
     assert bundle.daily_quotes["float_mkt_cap"].min() >= 1e9 - 1
     assert bundle.daily_quotes["float_mkt_cap"].max() <= 3e9 + 1
+
+
+# ── V1.5-A A1（S6-GAP-02）：backtest_daily_position 读路径 + ORM/schema 契约 ──
+
+
+async def test_int_a1_daily_positions_read_roundtrip(db_session: AsyncSession) -> None:
+    """INT-A1：BacktestDailyPosition ORM/表契约 + get_daily_positions 读路径。
+
+    事务内插 task + 2 日持仓 → get_daily_positions 按 (trade_date, ts_code) 升序返回、
+    字段序列化正确。全程 db_session 事务（测试后回滚，零副作用泄漏，CLAUDE.md §4）。
+    """
+    from decimal import Decimal
+
+    from quantpilot.models.system import BacktestDailyPosition, BacktestTask
+
+    task_id = "a1-int-test-task-0001"
+    db_session.add(BacktestTask(
+        task_id=task_id, status="SUCCESS", config_json={}, config_snapshot=None,
+    ))
+    await db_session.flush()  # 先落 task（FK 父行），再插持仓
+    # 2 日 × 2 股，乱序插入验证排序
+    rows = [
+        ("000002.SZ", date(2024, 6, 4), 200, "12.500", "2500.00"),
+        ("000001.SZ", date(2024, 6, 3), 100, "10.000", "1000.00"),
+        ("000002.SZ", date(2024, 6, 3), 300, "11.000", "3300.00"),
+    ]
+    for ts, d, sh, cp, mv in rows:
+        db_session.add(BacktestDailyPosition(
+            task_id=task_id, trade_date=d, ts_code=ts,
+            shares=sh, cost_price=Decimal(cp), market_value=Decimal(mv),
+        ))
+    await db_session.flush()
+
+    svc = BacktestService(session=db_session, engine=None)
+    result = await svc.get_daily_positions(task_id)
+
+    # 3 行，按 (trade_date, ts_code) 升序
+    assert len(result) == 3
+    assert [(r["trade_date"], r["ts_code"]) for r in result] == [
+        ("2024-06-03", "000001.SZ"),
+        ("2024-06-03", "000002.SZ"),
+        ("2024-06-04", "000002.SZ"),
+    ]
+    # 字段序列化：shares int / cost_price,market_value float
+    first = result[0]
+    assert first["shares"] == 100
+    assert first["cost_price"] == 10.0     # WAC 每股成本
+    assert first["market_value"] == 1000.0
+    # 分页
+    assert len(await svc.get_daily_positions(task_id, limit=2)) == 2
+    assert len(await svc.get_daily_positions(task_id, limit=2, offset=2)) == 1

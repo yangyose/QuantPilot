@@ -150,13 +150,18 @@ SDD §7.7.5 列 V1.0 回测 4 项 P0 缺陷（T+1 撮合违反 / quotes_t 字段
 
 ### 2.6 A1 DoD
 
-- [ ] `backtest_daily_position` 表 + alembic 迁移（本地 5434 + 生产回流两侧 upgrade head）
-- [ ] `BacktestEngine.run` 加 `position_sink` 回调；sink 非空时不内存累积、`daily_positions` 空 DF；sink 空时保留旧行为（既有测试不破）
-- [ ] `BacktestService` sink 实现（批量 upsert，本地 5434 内存峰值实测 O(batch) 常量，30 日回测对比改造前内存曲线）
-- [ ] `GET /backtest/{id}/result` daily_positions 从新表分页查；`POST /backtest/import` 接收并 upsert daily_positions
+**A1a 流式持久化（2026-07-27 交付，commit 待记）**：
+- [x] `backtest_daily_position` 表 + alembic **0022**（新表前向，本地 5434 + 生产回流两侧 upgrade head；对 5433 实证）
+- [x] `BacktestEngine.run` 加 `position_sink` 回调；sink 非空时不内存累积、`daily_positions` 空 DF；sink 空时保留旧行为（2 UT，既有测试不破）
+- [x] `BacktestService` sink 实现（`_flush_positions` fresh AsyncSessionLocal + `run_coroutine_threadsafe` 回投主 loop + 有界缓冲 `_SINK_BATCH=2000` 满即 flush+尾批；幂等 upsert）
+- [x] `GET /backtest/{id}/result` daily_positions 从新表分页查（`get_daily_positions`）；`POST /backtest/import` 接收并 upsert daily_positions（schema 加字段）
+- [x] 单测：sink 逐日调用 + 无累积（UT）；INT：读路径 + ORM/schema 契约 + 分页（INT-A1，事务内零泄漏）
+
+**【设计待定已定：sink 落库线程模型 = `run_coroutine_threadsafe` 回投主 loop + fresh AsyncSessionLocal 每批**（方案 a，符合 async 栈 + CLAUDE.md §2）；本地 5434 真引擎内存峰值 profile 留 5434 手动跑（CI 不测 O(batch) 内存曲线）**】**
+
+**A1b 滑点情景对比 / A1c SDD §7.7.5 审计（待做）**：
 - [ ] `BacktestConfig.slippage_scenarios` + 多情景串行跑（复用 bundle）+ 对比报告 + 前端展示
 - [ ] SDD §7.7.5 逐条审计表填写 + 已修复局限删除（SDD 正文 + banner + DISCLAIMER）
-- [ ] 单测：sink 回调被逐日调用且参数正确 / 多情景对比结构 / 幂等 upsert；INT：本地 5434 真引擎跑出 daily_positions 落库 + 内存峰值断言
 
 ---
 

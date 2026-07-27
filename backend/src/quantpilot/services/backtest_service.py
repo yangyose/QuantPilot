@@ -21,6 +21,11 @@ from quantpilot.models.system import BacktestResult, BacktestTask
 
 logger = logging.getLogger(__name__)
 
+# A1（S6-GAP-02）：daily_positions 流式 sink 缓冲批大小。满即 flush 落库 →
+# 内存峰值 O(_SINK_BATCH) 常量，不随回测天数 × 持仓数线性增长。asyncpg 二进制协议
+# 16-bit 占位符上限 32767 / 每行 6 列 ≈ 5461 行上限，2000 留足余量（CLAUDE.md §3）。
+_SINK_BATCH = 2000
+
 
 class BacktestService:
     """
@@ -102,6 +107,7 @@ class BacktestService:
         performance: dict,
         daily_nav: dict,
         disclaimer: str,
+        daily_positions: list[dict] | None = None,
     ) -> bool:
         """回流外部（本地算力中心）回测结果到本 DB（2026-06-15）。
 
@@ -111,6 +117,9 @@ class BacktestService:
 
         回测两表无外键指向行情数据 → 纯 INSERT、零引用完整性风险；config_snapshot
         含 data_baseline 标注「本结果基于截至 X 日的数据」。
+
+        V1.5-A A1：``daily_positions``（本地跑出的每日持仓明细）一并回流，经
+        _flush_positions upsert 到 backtest_daily_position（供生产结果页查）。
         """
         if await self.get_task(task_id) is not None:
             return False
@@ -129,8 +138,80 @@ class BacktestService:
             disclaimer=disclaimer,
         ))
         await self._session.commit()
-        logger.info("backtest_result_imported task_id=%s", task_id)
+        # A1：回流每日持仓明细（task 行已 commit，FK 满足）
+        if daily_positions:
+            await self._flush_positions(task_id, daily_positions)
+        logger.info(
+            "backtest_result_imported task_id=%s positions=%d",
+            task_id, len(daily_positions or []),
+        )
         return True
+
+    async def _flush_positions(self, task_id: str, rows: list[dict]) -> None:
+        """A1（S6-GAP-02）：批量 upsert 回测每日持仓到 backtest_daily_position。
+
+        fresh AsyncSessionLocal（不复用 self._session：sink 跨线程投递回主 loop，
+        request-scoped session 生命周期不安全）。asyncpg 占位符上限 → 按 _SINK_BATCH
+        分批（CLAUDE.md §3）。幂等 upsert（on_conflict (task_id, trade_date, ts_code)）。
+        自建 session 必须显式 commit（CLAUDE.md §4.1）。
+        """
+        if not rows:
+            return
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from quantpilot.core.database import AsyncSessionLocal
+        from quantpilot.models.system import BacktestDailyPosition
+
+        async with AsyncSessionLocal() as session:
+            for i in range(0, len(rows), _SINK_BATCH):
+                batch = [
+                    {
+                        "task_id": task_id,
+                        "trade_date": r["trade_date"],
+                        "ts_code": r["ts_code"],
+                        "shares": int(r["shares"]),
+                        "cost_price": r.get("cost_price"),
+                        "market_value": r.get("market_value"),
+                    }
+                    for r in rows[i : i + _SINK_BATCH]
+                ]
+                stmt = pg_insert(BacktestDailyPosition).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["task_id", "trade_date", "ts_code"],
+                    set_={
+                        "shares": stmt.excluded.shares,
+                        "cost_price": stmt.excluded.cost_price,
+                        "market_value": stmt.excluded.market_value,
+                    },
+                )
+                await session.execute(stmt)
+            await session.commit()
+
+    async def get_daily_positions(
+        self, task_id: str, limit: int = 500, offset: int = 0
+    ) -> list[dict]:
+        """A1：按 task_id 分页查回测每日持仓明细（trade_date, ts_code 升序）。"""
+        from quantpilot.models.system import BacktestDailyPosition
+
+        rows = (await self._session.execute(
+            select(BacktestDailyPosition)
+            .where(BacktestDailyPosition.task_id == task_id)
+            .order_by(BacktestDailyPosition.trade_date, BacktestDailyPosition.ts_code)
+            .limit(limit)
+            .offset(offset)
+        )).scalars().all()
+        return [
+            {
+                "trade_date": str(r.trade_date),
+                "ts_code": r.ts_code,
+                "shares": r.shares,
+                "cost_price": float(r.cost_price) if r.cost_price is not None else None,
+                "market_value": (
+                    float(r.market_value) if r.market_value is not None else None
+                ),
+            }
+            for r in rows
+        ]
 
     async def run_task(
         self,
@@ -164,8 +245,30 @@ class BacktestService:
             # ② 预加载历史数据
             data = await self._load_data_bundle(config)
 
+            # A1（S6-GAP-02）：daily_positions 流式 sink。engine.run 在 to_thread 子线程
+            # 跑，sink 从子线程触发 → 用 run_coroutine_threadsafe 把批量 upsert 投回主
+            # loop（预捕获 loop，CLAUDE.md §2「线程回调中的 event loop」），fresh
+            # AsyncSessionLocal 每批（不复用 self._session：属主线程请求上下文，不可跨线程）。
+            # 有界缓冲 _SINK_BATCH 行满即 flush → 内存 O(batch) 常量，不累积 O(N×T)。
+            loop = asyncio.get_running_loop()
+            buffer: list[dict] = []
+
+            def position_sink(trade_date: date, snapshots: list[dict]) -> None:
+                buffer.extend(snapshots)
+                if len(buffer) >= _SINK_BATCH:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._flush_positions(task_id, list(buffer)), loop,
+                    )
+                    fut.result()  # 阻塞子线程直至写入完成（背压，防缓冲无界增长）
+                    buffer.clear()
+
             # ③ 线程池执行（同步 CPU 密集）
-            result = await asyncio.to_thread(self._engine.run, config, data, progress_cb)
+            result = await asyncio.to_thread(
+                self._engine.run, config, data, progress_cb, position_sink,
+            )
+            # flush 尾批（不足 _SINK_BATCH 的剩余持仓）
+            if buffer:
+                await self._flush_positions(task_id, buffer)
 
             # ④ 写 BacktestResult
             daily_nav_dict = {

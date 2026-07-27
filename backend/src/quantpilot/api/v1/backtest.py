@@ -149,6 +149,7 @@ async def import_backtest(
         performance=body.performance,
         daily_nav=body.daily_nav,
         disclaimer=body.disclaimer,
+        daily_positions=body.daily_positions,
     )
     return {
         "code": 0,
@@ -340,6 +341,8 @@ async def get_backtest_result(
     # 记了「跑在截至哪天的数据」；生产 Web 据此标注，回测截止日在过去时结果稳定可复现。
     # 生产机直接跑的回测无此戳（None）→ 前端不展示基线行。
     data_baseline = (task.config_snapshot or {}).get("data_baseline")
+    # V1.5-A A1：每日持仓明细从 backtest_daily_position 分页查（不再随内存 DataFrame）
+    daily_positions = await svc.get_daily_positions(task_id)
     return {
         "code": 0,
         "data": {
@@ -348,6 +351,7 @@ async def get_backtest_result(
             "daily_nav": result.daily_nav_json,
             "disclaimer": result.disclaimer,
             "data_baseline": data_baseline,
+            "daily_positions": daily_positions,
         },
         "msg": "ok",
     }

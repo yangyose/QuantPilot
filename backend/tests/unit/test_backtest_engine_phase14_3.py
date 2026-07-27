@@ -139,6 +139,9 @@ def stub_market_state_engine() -> object:
 
             return _R()
 
+        def compute_nh_nl_diff(self, close_wide: object, lookback: int = 60) -> object:
+            return None  # A3：stub 不算宽度 → breadth_weak 恒 False
+
     return _MSE()
 
 
@@ -405,3 +408,79 @@ def test_ut_p14_3_05_legacy_fallback_when_weights_history_empty(
     assert scorer.aggregate_calls == 0
     assert scorer.aggregate_legacy_calls == 1
     assert result.pipeline_mode == "legacy_fallback"
+
+
+# ── V1.5-A A1（S6-GAP-02）：daily_positions 流式 sink 回调 ────────────────────
+
+
+def _multi_day_calendar(dates: list) -> object:
+    class _Cal:
+        def get_trade_dates(self, start: date, end: date) -> list:
+            return list(dates)
+
+    return _Cal()
+
+
+def test_ut_a1_position_sink_called_per_day_and_no_accumulation(
+    stub_market_state_engine: object,
+) -> None:
+    """A1：传 position_sink 时——引擎在有数据的交易日调 sink(trade_date, snapshots)，
+    且 result.daily_positions 为空（不在内存累积，明细走 sink 落库）。
+
+    注：stub bundle 仅 2024-06-03 有数据；无数据日在 step k 前 early-continue（与旧
+    快照行为一致），故 sink 只在有数据日触发。"""
+    dates = [date(2024, 6, 3)]
+    engine = BacktestEngine(
+        strategies=[_NoopStrategy()],
+        market_state_engine=stub_market_state_engine,
+        universe_filter=_stub_universe_filter(40),
+        scorer=_CapturingScorer(),
+        signal_engine=_NoopSignalEngine(),
+        position_engine=_NoopPositionEngine(),
+        price_provider=None,
+        calendar=_multi_day_calendar(dates),
+    )
+    cfg = BacktestConfig(
+        start_date=dates[0], end_date=dates[-1],
+        initial_capital=1_000_000.0, strategy_config={}, account_config={},
+    )
+    data = _build_data_bundle(40, with_weights_history=True)
+
+    sink_calls: list[tuple] = []
+
+    def sink(trade_date: date, snapshots: list) -> None:
+        sink_calls.append((trade_date, snapshots))
+
+    result = engine.run(cfg, data, position_sink=sink)
+
+    # 有数据日调一次 sink，trade_date 参数对齐
+    assert len(sink_calls) == 1
+    assert sink_calls[0][0] == date(2024, 6, 3)
+    assert isinstance(sink_calls[0][1], list)
+    # sink 路径下 result.daily_positions 为空（不累积）
+    assert result.daily_positions.empty
+
+
+def test_ut_a1_no_sink_preserves_legacy_accumulation(
+    stub_market_state_engine: object,
+) -> None:
+    """A1：不传 position_sink → 旧行为（result.daily_positions 为 DataFrame，兼容既有测试）。"""
+    dates = [date(2024, 6, 3)]
+    engine = BacktestEngine(
+        strategies=[_NoopStrategy()],
+        market_state_engine=stub_market_state_engine,
+        universe_filter=_stub_universe_filter(40),
+        scorer=_CapturingScorer(),
+        signal_engine=_NoopSignalEngine(),
+        position_engine=_NoopPositionEngine(),
+        price_provider=None,
+        calendar=_multi_day_calendar(dates),
+    )
+    cfg = BacktestConfig(
+        start_date=dates[0], end_date=dates[-1],
+        initial_capital=1_000_000.0, strategy_config={}, account_config={},
+    )
+    data = _build_data_bundle(40, with_weights_history=True)
+    result = engine.run(cfg, data)  # 无 sink
+    import pandas as _pd
+    assert isinstance(result.daily_positions, _pd.DataFrame)

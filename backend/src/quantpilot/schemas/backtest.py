@@ -59,3 +59,5 @@ class BacktestImportRequest(BaseModel):
     performance: dict[str, Any]
     daily_nav: dict[str, float]
     disclaimer: str
+    # V1.5-A A1：本地跑出的每日持仓明细，回流到 backtest_daily_position（可选，向后兼容）
+    daily_positions: list[dict[str, Any]] | None = None
