@@ -35,6 +35,10 @@ class BacktestConfig:
     commission_rate: float = 0.00025   # 双向佣金 0.025%（SDD §10.5）
     stamp_tax_rate: float = 0.0005     # 印花税 0.05%（仅卖出，SDD §10.5）
     slippage_rate: float = 0.001       # 滑点估算 0.1%（SDD §10.5）
+    # V1.5-A A1b（SDD §16 滑点敏感性）：多滑点情景对比。非 None 时由
+    # BacktestService.run_slippage_comparison 复用同一 bundle 串行跑各档，产出对比报告；
+    # engine.run 本身不消费此字段（仍用单一 slippage_rate），是编排层声明字段。
+    slippage_scenarios: list[float] | None = None
     # V1.0 整改 Batch 3 — B3-2：T+1 撮合规则
     # "OPEN_T1"（默认）= T 日生成信号、T+1 日开盘价撮合（A 股实际规则）
     # "CLOSE_T" = 当日 close 撮合（保留兼容旧测试，违反 T+1，仅供回归对比）

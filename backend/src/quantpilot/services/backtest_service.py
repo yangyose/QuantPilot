@@ -147,6 +147,45 @@ class BacktestService:
         )
         return True
 
+    def run_slippage_comparison(
+        self,
+        config: BacktestConfig,
+        data: BacktestDataBundle,
+        scenarios: list[float] | None = None,
+    ) -> list[dict]:
+        """V1.5-A A1b（SDD §16 滑点敏感性）：多滑点情景对比。
+
+        对 ``scenarios`` 每档滑点**复用同一 bundle**（bundle 是内存大头，只加载一次），
+        串行跑 ``self._engine.run``（每次覆盖 ``slippage_rate``），产出结构化对比报告：
+        ``[{slippage, total_return, max_drawdown, sharpe, annualized_return, pipeline_mode}]``。
+
+        ``scenarios`` 缺省时读 ``config.slippage_scenarios``；均空 → 返回空列表（不跑）。
+        同步方法（engine.run 同步）；异步调用方经 ``asyncio.to_thread`` 包装。本地算力
+        中心用（生产回测禁用）。情景数应受调用方护栏约束（如 ≤5）防滥用。
+        """
+        import dataclasses
+
+        scenarios = scenarios if scenarios is not None else config.slippage_scenarios
+        if not scenarios:
+            return []
+        if self._engine is None:
+            raise RuntimeError("run_slippage_comparison 需注入 BacktestEngine")
+
+        report: list[dict] = []
+        for slip in scenarios:
+            cfg = dataclasses.replace(config, slippage_rate=float(slip))
+            result = self._engine.run(cfg, data)  # 复用同一 data bundle
+            perf = result.performance or {}
+            report.append({
+                "slippage": float(slip),
+                "total_return": float(perf.get("total_return", 0.0)),
+                "max_drawdown": float(perf.get("max_drawdown", 0.0)),
+                "sharpe": float(perf.get("sharpe_ratio", 0.0)),
+                "annualized_return": float(perf.get("annualized_return", 0.0)),
+                "pipeline_mode": getattr(result, "pipeline_mode", None),
+            })
+        return report
+
     async def _flush_positions(self, task_id: str, rows: list[dict]) -> None:
         """A1（S6-GAP-02）：批量 upsert 回测每日持仓到 backtest_daily_position。
 

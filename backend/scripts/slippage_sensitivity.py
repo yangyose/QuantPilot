@@ -108,31 +108,16 @@ async def _run(
         data = await service._load_data_bundle(template_cfg)
     print(f"[+] data bundle loaded: {len(data.daily_quotes)} daily_quote rows")
 
-    results: list[dict] = []
-    for slip in slippages:
-        cfg = BacktestConfig(
-            start_date=start, end_date=end,
-            initial_capital=1_000_000.0,
-            strategy_config={},
-            account_config={},
-            slippage_rate=float(slip),
-        )
-        print(f"[+] running backtest slippage={slip} ...")
-        result = engine.run(cfg, data, progress_cb=None)
-        perf = result.performance or {}
-        results.append({
-            "slippage": float(slip),
-            "sharpe": float(perf.get("sharpe_ratio", 0.0)),
-            "max_drawdown": float(perf.get("max_drawdown", 0.0)),
-            "ann_return": float(perf.get("annualized_return", 0.0)),
-            "total_return": float(perf.get("total_return", 0.0)),
-            "pipeline_mode": result.pipeline_mode,
-        })
+    # V1.5-A A1b：复用 BacktestService.run_slippage_comparison（复用同一 bundle 串行
+    # 跑各档滑点，产出结构化对比报告）——CLI 与生产/回流用同一实现，不重复编排逻辑。
+    print(f"[+] running slippage comparison over {list(slippages)} ...")
+    svc = BacktestService(session=None, engine=engine)
+    results = svc.run_slippage_comparison(template_cfg, data, scenarios=list(slippages))
+    for r in results:
         print(
-            f"    sharpe={results[-1]['sharpe']:.4f} "
-            f"max_dd={results[-1]['max_drawdown']:.4f} "
-            f"ann_ret={results[-1]['ann_return']:.4f} "
-            f"mode={result.pipeline_mode}"
+            f"    slippage={r['slippage']} sharpe={r['sharpe']:.4f} "
+            f"max_dd={r['max_drawdown']:.4f} ann_ret={r['annualized_return']:.4f} "
+            f"mode={r['pipeline_mode']}"
         )
 
     out_dir.mkdir(parents=True, exist_ok=True)

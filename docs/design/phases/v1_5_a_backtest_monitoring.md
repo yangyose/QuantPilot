@@ -146,7 +146,17 @@ SDD §7.7.5 列 V1.0 回测 4 项 P0 缺陷（T+1 撮合违反 / quotes_t 字段
 1. **SDD §7.7.5**（恰 4 项：T+1 / quotes 字段 / pe_pb+index 空 DF / RiskChecker）——全部 ✅ 已修复，A1 收尾时 4 项全删（SDD 修订历史记 V1.5-A 删除）。
 2. **`DISCLAIMER`（B1-1）+ 前端 `BacktestLimitationsBanner`（B1-2）合规文案**（v1.0-r4 合规链）——涨停一刀切 / 财务快报缺失等 caveat 在此，**不在 §7.7.5**。这些留到对应子批交付后删：涨停 caveat 待 A2 交付后删、财务快报 caveat 待 A5 交付后删。
 
-**【设计待定：逐条修复判定表——实施 A1/A2/A5 收尾时填「局限条目 / 所属处（§7.7.5 vs DISCLAIMER/banner）/ 对应 commit / 是否真修复 / 删或留」，避免误删未真修复项，亦避免去 §7.7.5 找涨停/快报条目扑空】**
+**逐条修复判定表（A1c 审计，2026-07-27 填写）**：
+
+| 局限条目 | 所属处 | 修复 commit | 真修复? | 处置 |
+|---------|-------|-----------|:------:|------|
+| T+1 撮合违反 | §7.7.5#1 + DISCLAIMER + banner | B3-2 | ✅ | 删 |
+| 涨停/停牌/退市未排除 | §7.7.5#2 + DISCLAIMER + banner | B3-1/5/6 + A2 SDD-EXT-02s（0bec20a 涨停无量精细化）| ✅ | 删 |
+| PE/PB 分位 + 指数收益空 DF | §7.7.5#3 + DISCLAIMER + banner | B3-3 | ✅ | 删 |
+| RiskChecker 不参与 | §7.7.5#4 + DISCLAIMER + banner | B3-4 | ✅ | 删 |
+| 回测≠实盘 / 无系统性对应 / 不构成投资建议（通用合规）| DISCLAIMER + banner | 永久 | — | **保留** |
+
+**关键发现**：财务快报缺失 caveat **不在** DISCLAIMER/banner 现有文案（二者只列上述 4 项 P0 + 通用合规）→ A5 交付后**无 caveat 需删**（§2.5 早期假设的「财务快报 caveat 待 A5 删」不成立，A5 只需正常回写 SDD §4.2/§5.1）。DISCLAIMER 由「缺陷清单」pivot 为「回测方法说明 + 通用合规免责」；banner 由 `error` 4 项列表 pivot 为 `warning` 单段通用提示；§7.7.5 保留作修复历史存档 + 顶部标 A1c 审计收口。
 
 ### 2.6 A1 DoD
 
@@ -159,9 +169,14 @@ SDD §7.7.5 列 V1.0 回测 4 项 P0 缺陷（T+1 撮合违反 / quotes_t 字段
 
 **【设计待定已定：sink 落库线程模型 = `run_coroutine_threadsafe` 回投主 loop + fresh AsyncSessionLocal 每批**（方案 a，符合 async 栈 + CLAUDE.md §2）；本地 5434 真引擎内存峰值 profile 留 5434 手动跑（CI 不测 O(batch) 内存曲线）**】**
 
-**A1b 滑点情景对比 / A1c SDD §7.7.5 审计（待做）**：
-- [ ] `BacktestConfig.slippage_scenarios` + 多情景串行跑（复用 bundle）+ 对比报告 + 前端展示
-- [ ] SDD §7.7.5 逐条审计表填写 + 已修复局限删除（SDD 正文 + banner + DISCLAIMER）
+**A1b 滑点情景对比（2026-07-27 交付）**：
+- [x] `BacktestConfig.slippage_scenarios` 字段 + `BacktestService.run_slippage_comparison`（复用同一 bundle 串行跑各档 + 结构化对比报告 `[{slippage, total_return, max_drawdown, sharpe, ...}]`；3 UT）
+- [x] `scripts/slippage_sensitivity.py` 重构复用共享方法（DRY，CLI 与生产/回流同一实现）
+- [ ] 前端回测结果页滑点敏感性表格（**phase 收尾批**——本地算力中心 CSV 已可用，前端展示随收尾一并）
+
+**A1c SDD §7.7.5 审计（2026-07-27 交付）**：
+- [x] 逐条修复判定表填写（上 §2.5，4 项 P0 全 ✅ 真修复）
+- [x] DISCLAIMER（report.py）pivot 为方法说明 + 通用合规；banner pivot 为 warning 单段（删 4 项缺陷列表，vue-tsc 0）；SDD §7.7.5 标 A1c 收口 + 通用免责永久保留；SDD 修订历史 v1.4-r3
 
 ---
 

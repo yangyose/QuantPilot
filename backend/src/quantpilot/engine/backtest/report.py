@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from quantpilot.engine.backtest.engine import BacktestConfig
 
+# V1.5-A A1c（2026-07-27）：V1.0 评审识别的 4 项 P0 回测缺陷（T+1 撮合 / 涨停停牌退市
+# 未排除 / PE-PB+指数空 DF / 不调 RiskChecker）已于 V1.0 整改 Batch 3 + V1.5-A A2 全部
+# 修复（审计见 v1_5_a §2.5），DISCLAIMER 由「缺陷清单」收敛为「方法说明 + 通用合规免责」。
 DISCLAIMER = (
-    "V1.0 回测引擎已知局限：撮合方式与 A 股 T+1 规则存在差异（当日 close 撮合，"
-    "实盘为次日开盘），未排除涨停/停牌/已退市股，PE/PB 历史分位与指数收益数据切片"
-    "在回测中以空集合降级，主流程不调用 RiskChecker（集中度/行业/回撤限制不生效）。"
-    "回测净值、Sharpe 等指标与实盘可达成收益**无系统性对应关系**，仅供策略相对排序"
-    "参考，不构成任何投资建议。"
+    "回测采用 T+1 次日开盘撮合、排除无量一字板涨停 / 停牌 / 退市股、PE/PB 与指数收益"
+    "按 PIT 时点切片、主流程集成 RiskChecker（集中度 / 行业 / 回撤限制），与实盘 "
+    "SignalService 共用同一评分 / 风控 / 仓位实例。但回测为历史数据模拟，净值、Sharpe "
+    "等指标与实盘可达成收益**无系统性对应关系**，仅供策略相对排序参考，不构成任何投资建议。"
 )
 
 
