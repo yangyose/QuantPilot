@@ -28,6 +28,7 @@ def _orm_to_record(row: object) -> MarketStateRecord:
         ma60=float(row.ma60),
         state_changed=bool(row.state_changed),
         description=row.description or "",
+        breadth_weak=bool(getattr(row, "breadth_weak", False)),
     )
 
 
@@ -85,7 +86,12 @@ class MarketStateService:
             else MarketStateEnum.OSCILLATION
         )
 
-        record = self._engine.identify_latest(ohlcv_df, prev_confirmed=prev_confirmed)
+        # A3（SDD-EXT-07）：算 trade_date 当日 NH-NL 市场宽度传入（供 breadth_weak）。
+        nh_nl_series = await self._compute_nh_nl_series(trade_date, ohlcv_df.index[-1])
+
+        record = self._engine.identify_latest(
+            ohlcv_df, prev_confirmed=prev_confirmed, nh_nl_series=nh_nl_series,
+        )
 
         if record is None:
             logger.warning(
@@ -113,6 +119,28 @@ class MarketStateService:
                         trade_date, old_state, new_state, exc_info=True,
                     )
         return record
+
+    async def _compute_nh_nl_series(
+        self, trade_date: date, index_key: object
+    ) -> pd.Series | None:
+        """A3（SDD-EXT-07）：算 trade_date 当日全市场 NH-NL 差值，返回 1 元素 Series
+        {index_key: diff} 供 identify_latest（键须对齐 ohlcv 末日索引）。
+
+        取 [trade_date-90 日历日, trade_date] 全市场 close 宽表（近似 ≥60 交易日），
+        调 engine.compute_nh_nl_diff。数据不足 / 异常 → None（不据此降级，仅 warn）。
+        """
+        try:
+            start = trade_date - timedelta(days=90)
+            close_wide = await self._repo.get_close_matrix(start, trade_date)
+            nh_nl = self._engine.compute_nh_nl_diff(close_wide)
+            if nh_nl is None:
+                return None
+            return pd.Series({index_key: nh_nl})
+        except Exception:
+            logger.warning(
+                "nh_nl_compute_failed trade_date=%s", trade_date, exc_info=True,
+            )
+            return None
 
     async def get_current_state(self) -> MarketStateRecord | None:
         """从 DB 取最新状态行，转换为 MarketStateRecord 返回。无记录返回 None。"""

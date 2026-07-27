@@ -32,6 +32,11 @@ class MarketStateHistory(Base):
     ma60: Mapped[float | None] = mapped_column(Numeric(10, 3))
     state_changed: Mapped[bool] = mapped_column(Boolean, default=False)
     description: Mapped[str | None] = mapped_column(Text)
+    # V1.5-A A3（SDD-EXT-07）：市场宽度弱信号（UPTREND 且 NH-NL ≤ 0）。
+    # server_default=false 与 alembic 0021 一致（存量行取 False）。
+    breadth_weak: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa.false(), default=False
+    )
 
 
 class CandidatePool(Base):

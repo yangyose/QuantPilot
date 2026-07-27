@@ -255,7 +255,11 @@ class BacktestEngine:
                 universe_idx = universe_idx[universe_idx.isin(quotes_t.index)]
 
             # ---------- e. 市场状态识别 ----------
-            market_state = self._get_market_state(data.hs300_history, trade_date)
+            # A3：_get_market_state 返回 (enum, breadth_weak)；breadth_weak 由当日
+            # daily_quotes 的 NH-NL 市场宽度决定（UPTREND 且 NH-NL≤0）。
+            market_state, breadth_weak = self._get_market_state(
+                data.hs300_history, trade_date, daily_quotes=data.daily_quotes,
+            )
 
             # ---------- f. 策略评分（B3-3：传入真实 pe_pb_history + index_adj_prices）
             #            Phase 14 §14-3 改造 1：MarketSnapshot 补 industry / market_cap / beta，
@@ -344,8 +348,13 @@ class BacktestEngine:
             market_state_str = (
                 market_state.value if hasattr(market_state, "value") else str(market_state)
             )
+            # A3 方案(a)：breadth_weak 时按 OSCILLATION 查权重压制趋势，market_state
+            # enum 仍保 UPTREND 传给 aggregate（与生产 StrategyService.score_universe 对称）。
+            weight_lookup_state = (
+                MarketStateEnum.OSCILLATION.value if breadth_weak else market_state_str
+            )
             weights_record = self._lookup_active_weights(
-                trade_date, market_state_str, data.active_weights_history,
+                trade_date, weight_lookup_state, data.active_weights_history,
             )
 
             composite_scores: list = []
@@ -356,6 +365,9 @@ class BacktestEngine:
                     or not strategy_factors):
                 # 降级路径：universe 不足 / active_weights 未就绪 / 因子矩阵全失败
                 # → 走 Phase 4 aggregate_legacy（需 s.score 0-100 输出，临时再算一次）
+                # A3 注：breadth_weak 压制作用于 real_5step（生产等价）路径的
+                # weight_lookup_state；本 legacy 分支是冷启动/低样本降级路径（生产恒走
+                # 5 步不入此支），权重细化在此已无意义，保留原 market_state 加权。
                 if len(universe_idx) > 0:
                     for s in self._strategies:
                         try:
@@ -677,15 +689,24 @@ class BacktestEngine:
             logger.exception("backtest_index_slice_error date=%s", trade_date)
             return index_adj_prices
 
-    def _get_market_state(self, hs300_history: pd.DataFrame, trade_date: date) -> MarketStateEnum:
+    def _get_market_state(
+        self,
+        hs300_history: pd.DataFrame,
+        trade_date: date,
+        daily_quotes: pd.DataFrame | None = None,
+    ) -> tuple[MarketStateEnum, bool]:
         """识别截至 trade_date 的市场状态。
 
-        identify_latest 返回 MarketStateRecord | None；本方法抽出 .market_state 供 Scorer 使用。
-        历史不足（暖启动期）时降级为 OSCILLATION。
+        identify_latest 返回 MarketStateRecord | None；本方法抽出 (market_state, breadth_weak)。
+        历史不足（暖启动期）时降级为 (OSCILLATION, False)。
+
+        V1.5-A A3（SDD-EXT-07）：``daily_quotes``（bundle 全字段 MultiIndex）非空时，
+        从中算当日 NH-NL 市场宽度传入 identify_latest，得回测侧 breadth_weak（与生产
+        同一 compute_breadth_weak）；缺省 None → nh_nl=None → breadth_weak 恒 False。
         """
         try:
             if hs300_history is None or hs300_history.empty:
-                return MarketStateEnum.OSCILLATION
+                return MarketStateEnum.OSCILLATION, False
             if "trade_date" in hs300_history.columns:
                 hist = hs300_history[
                     hs300_history["trade_date"].apply(
@@ -703,15 +724,53 @@ class BacktestEngine:
                     idx = pd.to_datetime(idx)
                 hist = hs300_history[idx <= pd.Timestamp(trade_date)]
             if hist.empty:
-                return MarketStateEnum.OSCILLATION
-            record = self._market_state_engine.identify_latest(hist)
+                return MarketStateEnum.OSCILLATION, False
+
+            # A3：算当日 NH-NL 传入（供 breadth_weak）。identify_latest 只看 hist 末日
+            # 记录 → nh_nl_series 键须对齐 hist.index[-1]（未必等于 trade_date）。
+            nh_nl_val = self._backtest_nh_nl_value(daily_quotes, trade_date)
+            nh_nl_series = (
+                pd.Series({hist.index[-1]: nh_nl_val}) if nh_nl_val is not None else None
+            )
+            record = self._market_state_engine.identify_latest(
+                hist, nh_nl_series=nh_nl_series,
+            )
             if record is None:
-                return MarketStateEnum.OSCILLATION
-            return record.market_state
+                return MarketStateEnum.OSCILLATION, False
+            return record.market_state, record.breadth_weak
         except Exception:
             # B3-9：原 except 静默吞，改 logger.exception
             logger.exception("backtest_market_state_error date=%s", trade_date)
-            return MarketStateEnum.OSCILLATION
+            return MarketStateEnum.OSCILLATION, False
+
+    def _backtest_nh_nl_value(
+        self, daily_quotes: pd.DataFrame | None, trade_date: date
+    ) -> float | None:
+        """A3：从 bundle daily_quotes（MultiIndex(trade_date, ts_code)）算 trade_date
+        当日 NH-NL 差值（float）。取 [trade_date-90 日历日, trade_date] 的 close pivot
+        成 wide（近似 ≥60 交易日），调 MarketStateEngine.compute_nh_nl_diff。
+        数据不足 / 无列 → None。
+
+        【设计待定：回测 NH-NL 性能——逐日重算 60 日窗口，实施期 profile，
+        必要时预算全期 NH-NL 时序一次】
+        """
+        if daily_quotes is None or daily_quotes.empty:
+            return None
+        if not isinstance(daily_quotes.index, pd.MultiIndex) or "close" not in daily_quotes.columns:
+            return None
+        try:
+            td = pd.Timestamp(trade_date)
+            start = td - pd.Timedelta(days=90)
+            lvl_ts = pd.to_datetime(daily_quotes.index.get_level_values("trade_date"))
+            mask = (lvl_ts >= start) & (lvl_ts <= td)
+            sliced = daily_quotes.loc[mask, ["close"]]
+            if sliced.empty:
+                return None
+            close_wide = sliced["close"].unstack("ts_code").sort_index()
+            return self._market_state_engine.compute_nh_nl_diff(close_wide)
+        except Exception:
+            logger.exception("backtest_nh_nl_compute_error date=%s", trade_date)
+            return None
 
     # V1.0 整改 Batch 3 — B3-4：RiskChecker 集成
     def _apply_risk_checker(

@@ -1,7 +1,7 @@
 # V1.5-A：回测引擎深化 + 监控增强 + 市场宽度 + 财务 PIT 修正
 
-> 版本：v1.1（设计评审收口，2026-07-24）
-> 状态：设计评审有条件通过 ✓，放行条件已消除（`docs/reviews/v1_5_a_backtest_monitoring_design_review_2026-07-24.md`）；待用户批准进 A4 实施
+> 版本：v1.2（A3 权重承载调研锁定，2026-07-27）
+> 状态：A4 ✓ / A2 ✓（CI 绿）；A3 权重承载锁定方案(a)，实施中；A1/A5 待做。设计评审有条件通过（`docs/reviews/v1_5_a_backtest_monitoring_design_review_2026-07-24.md`），放行条件已消除
 > 估算：~6.5-10 pd（roadmap §6 V1.5-A 行）
 > 实施顺序（用户拍板 2026-07-24「先轻后重」）：**A4 → A2 → A3 → A1 → A5**
 > 依据文档：
@@ -20,6 +20,7 @@
 |------|------|---------|
 | v1.0 | 2026-07-24 | 初版。整合 roadmap V1.5-A 五条工作流：A1 回测引擎深化（S6-GAP-02 daily_positions 流式持久化 + 滑点情景对比 + SDD §7.7.5 V1.0 局限审计删除）/ A2 涨停可行性精细化（SDD-EXT-02s，校准 B3-1 全量跳过）/ A3 NH-NL 市场宽度（SDD-EXT-07）/ A4 监控增强（R13-P3-1~5）/ A5 业绩预告快报 PIT 数据层（SDD-EXT-03）。锁定实施顺序 A4→A2→A3→A1→A5（先轻后重）。启动核查见 §1.3 |
 | v1.1 | 2026-07-24 | **设计评审收口**（第三方评审有条件通过 ✓，0 P1 / 2 P2 / 4 P3）。**放行条件（2 P2，均为 Scope 总览误标「无生产写」的内部矛盾）已消除**：① A3 `breadth_weak` 落地生产 Scorer 须持久化——`MarketStateRecord` 经 `MarketStateHistory` ORM → `get_current_state`（DB 读→`_orm_to_record`）流，若不落库生产 Scorer 读不回、弱势震荡压制永不生效；§4.2 补 `MarketStateHistory` 加 `breadth_weak` 列 + alembic ALTER + 映射，§1.2/§4.4/§9 改 A3「有生产写（既有表 ALTER，部署单列 C-1）」；② §1.2 A1「无生产写」→「有（`backtest_daily_position` 前向建表供回流展示/import）」对齐 §9。**P3 一并处理**：§4.3/§4.4 补回测侧 `_get_market_state` 返回 record/`(enum,breadth_weak)` 使 breadth_weak 流到回测 Scorer；§2.5 审计范围拆 §7.7.5（4 项全删）+ DISCLAIMER/banner（涨停/快报 caveat 留到 A2/A5 交付后删），A2/A5 DoD 同步改指 banner 非 §7.7.5；§1.2 括注分项精确和 7.6-9.6 vs 标称 6.5-10。R13-P3 编号（评审判定 roadmap 背书的跨文档工作项 ID、非一次性评审编号）保留留痕 |
+| v1.2 | 2026-07-27 | **A3 权重承载调研锁定**（进 A3 实施前）。§4.2 消除【设计待定：弱势震荡权重承载】——锁定**方案(a) breadth_weak 时按 OSCILLATION 查权重**。调研实证：`Scorer.aggregate` 不自查权重（`weights_runtime` 入参 dict），压制落点在调用方算权重用的 state 字符串（`StrategyService.score_universe` 生产 / `BacktestEngine._lookup_active_weights` 回测均按 state_str 键，含 `get_active_weights` 的 ICIR/冷启动/order）；breadth_weak 时用 `"OSCILLATION"` 查权重、`market_state` enum 仍保 UPTREND。选(a) 而非(b)：零新增（复用 oscillation 行 Σ=1，无第 4 套权重/无惩罚系数/无重归一化）+ 天然覆盖 ICIR 路径 + 语义精确（评审§3.4「降级为弱势震荡」）+ 生产/回测对称。落地清单 6 处见 §4.2/§4.4。余【设计待定：回测 NH-NL 性能】留实施期 profile |
 
 ---
 
@@ -214,7 +215,15 @@ SDD §7.7.5 列 V1.0 回测 4 项 P0 缺陷（T+1 撮合违反 / quotes_t 字段
 > - NH-NL 差值 > 0% → 确认 UPTREND；
 > - NH-NL 差值 ≤ 0% → 降级为「弱势震荡」（压制趋势策略权重）。
 
-「弱势震荡」的承载：**不新增枚举值**（避免 MarketStateEnum 三态契约破裂 + 全链路 config_matrix/scorer 权重表改动）。改为在 `MarketStateRecord` 加布尔字段 `breadth_weak: bool`（默认 False），UPTREND 且 NH-NL≤0 时置 True，market_state 仍报 UPTREND 但 `breadth_weak=True`。下游 Scorer 权重查找时 `breadth_weak` → 趋势策略权重按系数压制（复用 OSCILLATION 态权重或乘惩罚系数）。**【设计待定：弱势震荡权重承载——(a) breadth_weak 时 scorer 查 OSCILLATION 权重行 vs (b) UPTREND 权重 × 趋势惩罚系数；实施期定，需与 phase11 config_matrix 权重表结构对齐，避免引入第 4 套权重】**
+「弱势震荡」的承载：**不新增枚举值**（避免 MarketStateEnum 三态契约破裂 + 全链路 config_matrix/scorer 权重表改动）。改为在 `MarketStateRecord` 加布尔字段 `breadth_weak: bool`（默认 False），UPTREND 且 NH-NL≤0 时置 True，market_state 仍报 UPTREND 但 `breadth_weak=True`。
+
+**权重承载 = 方案(a) 按 OSCILLATION 查权重**（2026-07-27 调研锁定）。调研实证：`Scorer.aggregate` **不自己按 state 查权重**——`weights_runtime` 是入参 dict，由调用方（`StrategyService.score_universe` 生产 / `BacktestEngine._lookup_active_weights` 回测）先按 state 字符串查好传入。故 breadth_weak 压制的落点是**调用方算 weights_runtime 时使用的 state 字符串**：`breadth_weak` 时用 `"OSCILLATION"` 查权重，而传给 `aggregate` 的 `market_state` enum **仍保持真实 UPTREND**（供 CompositeScore.market_state + 下游信号阈值）。
+
+default 权重实证压制有效：uptrend `trend=0.40` → oscillation `trend=0.15`（真压制趋势），mean_reversion 0.15→0.40。选(a) 而非(b)（UPTREND 权重 × 趋势惩罚系数）的理由：
+- (a) **零新增**——复用现成 oscillation 权重行，无第 4 套权重、无惩罚系数参数、无需重归一化（oscillation 已 Σ=1）；(b) 三者皆需。
+- (a) 天然覆盖 ICIR 路径——`get_active_weights(session, trade_date, market_state: str)` 的 ICIR 查询 / 冷启动 fallback / order **全部按 state 字符串键**，传 `"OSCILLATION"` 即返回 oscillation 的 ICIR 或 default 权重；(b) 在按 state 键的 ICIR 路径无处安放。
+- (a) 语义精确——评审 §3.4 原话「降级为**弱势震荡**」字面即「按震荡处理策略配置」；`market_state` enum 保持 UPTREND ⇒ 「上涨趋势但市场宽度弱，策略配置软化为震荡」。
+- 生产/回测对称——`get_active_weights` 与回测 `_lookup_active_weights` 均按 state_str 键，两侧同一 `"OSCILLATION"` 替换逻辑。
 
 **breadth_weak 必须持久化（生产链路完整性 · 放行条件）**：`MarketStateRecord` 是 engine 层 dataclass，经 `MarketStateHistory` ORM（`models/business.py`）→ `repository.upsert_market_state` 落库，生产 Scorer 经 `MarketStateService.get_current_state`（**从 DB 取行 → `_orm_to_record`**）读当前态。故 `breadth_weak` 若只加在 dataclass 不落库，`get_current_state` 读回即丢 → 生产 Scorer 拿不到、弱势震荡压制**永不生效**。落地要求：
 - `MarketStateHistory` 新增 `breadth_weak: Mapped[bool]`（默认 False）列 + **alembic 迁移**（生产既有表 ALTER，前向非破坏；部署单列 C-1，见 §9）；
@@ -229,13 +238,15 @@ SDD §7.7.5 列 V1.0 回测 4 项 P0 缺陷（T+1 撮合违反 / quotes_t 字段
 
 ### 4.4 A3 DoD
 
-- [ ] `MarketStateRecord.breadth_weak: bool` 字段 + `MarketStateEngine.identify` 接受可选 `nh_nl_series` 参数
-- [ ] UPTREND 且 NH-NL≤0 → breadth_weak=True（纯函数单测：NH-NL>0 确认 / ≤0 降级 / 非 UPTREND 不受影响）
-- [ ] **持久化链路**：`MarketStateHistory` 新增 `breadth_weak` 列 + alembic 迁移（生产 ALTER，C-1）+ `upsert_market_state` 写入 + `_orm_to_record` 读回映射（否则生产 Scorer 读不到，压制失效）
-- [ ] 回测侧 `_get_market_state` 改返回 record/`(enum, breadth_weak)`，回测 Scorer 与生产同一压制路径消费 breadth_weak
-- [ ] NH-NL 计算：生产管线 + 回测两路径（60 日新高新低 / 宇宙数，向量化）
-- [ ] Scorer 消费 breadth_weak 压制趋势权重（与 phase11 权重表对齐）
-- [ ] 回写 SDD §6.3 市场环境判定新增 NH-NL 逻辑 + system_design §5 市场状态模块 + §3 数据模型（MarketStateHistory 加列）
+- [x] `MarketStateRecord.breadth_weak: bool` 字段 + `MarketStateEngine.identify`/`identify_latest` 接受可选 `nh_nl_series` 参数
+- [x] UPTREND 且 NH-NL≤0 → breadth_weak=True（纯函数 `compute_breadth_weak` 单测：NH-NL>0 确认 / ≤0 降级 / 非 UPTREND 不受影响 / None 不降级；identify 集成单测）
+- [x] **持久化链路**：`MarketStateHistory` 新增 `breadth_weak` 列 + alembic **0021**（生产 ALTER，server_default=false，C-1）+ `upsert_market_state` 写入 + `_orm_to_record` 读回映射（集成 MSTS-06 往返保真）
+- [x] 回测侧 `_get_market_state` 改返回 `(enum, breadth_weak)`，回测 Scorer 与生产同一压制路径消费 breadth_weak
+- [x] NH-NL 计算：纯函数 `compute_nh_nl_diff`（60 日新高新低/宇宙数，向量化，单测）+ 生产 `MarketStateService._compute_nh_nl_series`（`repo.get_close_matrix`，集成 MSTS-07 端到端）+ 回测 `BacktestEngine._backtest_nh_nl_value`（bundle daily_quotes）
+- [x] Scorer 消费 breadth_weak 压制趋势权重（**方案(a)**：`StrategyService.score_universe` 生产 + `BacktestEngine` 回测算 weights_runtime 时 `breadth_weak` → 用 `"OSCILLATION"` 查权重，`market_state` enum 仍传 UPTREND；回测 legacy_fallback 降级支保留原态加权，注明）
+- [x] 回写 SDD §6.3 市场环境判定新增 NH-NL 逻辑 + §6.4 输出加 breadth_weak 字段（system_design §5/§3 待 phase 收尾一并）
+
+**A3 状态（2026-07-27）**：全链路交付。unit+e2e 743 passed（+5 A3 UT）+ 集成 market_state 7 passed（+MSTS-06/07 A3）/ ruff 0 / migration 0021 对测试库 5433 upgrade head 实证 breadth_weak 列。**生产写**：alembic 0021（既有表 ALTER，部署单列 C-1，phase 收尾）。余【设计待定：回测 NH-NL 性能】留实施期 profile。system_design §5/§3 回写 → phase 收尾批。
 
 ---
 

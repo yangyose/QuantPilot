@@ -130,9 +130,12 @@ def stub_calendar() -> object:
 @pytest.fixture
 def stub_market_state_engine() -> object:
     class _MSE:
-        def identify_latest(self, hist: pd.DataFrame) -> object:
+        def identify_latest(
+            self, hist: pd.DataFrame, nh_nl_series: object = None,
+        ) -> object:
             class _R:
                 market_state = MarketStateEnum.UPTREND
+                breadth_weak = False
 
             return _R()
 

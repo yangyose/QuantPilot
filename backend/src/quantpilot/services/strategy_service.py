@@ -383,11 +383,15 @@ class ScoringService:
                 "scoring_no_market_state_phase11: using OSCILLATION as fallback"
             )
             market_state = MarketStateEnum.OSCILLATION
+            breadth_weak = False
         else:
             market_state = MarketStateEnum(state_record.market_state)
+            # A3：从 market_state_history 行读市场宽度弱信号（0021 加列，旧库/回填缺列→False）
+            breadth_weak = bool(getattr(state_record, "breadth_weak", False))
 
         return await self.score_universe(
             self._repo.session, trade_date, list(universe), market_state,
+            breadth_weak=breadth_weak,
         )
 
     async def _run_phase11_pipeline(
@@ -416,6 +420,7 @@ class ScoringService:
         trade_date: date,
         universe: list[str],
         market_state: MarketStateEnum,
+        breadth_weak: bool = False,
     ) -> list[CompositeScore]:
         """5 步评分管线编排（Phase 11 §3.4）：构建 MarketSnapshot → 各策略
         ``compute_strategy_factors`` → ``FactorMonitorService.get_active_weights`` →
@@ -423,6 +428,10 @@ class ScoringService:
 
         ``session`` 用于 ``factor_monitor.get_active_weights`` 查询当日 active 权重；
         ``factor_monitor`` 未注入时 fallback 到 default_matrix。
+
+        V1.5-A A3（SDD-EXT-07）：``breadth_weak=True``（UPTREND 且 NH-NL ≤ 0）时，
+        **按 OSCILLATION 查权重**压制趋势策略（方案 a），但 ``market_state`` 仍传真实
+        UPTREND 给 ``aggregate``（供 CompositeScore + 下游信号阈值）。
 
         本方法**不写 candidate_pool**——调用方按需调 ``write_candidate_pool``。
         """
@@ -447,11 +456,17 @@ class ScoringService:
         market_state_str = (
             market_state.value if hasattr(market_state, "value") else str(market_state)
         )
+        # A3 方案(a)：breadth_weak 时按 OSCILLATION 查权重压制趋势（trend 0.40→0.15），
+        # market_state enum 仍保 UPTREND 传给 aggregate。get_active_weights 的 ICIR /
+        # 冷启动 / order 全按 state_str 键，替换 lookup state 即天然覆盖两路径。
+        weight_lookup_state = (
+            MarketStateEnum.OSCILLATION.value if breadth_weak else market_state_str
+        )
         if self._factor_monitor is not None:
             (
                 weights_runtime, weights_source, order, hysteresis_status,
             ) = await self._factor_monitor.get_active_weights(
-                session, trade_date, market_state_str,
+                session, trade_date, weight_lookup_state,
             )
         else:
             from quantpilot.core.config_defaults import DEFAULT_STRATEGY_WEIGHTS
@@ -461,7 +476,7 @@ class ScoringService:
                 "oscillation": DEFAULT_STRATEGY_WEIGHTS.oscillation,
             }
             default_w = DEFAULT_STRATEGY_WEIGHTS.oscillation
-            weights_runtime = dict(weights_map.get(market_state_str, default_w))
+            weights_runtime = dict(weights_map.get(weight_lookup_state, default_w))
             weights_source = "default_matrix"
             # 评审 R12-P2-6：按 default_matrix 当前 state 权重降序，让高权重策略先正交化
             order = sorted(weights_runtime, key=lambda s: weights_runtime[s], reverse=True)

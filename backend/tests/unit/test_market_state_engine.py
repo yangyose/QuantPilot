@@ -160,3 +160,95 @@ def test_mse_10_identify_latest_state_changed(engine: MarketStateEngine) -> None
     assert latest is not None
     assert isinstance(latest, MarketStateRecord)
     assert latest.trade_date == list(ohlcv.index)[-1]
+
+
+# ── V1.5-A A3（SDD-EXT-07）：NH-NL 市场宽度 → breadth_weak ────────────────────
+
+
+def test_mse_a3_compute_breadth_weak_pure() -> None:
+    """纯函数 compute_breadth_weak：仅 UPTREND 且 NH-NL ≤ 0 时 True。"""
+    from quantpilot.engine.market_state import MarketStateEngine as _E
+
+    # UPTREND：NH-NL > 0 → False；≤ 0 → True
+    assert _E.compute_breadth_weak(MarketStateEnum.UPTREND, 0.05) is False
+    assert _E.compute_breadth_weak(MarketStateEnum.UPTREND, 0.0) is True
+    assert _E.compute_breadth_weak(MarketStateEnum.UPTREND, -0.1) is True
+    # 非 UPTREND：规则不适用，恒 False（即便 NH-NL ≤ 0）
+    assert _E.compute_breadth_weak(MarketStateEnum.OSCILLATION, -0.5) is False
+    assert _E.compute_breadth_weak(MarketStateEnum.DOWNTREND, -0.5) is False
+    # NH-NL 缺失（None）→ False（数据不足不误降级）
+    assert _E.compute_breadth_weak(MarketStateEnum.UPTREND, None) is False
+
+
+def test_mse_a3_record_breadth_weak_defaults_false() -> None:
+    """MarketStateRecord.breadth_weak 默认 False（既有构造不破）。"""
+    rec = MarketStateRecord(
+        trade_date=date(2026, 5, 20),
+        market_state=MarketStateEnum.UPTREND,
+        trend_strength=30.0, adx_value=30.0, ma20=10.0, ma60=9.0,
+        state_changed=False, description="x",
+    )
+    assert rec.breadth_weak is False
+
+
+def test_mse_a3_identify_sets_breadth_weak_from_nh_nl() -> None:
+    """identify(nh_nl_series=)：UPTREND 日 NH-NL ≤ 0 → breadth_weak=True，> 0 → False。"""
+    n = 100
+    close_values = [3000.0 + i * 20 for i in range(n)]
+    ohlcv = _make_ohlcv(n, close_values)
+    engine = MarketStateEngine()
+
+    # 无 nh_nl_series → 全 False（向后兼容）
+    base = engine.identify(ohlcv, prev_confirmed=MarketStateEnum.OSCILLATION)
+    up_records = [r for r in base if r.market_state == MarketStateEnum.UPTREND]
+    assert len(up_records) > 0
+    assert all(r.breadth_weak is False for r in base)
+
+    # 全负 NH-NL → 所有 UPTREND 日 breadth_weak=True，非 UPTREND 日 False
+    neg_series = pd.Series(-0.1, index=ohlcv.index)
+    weak = engine.identify(
+        ohlcv, prev_confirmed=MarketStateEnum.OSCILLATION, nh_nl_series=neg_series,
+    )
+    for r in weak:
+        if r.market_state == MarketStateEnum.UPTREND:
+            assert r.breadth_weak is True
+        else:
+            assert r.breadth_weak is False
+
+    # 全正 NH-NL → 无 breadth_weak
+    pos_series = pd.Series(0.2, index=ohlcv.index)
+    healthy = engine.identify(
+        ohlcv, prev_confirmed=MarketStateEnum.OSCILLATION, nh_nl_series=pos_series,
+    )
+    assert all(r.breadth_weak is False for r in healthy)
+
+
+def test_mse_a3_compute_nh_nl_diff() -> None:
+    """compute_nh_nl_diff：末日创新高/新低家数差 / 有效标的数。"""
+    import numpy as np
+
+    dates = pd.date_range("2024-01-01", periods=60, freq="D")
+    # A: 单调上涨 → 末日创 60 日新高；B: 单调下跌 → 末日创新低；
+    # C: 平盘后末日既非最高也非最低（中间值）。
+    up = np.linspace(10, 20, 60)
+    down = np.linspace(20, 10, 60)
+    mid = np.concatenate([np.linspace(10, 30, 59), [20.0]])  # 末日 20 < max 30, > min 10
+    close_wide = pd.DataFrame({"A": up, "B": down, "C": mid}, index=dates)
+
+    diff = MarketStateEngine.compute_nh_nl_diff(close_wide)
+    # NH=1(A), NL=1(B), C 既非高非低 → (1-1)/3 = 0.0
+    assert diff == 0.0
+
+    # 全体上涨 → 全部新高 → diff = 1.0
+    all_up = pd.DataFrame(
+        {c: np.linspace(10, 20, 60) for c in ("A", "B", "C")}, index=dates
+    )
+    assert MarketStateEngine.compute_nh_nl_diff(all_up) == 1.0
+
+
+def test_mse_a3_compute_nh_nl_diff_insufficient() -> None:
+    """行数 < lookback → None（数据不足不误判）。"""
+    dates = pd.date_range("2024-01-01", periods=30, freq="D")
+    close_wide = pd.DataFrame({"A": range(30)}, index=dates)
+    assert MarketStateEngine.compute_nh_nl_diff(close_wide, lookback=60) is None
+    assert MarketStateEngine.compute_nh_nl_diff(pd.DataFrame()) is None

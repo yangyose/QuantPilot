@@ -133,6 +133,63 @@ async def test_msts_04_identify_and_save_idempotent(db_session: AsyncSession) ->
     assert len(history) == 1
 
 
+async def test_msts_06_breadth_weak_persist_roundtrip(db_session: AsyncSession) -> None:
+    """MSTS-06 (V1.5-A A3)：breadth_weak 经 upsert_market_state → get_current_state
+    (_orm_to_record) 往返保真（评审 Ra-P2-1 放行条件：不落库则生产 Scorer 读不回）。
+    """
+    from quantpilot.engine.market_state import MarketStateRecord
+
+    repo = MarketDataRepository(db_session)
+    rec = MarketStateRecord(
+        trade_date=_TRADE_DATE,
+        market_state=MarketStateEnum.UPTREND,
+        trend_strength=30.0, adx_value=30.0, ma20=10.0, ma60=9.0,
+        state_changed=False, description="weak breadth uptrend",
+        breadth_weak=True,
+    )
+    await repo.upsert_market_state(rec)
+    await db_session.flush()
+
+    svc = _make_service(db_session)
+    current = await svc.get_current_state()
+    assert current is not None
+    assert current.market_state == MarketStateEnum.UPTREND
+    assert current.breadth_weak is True  # 关键：DB 往返后仍 True
+
+
+async def test_msts_07_identify_and_save_sets_breadth_weak_from_nh_nl(
+    db_session: AsyncSession,
+) -> None:
+    """MSTS-07 (V1.5-A A3)：UPTREND 指数 + 全宇宙近 60 日下行（NH-NL≤0）→
+    identify_and_save 置 breadth_weak=True（生产 NH-NL 路径 get_close_matrix 端到端）。
+    """
+    repo = MarketDataRepository(db_session)
+    # 指数强上涨 → UPTREND
+    await repo.upsert_index_history(pd.DataFrame(_make_index_ohlcv_rows(100)))
+
+    # 全宇宙单调下行 60+ 交易日 → _TRADE_DATE 当日每股 close 为窗口最小值 → 全新低 → NH-NL<0
+    qdates = _make_trade_dates(65)
+    quote_rows = []
+    for ts in ("000001.SZ", "000002.SZ", "000003.SZ"):
+        for i, td in enumerate(qdates):
+            quote_rows.append(
+                {"ts_code": ts, "trade_date": td, "close": 100.0 - i * 0.5}
+            )
+    await repo.upsert_daily_quotes(pd.DataFrame(quote_rows))
+    await db_session.flush()
+
+    svc = _make_service(db_session)
+    record = await svc.identify_and_save(_TRADE_DATE)
+
+    assert record is not None
+    assert record.market_state == MarketStateEnum.UPTREND
+    assert record.breadth_weak is True  # 上涨趋势但市场宽度弱
+
+    saved = await repo.get_latest_market_state()
+    assert saved is not None
+    assert saved.breadth_weak is True
+
+
 async def test_msts_05_insufficient_data_returns_none(db_session: AsyncSession) -> None:
     """MSTS-05: index_history 只有 50 行时返回 None，DB 无新增行"""
     repo = MarketDataRepository(db_session)

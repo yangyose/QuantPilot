@@ -276,6 +276,29 @@ class MarketDataRepository:
             ]
         )
 
+    async def get_close_matrix(
+        self, start_date: date, end_date: date
+    ) -> pd.DataFrame:
+        """V1.5-A A3：返回 [start_date, end_date] 全市场 close 宽表（index=trade_date
+        升序，columns=ts_code）。供 NH-NL 市场宽度计算（60 日新高/新低）。
+
+        约 60 交易日 × ~5000 股 = ~30 万行；仅取 trade_date/ts_code/close 三列。
+        无数据 → 空 DataFrame。
+        """
+        result = await self._session.execute(
+            select(DailyQuote.trade_date, DailyQuote.ts_code, DailyQuote.close)
+            .where(
+                DailyQuote.trade_date >= start_date,
+                DailyQuote.trade_date <= end_date,
+            )
+        )
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=["trade_date", "ts_code", "close"])
+        df["close"] = df["close"].astype(float)
+        return df.pivot(index="trade_date", columns="ts_code", values="close").sort_index()
+
     async def get_snapshot_quotes(
         self, ts_codes: list[str], trade_date: date
     ) -> pd.DataFrame:
@@ -681,6 +704,8 @@ class MarketDataRepository:
             ma60=record.ma60,
             state_changed=record.state_changed,
             description=record.description,
+            # V1.5-A A3：市场宽度弱信号（getattr 兼容旧构造的 record 无此属性）
+            breadth_weak=getattr(record, "breadth_weak", False),
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=["trade_date"],
@@ -692,6 +717,7 @@ class MarketDataRepository:
                 "ma60": stmt.excluded.ma60,
                 "state_changed": stmt.excluded.state_changed,
                 "description": stmt.excluded.description,
+                "breadth_weak": stmt.excluded.breadth_weak,
             },
         )
         await self._session.execute(stmt)
