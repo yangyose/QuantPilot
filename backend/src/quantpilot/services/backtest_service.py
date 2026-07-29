@@ -516,6 +516,33 @@ class BacktestService:
             financials = pd.DataFrame()
             pe_pb_history = pd.DataFrame()
 
+        # ── 3c. financial_forecast（SDD-EXT-03 A5b 前瞻 ROE 覆盖）─────────────
+        # 全量预加载业绩预告/快报（pre_announce_date 在 [fin_lookback_start, end_date]），
+        # 交由 BacktestEngine._get_forecast_at 按 trade_date 做 PIT 内存切片（Engine 无 IO）。
+        # 与 financials 同用 fin_lookback_start 下界：快报早于回测起点数月发布仍需可见。
+        from quantpilot.models.market import FinancialForecast
+        fc_rows = (await self._session.execute(
+            select(
+                FinancialForecast.ts_code,
+                FinancialForecast.report_period,
+                FinancialForecast.pre_announce_date,
+                FinancialForecast.est_net_profit,
+                FinancialForecast.data_priority,
+            )
+            .where(FinancialForecast.pre_announce_date >= fin_lookback_start)
+            .where(FinancialForecast.pre_announce_date <= config.end_date)
+        )).all()
+        if fc_rows:
+            forecast = pd.DataFrame(fc_rows, columns=[
+                "ts_code", "report_period", "pre_announce_date",
+                "est_net_profit", "data_priority",
+            ])
+            forecast["est_net_profit"] = pd.to_numeric(
+                forecast["est_net_profit"], errors="coerce"
+            )
+        else:
+            forecast = pd.DataFrame()
+
         # ── 4. hs300_history（OHLC + 累计后复权 close） ──────────────────────
         hs300_rows = (await self._session.execute(
             select(IndexHistory)
@@ -585,6 +612,7 @@ class BacktestService:
             pe_pb_history=pe_pb_history,
             index_adj_prices=index_adj_prices,
             active_weights_history=active_weights_history,
+            forecast=forecast,
         )
 
 

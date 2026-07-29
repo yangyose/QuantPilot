@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from quantpilot.engine.backtest.report import DISCLAIMER, BacktestReport
+from quantpilot.engine.forecast_override import apply_forecast_roe_override
 from quantpilot.engine.market_state import MarketStateEnum
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,11 @@ class BacktestDataBundle:
     # 主循环用 max(effective_date) <= trade_date AND state 做 PIT 前向查找。
     # 空 dict → BacktestEngine 走 aggregate_legacy 降级（保留旧 mock 回测兼容）。
     active_weights_history: dict[tuple[str, date], dict] = field(default_factory=dict)
+    # SDD-EXT-03（V1.5-A A5b 回测路径）：业绩预告/快报全量行，扁平 DataFrame（列
+    # ts_code/report_period/pre_announce_date/est_net_profit/data_priority）。主循环
+    # _get_forecast_at 按 trade_date 做 PIT 内存切片（Engine 无 IO），真空期用于前瞻 ROE
+    # 覆盖（与生产 ScoringService._build_market_snapshot 对称）。空 → 不覆盖，退化为原 roe。
+    forecast: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @dataclass
@@ -225,6 +231,14 @@ class BacktestEngine:
 
             # ---------- b. PIT 财务数据（B3-7：UniverseFilter F-5 真实启用）----
             financials_t = self._get_financials_at(data.financials, trade_date)
+
+            # A5b（SDD-EXT-03）：真空期前瞻 ROE 覆盖——快报/预告报告期晚于最近正式财报期时，
+            # 用 est_net_profit/total_equity 覆盖 financials.roe（与生产 ScoringService
+            # ._build_market_snapshot 同一纯函数 apply_forecast_roe_override，回测/生产对称）。
+            if not financials_t.empty:
+                forecast_t = self._get_forecast_at(data.forecast, trade_date)
+                if not forecast_t.empty:
+                    financials_t = apply_forecast_roe_override(financials_t, forecast_t)
 
             # ---------- c. 当日行情快照（B3-1 含全字段；B3-5 PIT is_st/is_suspended）
             quotes_t = self._get_quotes_at(
@@ -614,11 +628,43 @@ class BacktestEngine:
                 pit = financials[mask]
                 # 按 ts_code 取最新一期
                 if isinstance(pit.index, pd.MultiIndex):
+                    pit = pit.copy()
+                    # A5b：report_period 原为 index level 1，groupby(level=0).last() 会丢弃；
+                    # 前瞻 ROE 覆盖判定「快报期 > 正式财报期」需要它，故物化为列（与生产
+                    # ScoringService 的 financials 携带 report_period 列对称）。
+                    pit["report_period"] = pit.index.get_level_values(1)
                     return pit.groupby(level=0).last()
                 return pit
             except Exception:
                 pass
         return financials
+
+    def _get_forecast_at(self, forecast: pd.DataFrame, trade_date: date) -> pd.DataFrame:
+        """A5b（SDD-EXT-03）PIT 切片：从预加载全量 forecast 取 ``pre_announce_date <=
+        trade_date`` 中每股**报告期最新**、同报告期 ``data_priority`` 高者（快报 2 > 预告 1）
+        的一行。与生产 ``repository.get_latest_forecast`` 同语义，但对内存做切片保持 Engine
+        无 IO。返回 index=ts_code（含 report_period / est_net_profit）；无可用行 → 空 DataFrame。
+        """
+        if forecast is None or forecast.empty or "pre_announce_date" not in forecast.columns:
+            return pd.DataFrame()
+        try:
+            mask = forecast["pre_announce_date"].apply(
+                lambda d: d is not None and pd.notna(d) and pd.Timestamp(d).date() <= trade_date
+            )
+            pit = forecast[mask]
+            if pit.empty:
+                return pd.DataFrame()
+            # 升序排序后 drop_duplicates keep="last" 取每股最后一行（= 报告期最新、同期
+            # data_priority 高者、再新的 pre_announce），行级一致（避免 groupby.last()
+            # 逐列取末非空可能跨行拼接）。等价 get_latest_forecast 的 DISTINCT ON ... DESC。
+            pit = pit.sort_values(
+                ["report_period", "data_priority", "pre_announce_date"],
+                ascending=[True, True, True],
+            )
+            return pit.drop_duplicates(subset="ts_code", keep="last").set_index("ts_code")
+        except Exception:
+            logger.exception("backtest_get_forecast_at_error date=%s", trade_date)
+            return pd.DataFrame()
 
     def _get_quotes_at(
         self,
