@@ -1,7 +1,7 @@
 # V1.5-A：回测引擎深化 + 监控增强 + 市场宽度 + 财务 PIT 修正
 
-> 版本：v1.2（A3 权重承载调研锁定，2026-07-27）
-> 状态：A4 ✓ / A2 ✓（CI 绿）；A3 权重承载锁定方案(a)，实施中；A1/A5 待做。设计评审有条件通过（`docs/reviews/v1_5_a_backtest_monitoring_design_review_2026-07-24.md`），放行条件已消除
+> 版本：v1.3（五子批代码全交付 + 文档回写，2026-07-29）
+> 状态：**A4 / A2 / A3 / A1 / A5a / A5b（生产+回测双路径）代码全交付并 CI 绿**；A5c 回填脚本交付 + 本地小样本实证。设计评审有条件通过（`docs/reviews/v1_5_a_backtest_monitoring_design_review_2026-07-24.md`），放行条件已消除。**剩余（收尾）**：A5c 5y 生产回填（C-1 门控）+ A1b 前端滑点表 + A4 API-101 live 冒烟
 > 估算：~6.5-10 pd（roadmap §6 V1.5-A 行）
 > 实施顺序（用户拍板 2026-07-24「先轻后重」）：**A4 → A2 → A3 → A1 → A5**
 > 依据文档：
@@ -21,6 +21,7 @@
 | v1.0 | 2026-07-24 | 初版。整合 roadmap V1.5-A 五条工作流：A1 回测引擎深化（S6-GAP-02 daily_positions 流式持久化 + 滑点情景对比 + SDD §7.7.5 V1.0 局限审计删除）/ A2 涨停可行性精细化（SDD-EXT-02s，校准 B3-1 全量跳过）/ A3 NH-NL 市场宽度（SDD-EXT-07）/ A4 监控增强（R13-P3-1~5）/ A5 业绩预告快报 PIT 数据层（SDD-EXT-03）。锁定实施顺序 A4→A2→A3→A1→A5（先轻后重）。启动核查见 §1.3 |
 | v1.1 | 2026-07-24 | **设计评审收口**（第三方评审有条件通过 ✓，0 P1 / 2 P2 / 4 P3）。**放行条件（2 P2，均为 Scope 总览误标「无生产写」的内部矛盾）已消除**：① A3 `breadth_weak` 落地生产 Scorer 须持久化——`MarketStateRecord` 经 `MarketStateHistory` ORM → `get_current_state`（DB 读→`_orm_to_record`）流，若不落库生产 Scorer 读不回、弱势震荡压制永不生效；§4.2 补 `MarketStateHistory` 加 `breadth_weak` 列 + alembic ALTER + 映射，§1.2/§4.4/§9 改 A3「有生产写（既有表 ALTER，部署单列 C-1）」；② §1.2 A1「无生产写」→「有（`backtest_daily_position` 前向建表供回流展示/import）」对齐 §9。**P3 一并处理**：§4.3/§4.4 补回测侧 `_get_market_state` 返回 record/`(enum,breadth_weak)` 使 breadth_weak 流到回测 Scorer；§2.5 审计范围拆 §7.7.5（4 项全删）+ DISCLAIMER/banner（涨停/快报 caveat 留到 A2/A5 交付后删），A2/A5 DoD 同步改指 banner 非 §7.7.5；§1.2 括注分项精确和 7.6-9.6 vs 标称 6.5-10。R13-P3 编号（评审判定 roadmap 背书的跨文档工作项 ID、非一次性评审编号）保留留痕 |
 | v1.2 | 2026-07-27 | **A3 权重承载调研锁定**（进 A3 实施前）。§4.2 消除【设计待定：弱势震荡权重承载】——锁定**方案(a) breadth_weak 时按 OSCILLATION 查权重**。调研实证：`Scorer.aggregate` 不自查权重（`weights_runtime` 入参 dict），压制落点在调用方算权重用的 state 字符串（`StrategyService.score_universe` 生产 / `BacktestEngine._lookup_active_weights` 回测均按 state_str 键，含 `get_active_weights` 的 ICIR/冷启动/order）；breadth_weak 时用 `"OSCILLATION"` 查权重、`market_state` enum 仍保 UPTREND。选(a) 而非(b)：零新增（复用 oscillation 行 Σ=1，无第 4 套权重/无惩罚系数/无重归一化）+ 天然覆盖 ICIR 路径 + 语义精确（评审§3.4「降级为弱势震荡」）+ 生产/回测对称。落地清单 6 处见 §4.2/§4.4。余【设计待定：回测 NH-NL 性能】留实施期 profile |
+| v1.3 | 2026-07-29 | **五子批代码全交付 CI 绿 + phase 收尾批文档回写**。A4/A2/A3/A1（a 流式持久化 + b 滑点情景 + c §7.7.5 审计）/A5a 数据层/A5b 生产+回测双路径 全交付（commit 9f77677/0bec20a/2611620/d419636/d31d0fa/e63b3ce/20922aa/bfd1444）。**A5c 回填脚本 + adapter 三处 Tushare quirk 订正**（逗号多码不支持→逐股单码 / express `yoy_net_profit`=去年同期净利润非增长率 / 同键 update_flag+修正快报去重保留最早公告；本地小样本实证，commit 1eb5a5e/8693eed）。**文档回写**：system_design v1.13（§2.6 NH-NL / §4.1 financial_forecast / §4.2 breadth_weak 列 / §5.8 slippage_scenarios+forecast+position_sink+daily_positions 持久化更正 / §6 backtest import + result 分页）+ roadmap v2.2（§6 V1.5-A ✅ / §2.1 / §4.5 / §3 / §1 链 C 收口）。**剩余**：A5c 5y 生产回填（C-1）+ A1b 前端滑点表 + A4 API-101 live 冒烟 |
 
 ---
 

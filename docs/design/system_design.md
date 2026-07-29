@@ -1,8 +1,8 @@
 # QuantPilot 系统设计文档
 
-> **版本：** v1.12
+> **版本：** v1.13
 > **基线依据：** QuantPilot_SDD（规范文档，专家审定版）
-> **日期：** 2026-07-23
+> **日期：** 2026-07-29
 > **说明：** 本文档为顶层架构基线，保持稳定。各开发阶段的详细设计见 `docs/design/phases/` 目录，按需创建。
 
 ---
@@ -27,6 +27,7 @@
 | **v1.10** | 2026-06-01 | **交易日历持久化 + 完整性核验基准 + 集成测试红线护栏**（V1.0 收尾期数据基础设施加固，对齐 SDD v1.4-r1）：§4.1 新增 `trade_calendar` 表（全历法日 + is_open，alembic 0015）；§9 注新增日历持久化条目（落地件清单：repo 三方法 + `TradingCalendar.from_repo` + `bootstrap_trade_calendar` 自愈 + main.py 启动 DB 优先 + APScheduler 月度刷新 Job + `scripts/audit_data_integrity.py`）。动机：`TradingCalendar` 原纯内存 + 启动实时拉数据源 + 不落库 → 数据完整性核验缺权威参照（只能假日交叉验证启发式）、离线不可用。附带红线加固：`tests/conftest.py::_guard_test_db_or_abort()` 阻止集成测试误对非 `:5433` 库跑 `alembic downgrade base`（CLAUDE.md C-1）；`auto_test.sh` 钩子改为仅 `DATABASE_URL` 含 `:5433` 才跑集成测试。回归 736 passed + ruff 0 error |
 | **v1.12** | 2026-07-23 | **V1.5-G 实施回写（G-6 收尾）**：§3 结构树补入实施落位模块——`models/user.py::User`、`account.py` Account.user_id FK、`services/auth_service.py`、`services/signal_view_service.py`（API 期账户叠加）、`services/pipeline_monitor.py`（管线护栏，2026-07 生产事故产物）、`core/rate_limit.py`（slowapi 限频）、`security.py` 注释更新（sub=user_id + 密码强度）、`api/v1/auth.py` 端点扩展注释；§6 表新增 `/auth/register`、`GET/PATCH /auth/me` 三行 + login 限频注记 + 表前多用户约定块（账户层 account_id 由 token 推 + ownership 404 + 共享层不变 + GET /signals API 期叠加）；§6 删除 `POST /positions` 行（§14-10 已作废，此前漏回写）。实施细节权威见 `phases/v1_5_g_multiuser.md` + memory 进度档 |
 | **v1.11** | 2026-06-26 | **V1.5-G 多用户化 + L1/L2/L3 分层兑现（仅设计登记，实现排 RC 后）**：§9 Phase 6 行④「user_level…V1.5 实现分层」推迟标记翻转，指向新设计文档 `docs/design/phases/v1_5_g_multiuser.md` §6 + roadmap §2.2。V1.5-G = 开放自助注册 + 账户层数据完整隔离（新增 `user` 表 + `account.user_id` + JWT 带真实身份 + ownership 强制）+ 兑现 SDD §2/§9.3/§14 被 V1.0 折衷推迟的 L1/L2/L3 分层（`user.level` 自选偏好，默认 L1）。per-user/shared 边界：账户层（account 及其派生）隔离，市场/信号/评分计算层共享。env admin 迁移为首个 DB 用户后废弃。本条仅范围登记（C-5 先回写后实现），不触发任何 V1.0 §9 表变更——V1.5-G 权威登记在 roadmap §2.2/§6 V1.5-G 行 |
+| **v1.13** | 2026-07-29 | **V1.5-A 实施回写（回测深化 + 监控 + 市场宽度 + 财务 PIT）**：§2.6 市场状态叠加 NH-NL 市场宽度弱势修正（UPTREND 且 NH-NL≤0 → breadth_weak，评分按 OSCILLATION 查权重压制趋势，"权重承载方案(a)"，A3/SDD-EXT-07）；§4.1 新增 `financial_forecast` 表（业绩预告/快报 PIT，A5/SDD-EXT-03，alembic 0023）；§4.2 `market_state_history` 加 `breadth_weak` 列（alembic 0021）；§5.8 `BacktestConfig.slippage_scenarios`（滑点情景 A1b）+ `BacktestDataBundle.forecast`（回测前瞻 ROE 覆盖 A5b）+ `run(position_sink=…)` 流式持仓落库（A1a/S6-GAP-02）+ `BacktestResult.daily_positions` 由"不持久化"更正为持久化到 `backtest_daily_position` 表（alembic 0022，表定义见 `phases/v1_5_a_backtest_monitoring.md`）；§6 新增 `POST /backtest/import` 行 + `/backtest/{id}/result` daily_positions 分页注记。涨停成交（A2/SDD-EXT-02s）与监控增强（A4）为引擎/运维内部实现，无 §3-6 结构变更。权威见 `phases/v1_5_a_backtest_monitoring.md` |
 
 ---
 
@@ -287,6 +288,12 @@ ADX > 25（趋势明确）
 ADX ≤ 25                           →  OSCILLATION
 ```
 
+**市场宽度弱势修正（V1.5-A A3，SDD-EXT-07）**：叠加 NH-NL 市场宽度（全市场创 60 日
+新高数 − 新低数）。当 `market_state == UPTREND 且 NH-NL ≤ 0`（价格趋势向上但宽度背离）
+→ 置 `breadth_weak=True`；此时评分**按 OSCILLATION 查权重**压制趋势暴露（enum 仍保
+UPTREND，"权重承载方案(a)"）。生产 StrategyService 与回测 BacktestEngine 对称实现，
+weight_lookup_state 天然覆盖 ICIR `get_active_weights` 的 state 键。
+
 ### 2.7 WebSocket 端点定义
 
 WebSocket 仅用于以下两类实时进度推送场景，其余接口均为 REST：
@@ -484,6 +491,25 @@ CREATE TABLE financial_data (
 );
 CREATE INDEX idx_financial_code_publish ON financial_data(ts_code, publish_date DESC);
 
+-- 业绩预告/快报（PIT 存储，pre_announce_date 为可用时点；V1.5-A A5，SDD-EXT-03）
+-- 信息真空期（快报/预告已发、正式财报未发）用 est_net_profit 派生前瞻 ROE 修正估值
+-- （生产 ScoringService + 回测 BacktestEngine 对称消费，见 §5.8 / phases/v1_5_a）。
+-- data_priority：业绩快报 express(2) > 业绩预告 forecast(1)，同 (ts_code, report_period)
+-- 下 express 覆盖 forecast。est_net_profit 归一化为元（预告取区间中值 = 万元×10000）。
+CREATE TABLE financial_forecast (
+    id                 BIGSERIAL PRIMARY KEY,
+    ts_code            VARCHAR(10) NOT NULL,
+    report_period      DATE NOT NULL,                -- 报告期末日
+    pre_announce_date  DATE NOT NULL,                -- 预告/快报公告日（PIT 关键）
+    est_net_profit     NUMERIC(18,2),                -- 预估净利润（元）
+    est_net_profit_yoy NUMERIC(10,4),                -- 净利润同比增速（小数）
+    data_priority      SMALLINT NOT NULL,            -- 快报 2 / 预告 1
+    source_type        VARCHAR(10) NOT NULL,         -- 'forecast' / 'express'
+    updated_at         TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (ts_code, report_period, source_type)
+);
+CREATE INDEX idx_forecast_code_announce ON financial_forecast(ts_code, pre_announce_date);
+
 -- 指数历史（市场状态识别用；含完整 OHLCV，SDD §4.3 要求；Phase 3 ADX 计算需要 high/low）
 CREATE TABLE index_history (
     id             BIGSERIAL PRIMARY KEY,
@@ -536,6 +562,9 @@ CREATE TABLE market_state_history (
     ma20            NUMERIC(10,3),
     ma60            NUMERIC(10,3),
     state_changed   BOOLEAN DEFAULT FALSE,
+    breadth_weak    BOOLEAN NOT NULL DEFAULT FALSE,  -- 市场宽度弱势（V1.5-A A3，SDD-EXT-07）：
+                                                     -- UPTREND 且 NH-NL（创 60 日新高 − 新低）≤0
+                                                     -- → 评分按 OSCILLATION 查权重压制趋势（见 §2.6）
     description     TEXT
 );
 
@@ -1064,6 +1093,9 @@ class BacktestConfig:
     commission_rate: float = 0.00025   # 双向佣金（默认 0.025%）
     stamp_tax_rate: float = 0.0005     # 印花税（默认 0.05%，仅卖出）
     slippage_rate: float = 0.001       # 滑点估算（默认 0.1%）
+    slippage_scenarios: list[float] | None = None  # 多滑点情景对比（V1.5-A A1b）：非空时
+                                                    # BacktestService.run_slippage_comparison 复用
+                                                    # 同一 bundle 串行各档，输出结构化对比报告
 
 @dataclass
 class BacktestDataBundle:
@@ -1072,11 +1104,14 @@ class BacktestDataBundle:
     stock_info: pd.DataFrame       # index=ts_code，含 list_date/is_st/sw_industry_l1
     financials: pd.DataFrame       # MultiIndex(ts_code, report_period)，含 PIT 公告日
     hs300_history: pd.DataFrame    # HS300 OHLCV 历史（市场状态识别用）
+    forecast: pd.DataFrame = ...   # V1.5-A A5b：业绩预告/快报全量，主循环 _get_forecast_at 按
+                                   # trade_date PIT 切片 → 真空期前瞻 ROE 覆盖（与生产对称）
 
 @dataclass
 class BacktestResult:
     daily_nav: pd.Series            # 每日净值序列（含基准对比）
-    daily_positions: pd.DataFrame   # 每日持仓快照（V1.0 不持久化，详见 phase8_backtest.md §2.1 降级说明）
+    daily_positions: pd.DataFrame   # 每日持仓快照（V1.5-A A1a 起经 position_sink 流式持久化到
+                                    # backtest_daily_position 表；GET /backtest/{id}/result 分页返回）
     signal_history: list            # 完整信号历史
     performance: dict               # 标准绩效报告（SDD 附录 C 全部指标）
     disclaimer: str                 # SDD §7.7.4 局限性声明（必须附带）
@@ -1106,6 +1141,9 @@ class BacktestEngine:
         config: BacktestConfig,
         data: BacktestDataBundle,          # Phase 8 接口细化：预加载历史数据（替代原 session_factory）
         progress_cb: Callable[[str, int, float], None] | None = None,
+        position_sink: Callable[[date, list[dict]], None] | None = None,  # V1.5-A A1a：非空时逐日
+                                           # 交出持仓不在内存累积（BacktestService 经
+                                           # run_coroutine_threadsafe 回投主 loop 落库，S6-GAP-02）
     ) -> BacktestResult: ...
 ```
 
@@ -1229,9 +1267,10 @@ WebSocket 端点见 §2.7（流水线进度、回测进度）。
 | **报告** | GET | `/reports` | 历史报告列表（按类型/时间范围过滤，SDD §12.5） |
 | **报告** | GET | `/reports/{id}` | 获取报告详情 |
 | **报告** | POST | `/reports/generate` | 触发自定义时间段报告生成 |
-| **回测** | POST | `/backtest/run` | 启动回测任务（异步，WS 推送进度） |
+| **回测** | POST | `/backtest/run` | 启动回测任务（异步，WS 推送进度；生产禁用→503，回测走本地算力中心） |
+| **回测** | POST | `/backtest/import` | 导入本地算力中心回测结果（含 daily_positions，V1.5-A A1a） |
 | **回测** | GET | `/backtest/{id}/status` | 查询回测进度 |
-| **回测** | GET | `/backtest/{id}/result` | 获取回测结果及免责声明 |
+| **回测** | GET | `/backtest/{id}/result` | 获取回测结果及免责声明（daily_positions 分页返回，V1.5-A A1a） |
 | **系统** | GET | `/pipeline/status` | 流水线运行状态（含检查点） |
 | **系统** | POST | `/pipeline/trigger` | 手动触发日级流水线 |
 | **设置** | GET | `/settings` | 获取用户配置（按 user_level 过滤可见项） |

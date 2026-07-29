@@ -1,8 +1,8 @@
 # QuantPilot V1.0 发布后路线图
 
 > **文档类型：** V1.0 发布后（V1.5+ / V2.0）范围与主题规划设计文档
-> **版本：** v2.1
-> **创建日期：** 2026-04-30（原 V1.5 路线图）/ **2026-05-14 v2.0 重构** / **2026-06-26 v2.1 V1.5-G 范围展开**
+> **版本：** v2.2
+> **创建日期：** 2026-04-30（原 V1.5 路线图）/ **2026-05-14 v2.0 重构** / **2026-06-26 v2.1 V1.5-G 范围展开** / **2026-07-29 v2.2 V1.5-A 交付回写**
 > **重构原因：** 2026-05-14 5y 真机验收（task #117）发现核心评分公式存在根本缺陷（rank-pct 跨期不可比 + 4 策略横截面反相关锁死顶分 70~72 + 绝对阈值 80 失效 → 5y 历史信号表 0 行）→ V1.0 重新定位为"**所有阻断用户达成核心目标的问题修复完成才能发布**"，原 V1.5 路线图中**评分链路 / 因子级溯源 / 数据质量监控 / 部署评审 / 账户资金链**相关项目升级为 V1.0 收尾 Phase 11~15 必修，本文档现承担**V1.0 发布后**的 V1.5+ 与 V2.0 范围。
 > **配套文档：**
 > - V1.0 收尾批次（Phase 11~15）见 `docs/design/system_design.md` §9 进度表 + 各 phase 设计文档
@@ -19,6 +19,7 @@
 | v1.3 | 2026-05-13 | RM-15/16/17/18 已在 V1.0 修复，仅 RM-13 推迟 |
 | **v2.0** | **2026-05-14** | **V1.0 重新定位（不发布直到核心评分修复）→ 本文档重构**：移除已升级 V1.0 必修的 14 项（评分相关 / 因子级溯源 / 数据质量监控 / 部署评审 / RM-13 资金链），并入 Phase 11~15；剩余 37 项重新打包为 8 主题；估算从 91-117 pd → 56-82 pd（V1.0 收尾后 4-6 个月）；标题从"V1.5 路线图"改为"V1.0 发布后路线图"以匹配实际语义 |
 | **v2.1** | 2026-06-26 | **V1.5-G 范围展开 + 设计文档登记**：§2.2 + §6 主题表 V1.5-G 由"多账户 + 权限"扩展为"用户注册 + 多用户隔离 + L1/L2/L3 层级"——整合开放自助注册 + 账户层数据完整隔离 + 兑现 SDD §2/§9.3/§14 被 V1.0 折衷推迟的 L1/L2/L3 分层（`user.level` 自选偏好）；估算 8-10 → 9-13 pd；新增设计文档 `docs/design/phases/v1_5_g_multiuser.md` v1.0。来源：用户拍板（完整多用户隔离 / 开放自助注册 / L1-L2-L3 自选偏好 / env admin 迁移为首用户后废弃）；C-5 范围变更同步回写 system_design v1.11 §9 Phase 6 ④ + SDD（多用户 + 分层）。实现排 V1.0 RC 之后 |
+| **v2.2** | 2026-07-29 | **V1.5-A 交付回写（链 C 收口）**：§6 主题表 V1.5-A 行标 ✅ 五子批代码全交付 CI 绿（A4→A2→A3→A1→A5）；§2.1（回测深化 S6-GAP-02 + 滑点情景）✅ + §4.5（Phase 13 P3 5 项 = A4 监控增强）✅ + §3 SDD-EXT-02s/07 ✅、SDD-EXT-03 ✅代码（唯 A5c 5y 生产回填待 C-1）+ §1 滑点敏感性 ✅。同步回写 system_design v1.13（§2.6 NH-NL / §4.1 financial_forecast / §4.2 breadth_weak / §5.8 slippage_scenarios+forecast+position_sink / §6 backtest import）。实施期抓修 A5a 采集三处 Tushare quirk（逗号多码不支持 / express yoy 语义 / 同键去重），详见 v1_5_a 进度档 |
 
 ---
 
@@ -87,7 +88,7 @@ V1.5+ 主题划分（8 主题）见本文档 §6，估算合计 **~57-85 pd（V1
 | 移动止损 | 从持仓最高盈利回撤 ≥ Y%（默认 15%）触发止损 | §9.x | V1.5-D 仓位与风控 |
 | 时间止损 | 持有 N 个交易日（默认 30 日）后仍无盈利则提示 | §9.x | V1.5-D 仓位与风控 |
 | 市值风格监控 | 大/中/小盘持仓占比监控 + 偏离提示 | §10.x | V1.5-D 仓位与风控 |
-| 滑点敏感性分析 | 多滑点情景对比（V1.0 已有基础滑点） | §11.x | V1.5-A 回测引擎深化 |
+| 滑点敏感性分析 | 多滑点情景对比（V1.0 已有基础滑点） | §11.x | V1.5-A 回测引擎深化 ✅ |
 | 行业归因 | 行业配置偏离基准的超额收益分解 | §12.x | V1.5-E 绩效归因深化 |
 | 邮件渠道 | 通知备用渠道（与 V1.0 站内信/微信并列） | §13.x | V1.5-F 通知与配置 |
 | L3 权重自定义 | 用户可调策略权重 / 因子权重（Phase 11 已基础实装 ICIR 加权 + L3 覆盖，本项扩展 UI） | §14、附录 B L3 项 | V1.5-F 通知与配置 |
@@ -97,14 +98,18 @@ V1.5+ 主题划分（8 主题）见本文档 §6，估算合计 **~57-85 pd（V1
 
 ## 2. V1.0 评审推迟项（P2 + P3，v2.0 重构后 15 项）
 
-### 2.1 回测引擎深化（2 项 P2 剩余）→ V1.5-A
+### 2.1 回测引擎深化（2 项 P2 剩余）→ V1.5-A ✅ 已交付
 
 原 5 项中 FIN-MED-11/12 + S1-GAP-02 共 3 项升级 Phase 11，仅剩 2 项。
 
-| 评审依据 | 描述 | 推迟原因 | 修复条件 | 估算 |
-|---------|------|---------|---------|------|
-| S6-GAP-02 | BacktestEngine 内存累积 O(N×T)（V1.0 单组合可承受，V1.5 多组合并行需流式写 DB） | 多组合并行回测启用前的硬条件 | BacktestEngine 改为流式持久化 daily_positions | 1.5 pd |
-| — | 滑点敏感性多情景对比（SDD §16）| V1.0 单滑点参数已足够；多情景对比 = 增强 | BacktestConfig 支持 slippage_scenarios 列表，输出对比报告 | 1.5 pd |
+> **✅ 2026-07-27 全部交付（V1.5-A A1，commit d419636 / d31d0fa，CI 绿）**：S6-GAP-02
+> 流式持久化（`position_sink` 回调 + `backtest_daily_position` 表，alembic 0022）+ 滑点
+> 情景对比（`slippage_scenarios` + `run_slippage_comparison`）。见 `phases/v1_5_a_backtest_monitoring.md` A1。
+
+| 评审依据 | 描述 | 推迟原因 | 修复条件 | 估算 | 状态 |
+|---------|------|---------|---------|------|------|
+| S6-GAP-02 | BacktestEngine 内存累积 O(N×T)（V1.0 单组合可承受，V1.5 多组合并行需流式写 DB） | 多组合并行回测启用前的硬条件 | BacktestEngine 改为流式持久化 daily_positions | 1.5 pd | ✅ |
+| — | 滑点敏感性多情景对比（SDD §16）| V1.0 单滑点参数已足够；多情景对比 = 增强 | BacktestConfig 支持 slippage_scenarios 列表，输出对比报告 | 1.5 pd | ✅ |
 
 ### 2.2 多账户 + 权限粒度（3 项 P2）→ V1.5-G
 
@@ -168,13 +173,18 @@ V1.5+ 主题划分（8 主题）见本文档 §6，估算合计 **~57-85 pd（V1
 
 原 8 项中 SDD-EXT-01 趋势策略共线性已升级 Phase 11（因子正交化系统性解决）。
 
+> **V1.5-A 三项进度（2026-07-27~29）**：SDD-EXT-02s ✅ 交付（A2，commit 0bec20a）；
+> SDD-EXT-07 ✅ 交付（A3，commit 2611620）；SDD-EXT-03 代码 ✅ 交付（A5a/A5b/A5c，commit
+> e63b3ce/20922aa/bfd1444/1eb5a5e/8693eed，含回测路径对称 + 采集 quirk 订正 + 回填脚本），
+> **唯 5y 生产回填待 C-1**（`scripts/backfill_forecast_express.py`，见 v1_5_a 进度档）。
+
 | 编号 | 描述 | 评审优先级 | V1.5 实现要点 | 估算 | 所属主题 |
 |------|------|-----------|--------------|------|---------|
-| SDD-EXT-02s | 涨停板成交可行性建模（简化版）| P0 | 回测引擎信号触发日：当日收盘涨停 + 当日换手率 < 1% → 判定不可成交 | 0.5-1 pd | V1.5-A |
-| SDD-EXT-03 | 业绩预告/快报 PIT 数据接入 | P1 | 接入 Tushare `forecast` / `express`；新增 `data_priority` 字段 | 2-3 pd | V1.5-A |
+| SDD-EXT-02s | 涨停板成交可行性建模（简化版）| P0 | 回测引擎信号触发日：当日收盘涨停 + 当日换手率 < 1% → 判定不可成交 | 0.5-1 pd | V1.5-A ✅ |
+| SDD-EXT-03 | 业绩预告/快报 PIT 数据接入 | P1 | 接入 Tushare `forecast` / `express`；新增 `data_priority` 字段 | 2-3 pd | V1.5-A ✅代码/回填待C-1 |
 | SDD-EXT-04 | 均值回归策略 Piotroski F-Score 硬性前置过滤 | P1 | F-Score 8 项财务指标计算；F-Score < 6 则 mean_reversion_score = 0；金融类 ROE > 5% 替代 | 2-3 pd | V1.5-C |
 | SDD-EXT-06s | 行业集中度细化至申万三级行业（SW3）| P2 | 数据层补 `sw_industry_l3`；同 SW3 持仓合计 ≤ 15% | 1-1.5 pd | V1.5-D |
-| SDD-EXT-07 | 市场宽度指标 NH-NL（创 60 日新高 - 新低）| P2 | MarketStateEngine 新增 NH-NL；ADX>25 + MA20>MA60 + NH-NL≤0% → 降级为"弱势震荡" | 1-1.5 pd | V1.5-A |
+| SDD-EXT-07 | 市场宽度指标 NH-NL（创 60 日新高 - 新低）| P2 | MarketStateEngine 新增 NH-NL；ADX>25 + MA20>MA60 + NH-NL≤0% → 降级为"弱势震荡" | 1-1.5 pd | V1.5-A ✅ |
 | SDD-EXT-08 | 动量策略提升为风险调整动量（V1.5 默认行为）| P2 | "涨幅 / 60 日历史波动率" 作 V1.5 默认 | 0.5-1 pd | V1.5-C |
 | SDD-EXT-09s | 流动性压力测试（轻量版） | P2 | 持仓数量 / 近 20 日日均成交量 > 3 → "流动性风险组合" | 1-1.5 pd | V1.5-D |
 
@@ -190,19 +200,21 @@ V1.5+ 主题划分（8 主题）见本文档 §6，估算合计 **~57-85 pd（V1
 
 ---
 
-## 4.5 Phase 13 实施评审 P3 推迟项（5 项）→ V1.5-A 监控增强子模块
+## 4.5 Phase 13 实施评审 P3 推迟项（5 项）→ V1.5-A 监控增强子模块 ✅ 已交付
 
 依据：`docs/reviews/phase13_implementation_review_2026-05-22.md` §8 修订追踪表 P3 行。
-本组 5 项是 Phase 13 实施评审定级 P3 的"建议性改进"，全部归 V1.5-A 监控增强批，
-启动 V1.5-A 时**必须把本节作为子模块 scope 纳入**。
+本组 5 项是 Phase 13 实施评审定级 P3 的"建议性改进"，全部归 V1.5-A 监控增强批（A4）。
 
-| 编号 | 描述 | 估算 | 所属主题 |
-|------|------|------|---------|
-| R13-P3-1 | 冒烟 API-101 改 Upgrade header 探测 WS 端点（区分"路由存在"vs"未注册"）| 0.1 pd | V1.5-A |
-| R13-P3-2 | `SecretFilter.filter` 扫描 `record.__dict__` 覆盖 structured logging extra 字段 | 0.2 pd | V1.5-A |
-| R13-P3-3 | `factor_monitor_params` config_key 收纳 `PERSISTENT_DECAY_THRESHOLD/MONTHS` | 0.3 pd | V1.5-A |
-| R13-P3-4 | `TushareAdapter._call` 内统一 TUSHARE_CALLS Counter 埋点（覆盖全部 13 个接口）| 0.3 pd | V1.5-A |
-| R13-P3-5 | Grafana Overview 补 3 panel（健康告警 alert_type / APScheduler 失败 job_id / DataQualityMetric trend）| 0.2 pd | V1.5-A |
+> **✅ 2026-07-24 全部交付（V1.5-A A4，commit 9f77677，CI 绿）**：见
+> `phases/v1_5_a_backtest_monitoring.md` A4 子批。下表保留作历史审计。
+
+| 编号 | 描述 | 估算 | 所属主题 | 状态 |
+|------|------|------|---------|------|
+| R13-P3-1 | 冒烟 API-101 改 Upgrade header 探测 WS 端点（区分"路由存在"vs"未注册"）| 0.1 pd | V1.5-A | ✅ |
+| R13-P3-2 | `SecretFilter.filter` 扫描 `record.__dict__` 覆盖 structured logging extra 字段 | 0.2 pd | V1.5-A | ✅ |
+| R13-P3-3 | `factor_monitor_params` config_key 收纳 `PERSISTENT_DECAY_THRESHOLD/MONTHS` | 0.3 pd | V1.5-A | ✅ |
+| R13-P3-4 | `TushareAdapter._call` 内统一 TUSHARE_CALLS Counter 埋点（覆盖全部 13 个接口）| 0.3 pd | V1.5-A | ✅ |
+| R13-P3-5 | Grafana Overview 补 3 panel（健康告警 alert_type / APScheduler 失败 job_id / DataQualityMetric trend）| 0.2 pd | V1.5-A | ✅ |
 
 小计 ~1.1 pd（并入 V1.5-A 估算）。
 
@@ -226,7 +238,7 @@ V2.0 总计 ~9-13 pd。
 
 | 主题 | 包含项 | 优先级 | 估算（pd）| 时间窗口 |
 |------|-------|--------|----------|---------|
-| **V1.5-A 回测引擎深化 + 监控增强** | §2.1（S6-GAP-02 + 滑点情景）+ §3 SDD-EXT-02s/03/07 + §4.5 Phase 13 评审 P3 5 项；设计见 `docs/design/phases/v1_5_a_backtest_monitoring.md`。**（2026-07-24：设计文档 v1.1 + 第三方设计评审有条件通过 ✓ 收口，五子批实施顺序 A4→A2→A3→A1→A5「先轻后重」，待进 A4 实施）** | 🟡 高 | **6.5-10** | RC 后 M+1 |
+| **V1.5-A 回测引擎深化 + 监控增强** ✅ | §2.1（S6-GAP-02 + 滑点情景）+ §3 SDD-EXT-02s/03/07 + §4.5 Phase 13 评审 P3 5 项；设计见 `docs/design/phases/v1_5_a_backtest_monitoring.md`。**（2026-07-24~29：五子批 A4→A2→A3→A1→A5 代码全部交付并 CI 绿——commit 9f77677/0bec20a/2611620/d419636/d31d0fa/e63b3ce/20922aa/bfd1444/1eb5a5e/8693eed；system_design v1.13 回写；唯 A5c 5y 生产回填待 C-1，见 v1_5_a 进度档）** | 🟡 高 | **6.5-10** | RC 后 M+1 |
 | **V1.5-C 策略扩展** | §1 资金动向 + 低波动 + 插件沙箱 + §3 SDD-EXT-04/08 | 🟡 高 | **9-13** | RC 后 M+2~M+3 |
 | **V1.5-D 仓位与风控扩展** | §1 分数凯利 + 移动止损 + 时间止损 + 市值风格 + §3 SDD-EXT-06s/09s | 🟢 中 | **6-9** | RC 后 M+2 |
 | **V1.5-E 绩效归因深化** | §1 行业归因（多因子回归已 Phase 12）| 🟢 中 | 2-3 | RC 后 M+3 |
