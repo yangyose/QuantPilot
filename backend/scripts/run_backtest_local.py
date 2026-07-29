@@ -57,6 +57,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--commission", type=float, default=None, help="佣金率（缺省走配置默认）")
     p.add_argument("--stamp", type=float, default=None, help="印花税率（缺省走配置默认）")
     p.add_argument("--slippage", type=float, default=None, help="滑点率（缺省走配置默认）")
+    p.add_argument(
+        "--slippage-scenarios", type=str, default=None,
+        help="滑点敏感性对比：逗号分隔滑点档（如 0,0.001,0.002,0.005），≤5 档；"
+             "跑完各档回流 slippage_comparison 供生产 Web 展示（A1b）",
+    )
     p.add_argument("--push", action="store_true", help="跑完把结果回流生产 DB")
     return p.parse_args()
 
@@ -186,13 +191,32 @@ async def _run(args: argparse.Namespace) -> None:
         if k in perf:
             logger.info("    %-14s = %s", k, perf[k])
 
+    # ⑤ 滑点敏感性对比（A1b，可选）：复用同一 config，串行跑各档滑点
+    slippage_comparison = None
+    if args.slippage_scenarios:
+        scenarios = [float(x) for x in args.slippage_scenarios.split(",") if x.strip()]
+        if len(scenarios) > 5:
+            sys.exit("❌ --slippage-scenarios 最多 5 档（防本地算力滥用）")
+        logger.info("滑点敏感性对比：%d 档 %s（各跑一次全回测，串行）", len(scenarios), scenarios)
+        async with AsyncSessionLocal() as session:
+            svc2 = BacktestService(session, engine)
+            bundle = await svc2._load_data_bundle(config)
+            slippage_comparison = await asyncio.to_thread(
+                svc2.run_slippage_comparison, config, bundle, scenarios,
+            )
+        for row in slippage_comparison:
+            logger.info(
+                "    滑点 %.4f → 累计收益 %.4f / 回撤 %.4f / 夏普 %.3f",
+                row["slippage"], row["total_return"], row["max_drawdown"], row["sharpe"],
+            )
+
     if args.push:
-        await _push_to_server(task, result)
+        await _push_to_server(task, result, slippage_comparison)
     else:
         logger.info("（未 --push；结果仅在本地库。加 --push 回流生产 Web）")
 
 
-async def _push_to_server(task, result) -> None:
+async def _push_to_server(task, result, slippage_comparison=None) -> None:
     """登录服务器 → POST /backtest/import 回流 task+result 两行（幂等）。"""
     import httpx
 
@@ -211,6 +235,7 @@ async def _push_to_server(task, result) -> None:
         "performance": result.performance_json,
         "daily_nav": result.daily_nav_json,
         "disclaimer": result.disclaimer,
+        "slippage_comparison": slippage_comparison,
     }
     async with httpx.AsyncClient(base_url=base, timeout=60) as cli:
         r = await cli.post("/api/v1/auth/login", json={"username": user, "password": pwd})

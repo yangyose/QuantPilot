@@ -258,6 +258,89 @@ async def test_bt_11_import_ok(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_backtest_service, None)
 
 
+async def test_bt_16_import_folds_slippage_comparison(client: AsyncClient) -> None:
+    """E2E-BT-16（A1b）：import 携带 slippage_comparison → 折入 performance 存储。"""
+    mock_svc = AsyncMock()
+    mock_svc.import_result = AsyncMock(return_value=True)
+    app.dependency_overrides[get_backtest_service] = lambda: mock_svc
+    body = {
+        **_IMPORT_BODY,
+        "slippage_comparison": [
+            {"slippage": 0.0, "total_return": 0.45, "max_drawdown": -0.12,
+             "sharpe": 1.3, "annualized_return": 0.14, "pipeline_mode": "full"},
+            {"slippage": 0.002, "total_return": 0.38, "max_drawdown": -0.13,
+             "sharpe": 1.1, "annualized_return": 0.12, "pipeline_mode": "full"},
+        ],
+    }
+    try:
+        resp = await client.post("/api/v1/backtest/import", json=body, headers=_auth())
+        assert resp.status_code == 200
+        perf = mock_svc.import_result.await_args.kwargs["performance"]
+        assert "slippage_comparison" in perf
+        assert len(perf["slippage_comparison"]) == 2
+        assert perf["slippage_comparison"][0]["slippage"] == 0.0
+        # 原有指标不丢
+        assert perf["sharpe"] == 1.1
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
+async def test_bt_17_result_extracts_slippage_comparison(client: AsyncClient) -> None:
+    """E2E-BT-17（A1b）：result 端点把 performance_json 里折存的 slippage_comparison
+    提为顶层字段，且 performance 指标不含该键。"""
+    from quantpilot.models.system import BacktestResult
+
+    task = _mock_task(status="SUCCESS")
+    task.config_snapshot = {}
+    res = MagicMock(spec=BacktestResult)
+    res.performance_json = {
+        "sharpe_ratio": 1.0,
+        "slippage_comparison": [{"slippage": 0.001, "total_return": 0.4}],
+    }
+    res.daily_nav_json = {"2021-01-04": 1.0}
+    res.disclaimer = "仅供研究"
+
+    mock = AsyncMock()
+    mock.get_task = AsyncMock(return_value=task)
+    mock.get_result = AsyncMock(return_value=res)
+    mock.get_daily_positions = AsyncMock(return_value=[])
+    app.dependency_overrides[get_backtest_service] = lambda: mock
+    try:
+        resp = await client.get("/api/v1/backtest/test-uuid-1234/result", headers=_auth())
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["slippage_comparison"] == [{"slippage": 0.001, "total_return": 0.4}]
+        # performance 指标里不再含该键
+        assert "slippage_comparison" not in data["performance"]
+        assert data["performance"]["sharpe_ratio"] == 1.0
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
+async def test_bt_18_result_no_slippage_comparison_is_none(client: AsyncClient) -> None:
+    """E2E-BT-18（A1b）：无滑点数据 → slippage_comparison 为 None（前端不展示）。"""
+    from quantpilot.models.system import BacktestResult
+
+    task = _mock_task(status="SUCCESS")
+    task.config_snapshot = {}
+    res = MagicMock(spec=BacktestResult)
+    res.performance_json = {"sharpe_ratio": 1.0}
+    res.daily_nav_json = {"2021-01-04": 1.0}
+    res.disclaimer = "仅供研究"
+
+    mock = AsyncMock()
+    mock.get_task = AsyncMock(return_value=task)
+    mock.get_result = AsyncMock(return_value=res)
+    mock.get_daily_positions = AsyncMock(return_value=[])
+    app.dependency_overrides[get_backtest_service] = lambda: mock
+    try:
+        resp = await client.get("/api/v1/backtest/test-uuid-1234/result", headers=_auth())
+        assert resp.status_code == 200
+        assert resp.json()["data"]["slippage_comparison"] is None
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
 async def test_bt_12_import_idempotent(client: AsyncClient) -> None:
     """E2E-BT-12：重复回流同一 task_id → 200，imported=False（幂等跳过，不覆盖）。"""
     mock_svc = AsyncMock()

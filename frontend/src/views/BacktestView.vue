@@ -63,6 +63,25 @@ const statusColor = computed(() => {
 const perf = computed(() => store.result?.performance ?? null)
 const isRunning = computed(() => store.status === 'PENDING' || store.status === 'RUNNING')
 
+// A1b：滑点情景对比（本地算力中心 run_slippage_comparison 回流；无则不展示）
+const slippageColumns = [
+  { title: '滑点', dataIndex: 'slippage', key: 'slippage' },
+  { title: '累计收益', dataIndex: 'total_return', key: 'total_return' },
+  { title: '最大回撤', dataIndex: 'max_drawdown', key: 'max_drawdown' },
+  { title: '夏普比率', dataIndex: 'sharpe', key: 'sharpe' },
+  { title: '年化收益', dataIndex: 'annualized_return', key: 'annualized_return' },
+]
+const slippageRows = computed(() =>
+  (store.result?.slippageComparison ?? []).map((s, i) => ({
+    key: i,
+    slippage: fmtPct(s.slippage),
+    total_return: fmtPct(s.total_return),
+    max_drawdown: fmtPct(s.max_drawdown),
+    sharpe: s.sharpe != null ? s.sharpe.toFixed(3) : 'N/A',
+    annualized_return: fmtPct(s.annualized_return),
+  }))
+)
+
 // 进度条：PENDING 期间显示 0%，RUNNING 期间显示实际进度；未知时显示条纹动画
 const progressPct = computed(() => {
   if (store.status === 'PENDING') return 0
@@ -241,6 +260,25 @@ const progressStatus = computed(() => {
               :nav-series="store.result.navSeries"
             />
             <a-empty v-else description="历史价格数据暂不可用，净值曲线仅供结构验证" />
+          </a-card>
+
+          <!-- 滑点敏感性对比（A1b）：本地算力中心回流 slippage_comparison 时展示 -->
+          <a-card
+            v-if="slippageRows.length > 0"
+            title="滑点敏感性对比"
+            style="margin-top: 16px"
+          >
+            <template #extra>
+              <span style="font-size: 12px; color: rgba(0,0,0,.45)">
+                同一区间不同滑点假设下的绩效对比（本地算力中心回流）
+              </span>
+            </template>
+            <a-table
+              :columns="slippageColumns"
+              :data-source="slippageRows"
+              :pagination="false"
+              size="small"
+            />
           </a-card>
         </template>
 

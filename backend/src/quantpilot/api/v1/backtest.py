@@ -140,13 +140,17 @@ async def import_backtest(
     长区间回测受护栏拦在生产机外、改在本地大内存机跑；跑完经此端点把 task+result
     两行回流生产 DB，使生产 Web 也能查看。按 task_id 幂等（已存在则跳过、不覆盖）。
     """
+    # A1b：滑点情景对比折入 performance_json（无新表/迁移）；GET /result 再提出为顶层字段。
+    performance = dict(body.performance)
+    if body.slippage_comparison is not None:
+        performance["slippage_comparison"] = body.slippage_comparison
     imported = await svc.import_result(
         task_id=body.task_id,
         config_json=body.config_json,
         config_snapshot=body.config_snapshot,
         started_at=body.started_at,
         finished_at=body.finished_at,
-        performance=body.performance,
+        performance=performance,
         daily_nav=body.daily_nav,
         disclaimer=body.disclaimer,
         daily_positions=body.daily_positions,
@@ -343,15 +347,19 @@ async def get_backtest_result(
     data_baseline = (task.config_snapshot or {}).get("data_baseline")
     # V1.5-A A1：每日持仓明细从 backtest_daily_position 分页查（不再随内存 DataFrame）
     daily_positions = await svc.get_daily_positions(task_id)
+    # A1b：滑点情景对比折存在 performance_json，提出为顶层字段（不污染 performance 指标）
+    performance = dict(result.performance_json or {})
+    slippage_comparison = performance.pop("slippage_comparison", None)
     return {
         "code": 0,
         "data": {
             "task_id": task_id,
-            "performance": result.performance_json,
+            "performance": performance,
             "daily_nav": result.daily_nav_json,
             "disclaimer": result.disclaimer,
             "data_baseline": data_baseline,
             "daily_positions": daily_positions,
+            "slippage_comparison": slippage_comparison,
         },
         "msg": "ok",
     }

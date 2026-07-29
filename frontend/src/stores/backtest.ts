@@ -60,6 +60,7 @@ export const useBacktestStore = defineStore('backtest', () => {
             disclaimer: raw.disclaimer,
             dataBaseline: raw.data_baseline ?? null,
             navSeries,
+            slippageComparison: raw.slippage_comparison ?? null,
           }
         } else if (statusData.status === 'FAILED') {
           stopPolling()

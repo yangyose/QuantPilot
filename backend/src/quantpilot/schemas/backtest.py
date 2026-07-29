@@ -39,6 +39,10 @@ class BacktestResultResponse(BaseModel):
     disclaimer: str
     # 本地算力中心回流回测的数据基线日（None=生产机直接跑、无戳）
     data_baseline: str | None = None
+    # V1.5-A A1b：滑点情景对比（本地算力中心跑 run_slippage_comparison 回流；
+    # 无则 None，前端不展示滑点表）。每档 {slippage, total_return, max_drawdown,
+    # sharpe, annualized_return, pipeline_mode}。
+    slippage_comparison: list[dict[str, Any]] | None = None
 
 
 class BacktestImportRequest(BaseModel):
@@ -61,3 +65,6 @@ class BacktestImportRequest(BaseModel):
     disclaimer: str
     # V1.5-A A1：本地跑出的每日持仓明细，回流到 backtest_daily_position（可选，向后兼容）
     daily_positions: list[dict[str, Any]] | None = None
+    # V1.5-A A1b：滑点情景对比（可选）；回流时折入 performance_json["slippage_comparison"]，
+    # GET /result 再提出为顶层字段返回（无需新表/迁移）。
+    slippage_comparison: list[dict[str, Any]] | None = None

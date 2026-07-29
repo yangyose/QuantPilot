@@ -284,6 +284,16 @@ export interface BacktestStatusResponse {
   error_msg: string | null
 }
 
+/** 滑点情景对比单行（V1.5-A A1b；本地算力中心 run_slippage_comparison 回流） */
+export interface SlippageScenario {
+  slippage: number
+  total_return: number
+  max_drawdown: number
+  sharpe: number
+  annualized_return: number
+  pipeline_mode: string | null
+}
+
 /** 后端返回格式：daily_nav 为 dict */
 export interface BacktestResultRaw {
   task_id: string
@@ -292,6 +302,8 @@ export interface BacktestResultRaw {
   disclaimer: string
   /** 本地算力中心回流回测的数据基线日（null=生产机直接跑、无戳） */
   data_baseline: string | null
+  /** 滑点情景对比（null=未跑；A1b） */
+  slippage_comparison: SlippageScenario[] | null
 }
 
 /** store 内转换后格式：navSeries 为 array，供 NavChart 使用 */
@@ -300,6 +312,7 @@ export interface BacktestResult {
   disclaimer: string
   dataBaseline: string | null
   navSeries: NavPoint[]
+  slippageComparison: SlippageScenario[] | null
 }
 
 // ── 因子质量 ─────────────────────────────────────────────────────────
