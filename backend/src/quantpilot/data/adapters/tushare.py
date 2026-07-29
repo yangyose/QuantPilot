@@ -587,7 +587,23 @@ class TushareAdapter(DataSourceAdapter):
             }))
         if not out:
             return empty
-        return pd.concat(out, ignore_index=True)[self._FORECAST_COLS].reset_index(drop=True)
+        result = pd.concat(out, ignore_index=True)[self._FORECAST_COLS]
+        # A5c：同一 (ts_code, report_period, source_type) 可能有多行——forecast 的
+        # update_flag 0/1（原始/修正）或快报的原始+修正快报。同键去重是必需的：DB 唯一
+        # 约束 (ts_code, report_period, source_type) + 避免同一 upsert INSERT 内命中同键两次
+        # → CardinalityViolation。**保留 pre_announce_date 最早者**（keep="first"）：真空期
+        # 前瞻 ROE 覆盖的目的是在正式财报前尽早有估计，最早公告 = 市场首次获知该预估的
+        # PIT 时点，覆盖真空期最长且无前瞻偏差（get_latest_forecast 仍按 pre_announce<=as_of
+        # 过滤，绝不在公告前可见）。代价：若后续修正，存的是首发值而非终值（真空期估计的
+        # 可接受近似）。na_position="last" 使缺失 pre_announce 行不会顶替真实首发公告。
+        result = (
+            result.sort_values("pre_announce_date", na_position="last")
+            .drop_duplicates(
+                subset=["ts_code", "report_period", "source_type"], keep="first"
+            )
+            .reset_index(drop=True)
+        )
+        return result
 
     async def fetch_balance_sheet(
         self,

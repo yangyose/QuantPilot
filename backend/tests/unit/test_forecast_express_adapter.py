@@ -103,6 +103,40 @@ async def test_a5_express_yoy_zero_prior_profit_nan() -> None:
     assert pd.isna(ex["est_net_profit_yoy"])
 
 
+async def test_a5_forecast_dedup_update_flag_rows() -> None:
+    """A5c：forecast 同一公告返 update_flag 0/1 两行 / 原始+修正快报（同 ts_code+period+
+    source_type）→ adapter 须去重为一行（保留 pre_announce_date **最早**者，最大化真空期
+    覆盖 + PIT 首发时点），否则 upsert ON CONFLICT 在同一 INSERT 内命中同键两次 →
+    CardinalityViolation。"""
+    adp = _adapter()
+    # 同键两行：ann_date 20240130（原始）/ 20240215（修正）→ 保留最早 20240130
+    fc_df = pd.DataFrame({
+        "ts_code": ["002594.SZ", "002594.SZ"],
+        "ann_date": ["20240215", "20240130"],   # 乱序，验证按日期排序而非行序
+        "end_date": ["20231231", "20231231"],
+        "p_change_min": [78.0, 74.0], "p_change_max": [90.0, 86.0],
+        "net_profit_min": [3000000.0, 2900000.0], "net_profit_max": [3200000.0, 3100000.0],
+    })
+
+    async def fake_call(func, **kwargs):
+        if func is adp._pro.forecast:
+            return fc_df
+        return pd.DataFrame()
+
+    with patch.object(adp, "_call", new=AsyncMock(side_effect=fake_call)):
+        result = await adp.fetch_forecast_express(
+            ["002594.SZ"], date(2024, 1, 1), date(2024, 3, 31),
+        )
+    # 同键仅一行
+    key = result[["ts_code", "report_period", "source_type"]]
+    assert not key.duplicated().any()
+    assert len(result) == 1
+    # 保留最早公告（20240130，mid(2900000,3100000)=3.0e6 万元 ×1e4 = 3.0e10 元）
+    row = result.iloc[0]
+    assert row["pre_announce_date"] == date(2024, 1, 30)
+    assert row["est_net_profit"] == 3.0e10
+
+
 async def test_a5_forecast_express_empty_inputs() -> None:
     """空 ts_codes → 空 DataFrame（列齐全）。"""
     adp = _adapter()
