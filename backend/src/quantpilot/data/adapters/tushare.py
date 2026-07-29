@@ -513,28 +513,29 @@ class TushareAdapter(DataSourceAdapter):
     ) -> pd.DataFrame:
         """V1.5-A A5（SDD-EXT-03）：业绩预告（forecast）+ 业绩快报（express）PIT 数据。
 
-        逐股每批 50 只、批间 sleep(0.3s)（同 fetch_financial_by_stock）。归一化为统一
-        schema（``_FORECAST_COLS``），forecast/express 各产行，concat 返回。
+        **逐股单码调用**（A5c 2026-07-29 本地实证：forecast/express 接口不支持逗号多码
+        ts_code——真实 API 对 comma-joined ts_code 返回空，非报错，会让回填静默零产出）。
+        每 50 股批间 sleep(0.3s) 限流。归一化为统一 schema（``_FORECAST_COLS``），
+        forecast/express 各产行，concat 返回。
         - forecast：``est_net_profit`` = mid(net_profit_min, net_profit_max)（**万元 ×10000
-          → 元**）；``est_net_profit_yoy`` = mid(p_change_min, p_change_max)/100；priority=1。
-        - express：``est_net_profit`` = n_income（**元**）；``est_net_profit_yoy`` =
-          yoy_net_profit/100；priority=2。
+          → 元**，实证 002594.SZ 2023 预告 mid=3e6 万元 ×1e4 = 3e10 元 ≈ 300 亿归母✓）；
+          ``est_net_profit_yoy`` = mid(p_change_min, p_change_max)/100（p_change 为 %✓）；prio=1。
+        - express：``est_net_profit`` = n_income（**元**，实证 600161.SH n_income=1.103e9 元✓）；
+          ``est_net_profit_yoy`` = (n_income − yoy_net_profit)/|yoy_net_profit|——A5c 实证
+          ``yoy_net_profit`` 是**去年同期净利润(元)**而非增长率 %（600161.SH n_income=1.103e9,
+          yoy_net_profit=8.809e8 → 增长 25.2%），故派生增长率而非 /100；去年同期为 0/NaN → NaN；
+          priority=2。
         - ``pre_announce_date`` = ann_date（发布日 PIT）；``report_period`` = end_date。
-
-        【单位/字段 quirk：net_profit_min/max 万元、n_income 元的假设需 5y 回填首步小样本
-        对 5433/5434 实证（CLAUDE.md §4.3 同类），偏差在 adapter 内订正】。
         """
         empty = pd.DataFrame(columns=self._FORECAST_COLS)
         if not ts_codes:
             return empty
 
-        batch_size = 50
         fc_frames: list[pd.DataFrame] = []
         ex_frames: list[pd.DataFrame] = []
-        for i in range(0, len(ts_codes), batch_size):
-            batch = ",".join(ts_codes[i : i + batch_size])
+        for idx, code in enumerate(ts_codes):
             fc = await self._call(
-                self._pro.forecast, ts_code=batch,
+                self._pro.forecast, ts_code=code,
                 start_date=self._fmt(start_date), end_date=self._fmt(end_date),
                 fields="ts_code,ann_date,end_date,p_change_min,p_change_max,"
                        "net_profit_min,net_profit_max",
@@ -542,13 +543,14 @@ class TushareAdapter(DataSourceAdapter):
             if fc is not None and not fc.empty:
                 fc_frames.append(fc)
             ex = await self._call(
-                self._pro.express, ts_code=batch,
+                self._pro.express, ts_code=code,
                 start_date=self._fmt(start_date), end_date=self._fmt(end_date),
                 fields="ts_code,ann_date,end_date,n_income,yoy_net_profit",
             )
             if ex is not None and not ex.empty:
                 ex_frames.append(ex)
-            if i + batch_size < len(ts_codes):
+            # 每 50 股批间限流（forecast+express 共 100 次/批）
+            if (idx + 1) % 50 == 0 and idx + 1 < len(ts_codes):
                 await asyncio.sleep(0.3)
 
         out: list[pd.DataFrame] = []
@@ -569,14 +571,17 @@ class TushareAdapter(DataSourceAdapter):
             }))
         if ex_frames:
             ex = pd.concat(ex_frames, ignore_index=True)
+            n_income = pd.to_numeric(ex.get("n_income"), errors="coerce")
+            # A5c：yoy_net_profit = 去年同期净利润(元)（非增长率 %）→ 派生增长率；
+            # 去年同期为 0/NaN 时无法计算增长率 → NaN（replace 0→NaN 使除法产 NaN 而非 inf）。
+            prior = pd.to_numeric(ex.get("yoy_net_profit"), errors="coerce")
+            prior_abs = prior.abs().replace(0.0, pd.NA)
             out.append(pd.DataFrame({
                 "ts_code": ex["ts_code"],
                 "report_period": ex["end_date"].apply(self._to_date),
                 "pre_announce_date": ex["ann_date"].apply(self._to_date),
-                "est_net_profit": pd.to_numeric(ex.get("n_income"), errors="coerce"),  # 元
-                "est_net_profit_yoy": pd.to_numeric(
-                    ex.get("yoy_net_profit"), errors="coerce"
-                ) / 100.0,
+                "est_net_profit": n_income,  # 元
+                "est_net_profit_yoy": (n_income - prior) / prior_abs,
                 "data_priority": 2,
                 "source_type": "express",
             }))
