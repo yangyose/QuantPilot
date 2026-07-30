@@ -51,6 +51,33 @@ logger = logging.getLogger("backfill_forecast_express")
 
 _RATE_LIMIT_RETRIES = 5
 _RATE_LIMIT_SLEEP_S = 60.0
+_TRANSIENT_SLEEP_S = 10.0
+
+# 瞬时网络错误（Tushare HTTP 读超时 / 连接抖动）——与限频不同，短退避后重试而非放弃。
+# A5c 2026-07-30 生产回填实证：5840 股 ×2 接口 ≈ 1.17w 次调用，单次 ReadTimeout
+# 几乎必然发生；原仅对限频重试 → 一次超时即整批崩溃。修在源头（CLAUDE.md §1 防复发）。
+_TRANSIENT_NET_MARKERS = (
+    "timed out", "timeout", "connectionpool", "connection aborted",
+    "connection reset", "connection refused", "max retries", "temporarily unavailable",
+)
+
+try:  # requests 由 tushare 传递依赖引入；类型判定更精确，缺失时回落消息匹配
+    import requests as _requests
+
+    _TRANSIENT_NET_TYPES: tuple[type[BaseException], ...] = (
+        _requests.exceptions.Timeout,
+        _requests.exceptions.ConnectionError,
+    )
+except Exception:  # pragma: no cover — requests 缺失时纯消息匹配
+    _TRANSIENT_NET_TYPES = ()
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """瞬时网络错误判定（读超时 / 连接抖动）——退避重试，区别于限频与真错误。"""
+    if _TRANSIENT_NET_TYPES and isinstance(exc, _TRANSIENT_NET_TYPES):
+        return True
+    msg = str(exc).lower()
+    return any(m in msg for m in _TRANSIENT_NET_MARKERS)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -60,18 +87,26 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--chunk-size", type=int, default=300, help="每块股票数（默认 300）")
     p.add_argument("--chunk-sleep", type=float, default=1.0, help="块间 sleep 秒（默认 1.0）")
     p.add_argument("--limit", type=int, default=0, help="仅取前 N 只（0=全市场；用于小样本）")
+    p.add_argument("--offset", type=int, default=0,
+                   help="跳过前 N 只已完成股票（断点续跑；按 ts_code 升序，与分块块边界对齐）")
     p.add_argument("--dry-run", action="store_true", help="拉数不写库，打印计数")
     p.add_argument("--skip-confirm", action="store_true", help="跳过交互确认")
     return p.parse_args()
 
 
-async def _load_universe(limit: int) -> list[str]:
-    """全市场 ts_code（含退市，PIT 5y 完整性）——取自本地 stock_info。"""
+async def _load_universe(offset: int, limit: int) -> list[str]:
+    """全市场 ts_code（含退市，PIT 5y 完整性）——取自本地 stock_info，按 ts_code 升序。
+
+    offset：断点续跑跳过前 N 只已完成股票（分块在块边界失败时，offset=已完成股票数
+    即可精确续跑剩余；每块 upsert 落库故已完成块无残缺）。
+    """
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(
             select(StockInfo.ts_code).order_by(StockInfo.ts_code)
         )).scalars().all()
     codes = list(rows)
+    if offset > 0:
+        codes = codes[offset:]
     if limit > 0:
         codes = codes[:limit]
     return codes
@@ -80,17 +115,21 @@ async def _load_universe(limit: int) -> list[str]:
 async def _fetch_chunk_with_retry(
     adapter: TushareAdapter, chunk: list[str], start: date, end: date,
 ):
-    """限频自动退避重试；其他异常直接抛（不静默吞——C-4）。"""
+    """限频 / 瞬时网络错误自动退避重试；其他异常直接抛（不静默吞——C-4）。"""
     for attempt in range(1, _RATE_LIMIT_RETRIES + 1):
         try:
             return await adapter.fetch_forecast_express(chunk, start, end)
-        except Exception as exc:  # noqa: BLE001 — 仅对限频退避，其余重抛
-            if _is_rate_limit_error(exc) and attempt < _RATE_LIMIT_RETRIES:
+        except Exception as exc:  # noqa: BLE001 — 对限频/瞬时网络退避，其余重抛
+            is_rl = _is_rate_limit_error(exc)
+            is_net = _is_transient_network_error(exc)
+            if (is_rl or is_net) and attempt < _RATE_LIMIT_RETRIES:
+                sleep_s = _RATE_LIMIT_SLEEP_S if is_rl else _TRANSIENT_SLEEP_S
                 logger.warning(
-                    "限频命中（第 %d/%d 次），sleep %.0fs 后重试：%s",
-                    attempt, _RATE_LIMIT_RETRIES, _RATE_LIMIT_SLEEP_S, exc,
+                    "%s（第 %d/%d 次），sleep %.0fs 后重试：%s",
+                    "限频命中" if is_rl else "瞬时网络错误",
+                    attempt, _RATE_LIMIT_RETRIES, sleep_s, exc,
                 )
-                await asyncio.sleep(_RATE_LIMIT_SLEEP_S)
+                await asyncio.sleep(sleep_s)
                 continue
             raise
 
@@ -111,13 +150,13 @@ async def _run(args: argparse.Namespace) -> None:
     if not settings.tushare_token:
         sys.exit("❌ 未配置 TUSHARE_TOKEN")
 
-    universe = await _load_universe(args.limit)
+    universe = await _load_universe(args.offset, args.limit)
     if not universe:
-        sys.exit("❌ stock_info 为空，无法确定回填股票池")
+        sys.exit("❌ stock_info 为空（或 offset 越界），无法确定回填股票池")
     n_chunks = (len(universe) + args.chunk_size - 1) // args.chunk_size
     logger.info(
-        "回填窗口 %s ~ %s；股票池 %d 只（%d 块 ×%d）；dry_run=%s",
-        start, end, len(universe), n_chunks, args.chunk_size, args.dry_run,
+        "回填窗口 %s ~ %s；股票池 %d 只（offset=%d，%d 块 ×%d）；dry_run=%s",
+        start, end, len(universe), args.offset, n_chunks, args.chunk_size, args.dry_run,
     )
 
     if not args.dry_run and not args.skip_confirm:
