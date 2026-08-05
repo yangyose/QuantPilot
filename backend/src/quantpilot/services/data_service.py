@@ -660,18 +660,32 @@ class DataService:
     async def refresh_financials_full(
         self,
         ts_codes: list[str] | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
         batch_size: int = 50,
     ) -> dict:
-        """按股票逐一补录 ROE/成长性指标和 total_equity（净资产）。
+        """按批补录 ROE/成长性指标和 total_equity（净资产）。
         ts_codes=None → 取全部活跃股票（is_active=True）。
+        start/end_date=None → 默认 [今日-2y, 今日]（≥4 个正式报告期，确保取到每股最新一期）。
         每批 batch_size 只，批次间 sleep 0.3s（避免 Tushare 速率限制）。
         返回 {success_count, fail_count, failed_codes}。
 
         【降级说明】首次部署需手动调用此方法完成初始化（见 phase5_signals.md §2 P5-PRE-1
         降级说明）；P5-PRE-2 季度调度任务上线后，后续更新自动维护，无需再次手动操作。
+
+        ⚠️ 签名契约：`fetch_financial_by_stock` / `fetch_balance_sheet` 均为
+        `(ts_codes: list[str], start_date, end_date)` 且内部自带 50 只/批。历史 bug：
+        本方法曾逐股调 `fetch_financial_by_stock(ts_code)`（str + 缺 2 个日期参数）→ 每股
+        必抛 → total_equity 全市场恒 NULL → A5b 前瞻 ROE 覆盖与 F-4 universe 过滤长期失效
+        （2026-06-30 生产实证 success=0 fail=5515）。修在源头，冒烟测试锁签名防复发。
         """
         if ts_codes is None:
             ts_codes = await self._repo.get_active_stock_codes()
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            # 覆盖最近 ~2 年（≥4 个正式报告期），确保每股取到最新一期 total_equity/ROE
+            start_date = end_date - timedelta(days=365 * 2)
 
         success_count = 0
         fail_count = 0
@@ -679,22 +693,28 @@ class DataService:
 
         for i in range(0, len(ts_codes), batch_size):
             batch = ts_codes[i : i + batch_size]
-            for ts_code in batch:
-                try:
-                    fin_df = await self._adapter.fetch_financial_by_stock(ts_code)
-                    if not fin_df.empty:
-                        await self._repo.upsert_financial_data(fin_df)
-                    bal_df = await self._adapter.fetch_balance_sheet(ts_code)
-                    if not bal_df.empty:
-                        await self._repo.upsert_financial_data(bal_df)
-                    success_count += 1
-                except Exception as exc:
-                    fail_count += 1
-                    failed_codes.append(ts_code)
-                    logger.warning(
-                        "refresh_financials_full_stock_failed: ts_code=%s error=%s",
-                        ts_code, str(exc),
-                    )
+            try:
+                # 两处 upsert：fina_indicator（roe/成长性）+ balancesheet（total_equity）。
+                # upsert_financial_data 用 COALESCE 合并，bal_df 不会把 roe 冲成 NULL。
+                fin_df = await self._adapter.fetch_financial_by_stock(
+                    batch, start_date, end_date,
+                )
+                if not fin_df.empty:
+                    await self._repo.upsert_financial_data(fin_df)
+                bal_df = await self._adapter.fetch_balance_sheet(
+                    batch, start_date, end_date,
+                )
+                if not bal_df.empty:
+                    await self._repo.upsert_financial_data(bal_df)
+                success_count += len(batch)
+            except Exception as exc:
+                # 单批失败不阻断整体（失败隔离）；不静默——记 warning（C-4）
+                fail_count += len(batch)
+                failed_codes.extend(batch)
+                logger.warning(
+                    "refresh_financials_full_batch_failed: n=%d head=%s error=%s",
+                    len(batch), batch[0] if batch else "-", str(exc),
+                )
             await asyncio.sleep(0.3)
 
         logger.info(
