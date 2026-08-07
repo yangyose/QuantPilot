@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 from sqlalchemy import func, nullslast, or_, select
@@ -100,6 +100,14 @@ _FINANCIAL_UPDATE_COLS = [
 _INDEX_UPDATE_COLS = ["open", "high", "low", "close", "vol", "pct_chg"]
 
 _BATCH_SIZE = 500
+
+# get_latest_financial 基本面段 LOCF 回看窗口（天）：只回看最近 ~450 日的报告期，
+# 界定 GROUP BY 扫描量（6.5M 行 / 2GB 机性能）。代价：停报 > 450 天的股取不到基本面
+# （活跃池极少）。450 ≈ 1 年 + 一个季度余量，确保跨季度末真空期能回落到上一披露期。
+_FUND_LOOKBACK_DAYS = 450
+
+# 基本面字段（报告期属性，走 LOCF 取最近有值报告期）；pe/pb/dividend_yield 是日频字段。
+_FUND_FIELDS = ("roe", "net_profit_yoy", "revenue_yoy", "debt_to_asset", "total_equity")
 
 
 class MarketDataRepository:
@@ -476,26 +484,39 @@ class MarketDataRepository:
     async def get_latest_financial(
         self, ts_codes: list[str], as_of_date: date
     ) -> pd.DataFrame:
-        """PIT 查询：DISTINCT ON (ts_code) ORDER BY ts_code, publish_date DESC，
-        仅返回每只股票最新一行。
+        """PIT 查询：日频字段取最新交易日行，报告期基本面走 LOCF（最近有值报告期）。
 
-        避免全量历史加载后 Python-side groupby（潜在数百万行）。
+        返回 index=ts_code，列 = publish_date/pe_ttm/pb/dividend_yield（日频）+
+        report_period/roe/net_profit_yoy/revenue_yoy/debt_to_asset/total_equity（基本面）。
+        无任何日频行 → 空 DataFrame。
+
+        背景（2026-08 生产实证，方案 A）：financial_data 一行 =(ts_code, report_period,
+        publish_date=交易日)。日频快照 `fetch_financial_data` 对未披露报告期每日写一条
+        全 NULL 基本面的行（report_period=日历季末）。旧实现 `DISTINCT ON (ts_code)
+        ORDER BY publish_date DESC` 永远取当日快照行 → 跨季度末真空期 roe 被 NULL 盖过
+        （生产 latest 行 roe 非空仅 2.4% / total_equity 0%）→ 价值因子季节性退化 +
+        F-4 净资产过滤 + A5b 前瞻 ROE 覆盖全部失效。改为拆分两段取数：
+
+        - 日频段：最新 publish_date 行的 pe/pb/dividend_yield（PIT 正确，随行情每日刷新）。
+        - 基本面段（LOCF）：`GROUP BY (ts_code, report_period) + max(每字段)`。必须 max 聚合
+          而非"每期取最新 publish_date 那行"——回填后同一报告期的 roe 落在日频行、
+          total_equity 落在 balancesheet 公告日行（不同 publish_date），max 把两处非空值
+          并成一条（roe 每期恒定，max=coalesce 语义安全）。`HAVING 有任一非空` 后
+          `DISTINCT ON (ts_code) ORDER BY report_period DESC` 取最近有值一期：真空股回落
+          上一披露期（A5b 据 forecast.report_period > 本期判定真空）；已披露股取当期。
+
+        回看窗口 `_FUND_LOOKBACK_DAYS` 界定 GROUP BY 扫描量（6.5M 行 / 2GB 机）。
         """
         if not ts_codes:
             return pd.DataFrame()
-        stmt = (
+        # ── 日频段：最新交易日行 → pe/pb/dividend_yield ──────────────────────────
+        daily_stmt = (
             select(
                 FinancialData.ts_code,
-                FinancialData.report_period,
                 FinancialData.publish_date,
                 FinancialData.pe_ttm,
                 FinancialData.pb,
-                FinancialData.roe,
-                FinancialData.net_profit_yoy,
-                FinancialData.revenue_yoy,
                 FinancialData.dividend_yield,
-                FinancialData.total_equity,
-                FinancialData.debt_to_asset,
             )
             .distinct(FinancialData.ts_code)
             .where(
@@ -504,15 +525,69 @@ class MarketDataRepository:
             )
             .order_by(FinancialData.ts_code, FinancialData.publish_date.desc())
         )
-        result = await self._session.execute(stmt)
-        rows = result.all()
-        if not rows:
+        # ── 基本面段：最近有值报告期 → roe/yoy/debt/total_equity（LOCF）─────────────
+        lookback = as_of_date - timedelta(days=_FUND_LOOKBACK_DAYS)
+        fund_agg = (
+            select(
+                FinancialData.ts_code,
+                FinancialData.report_period,
+                func.max(FinancialData.roe).label("roe"),
+                func.max(FinancialData.net_profit_yoy).label("net_profit_yoy"),
+                func.max(FinancialData.revenue_yoy).label("revenue_yoy"),
+                func.max(FinancialData.debt_to_asset).label("debt_to_asset"),
+                func.max(FinancialData.total_equity).label("total_equity"),
+            )
+            .where(
+                FinancialData.ts_code.in_(ts_codes),
+                FinancialData.publish_date <= as_of_date,
+                FinancialData.publish_date >= lookback,
+            )
+            .group_by(FinancialData.ts_code, FinancialData.report_period)
+            .having(
+                or_(
+                    func.max(FinancialData.roe).is_not(None),
+                    func.max(FinancialData.net_profit_yoy).is_not(None),
+                    func.max(FinancialData.revenue_yoy).is_not(None),
+                    func.max(FinancialData.total_equity).is_not(None),
+                )
+            )
+            .subquery()
+        )
+        fund_stmt = (
+            select(
+                fund_agg.c.ts_code,
+                fund_agg.c.report_period,
+                fund_agg.c.roe,
+                fund_agg.c.net_profit_yoy,
+                fund_agg.c.revenue_yoy,
+                fund_agg.c.debt_to_asset,
+                fund_agg.c.total_equity,
+            )
+            .distinct(fund_agg.c.ts_code)
+            .order_by(fund_agg.c.ts_code, fund_agg.c.report_period.desc())
+        )
+
+        daily_rows = (await self._session.execute(daily_stmt)).all()
+        if not daily_rows:
             return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=result.keys())
-        # RM-17 修复：下游 strategy_service 与 ValueStrategy 全部 .reindex(universe=ts_code)
-        # 假设 financials 以 ts_code 为索引。修复前返回 RangeIndex DataFrame，
-        # reindex(ts_code 列表) 全部返回 NaN → value_score 全 NULL → 价值因子失效。
-        return df.set_index("ts_code")
+        # RM-17：下游 strategy_service / ValueStrategy 全部 .reindex(universe=ts_code)，
+        # 故必须以 ts_code 为索引（否则 reindex 全 NaN → value_score 全 NULL）。
+        daily_df = pd.DataFrame(
+            daily_rows,
+            columns=["ts_code", "publish_date", "pe_ttm", "pb", "dividend_yield"],
+        ).set_index("ts_code")
+
+        fund_rows = (await self._session.execute(fund_stmt)).all()
+        fund_cols = ["ts_code", "report_period", "roe", "net_profit_yoy",
+                     "revenue_yoy", "debt_to_asset", "total_equity"]
+        if fund_rows:
+            fund_df = pd.DataFrame(fund_rows, columns=fund_cols).set_index("ts_code")
+        else:
+            fund_df = pd.DataFrame(
+                columns=fund_cols[1:], index=pd.Index([], name="ts_code")
+            )
+        # 日频左连基本面：停报 > lookback 的股基本面列 NaN、report_period NaT（下游降级）
+        return daily_df.join(fund_df, how="left")
 
     # ── financial_forecast（V1.5-A A5 / SDD-EXT-03）────────────────────────────
 

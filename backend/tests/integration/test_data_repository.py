@@ -99,6 +99,103 @@ async def test_repo_03_get_latest_financial_pit(repo: MarketDataRepository) -> N
     assert result.iloc[0]["publish_date"] == date(2025, 8, 30)
 
 
+# ── 方案 A：get_latest_financial 基本面 LOCF（2026-08 生产缺陷修复）──────────────
+
+_FIN_COLS = [
+    "ts_code", "report_period", "publish_date", "pe_ttm", "pb", "roe",
+    "net_profit_yoy", "revenue_yoy", "dividend_yield", "total_equity", "debt_to_asset",
+]
+
+
+def _fin_row(
+    ts_code, report_period, publish_date, *,
+    pe=float("nan"), pb=float("nan"), roe=float("nan"),
+    teq=float("nan"), npyoy=float("nan"),
+) -> dict:
+    """构造一条 financial_data 行（数值缺省 NaN，与真实采集一致；非 None 避免 object 列）。"""
+    return {
+        "ts_code": ts_code, "report_period": report_period, "publish_date": publish_date,
+        "pe_ttm": pe, "pb": pb, "roe": roe, "net_profit_yoy": npyoy,
+        "revenue_yoy": float("nan"), "dividend_yield": float("nan"),
+        "total_equity": teq, "debt_to_asset": float("nan"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_repo_03b_latest_financial_locf_vacuum(repo: MarketDataRepository) -> None:
+    """方案A：真空期（Q2 日频行基本面全 NULL）→ 基本面 LOCF 回落 Q1，日频取最新交易日。"""
+    q1, q2 = date(2025, 3, 31), date(2025, 6, 30)
+    rows = [
+        # Q1 已披露：roe + total_equity 落在日频行（4-6 月）
+        _fin_row("000001.SZ", q1, date(2025, 4, 30),
+                 pe=10.0, pb=1.0, roe=0.15, teq=1e10, npyoy=0.2),
+        _fin_row("000001.SZ", q1, date(2025, 6, 27),
+                 pe=10.5, pb=1.05, roe=0.15, teq=1e10, npyoy=0.2),
+        # Q2 未披露：report_period 已滚到 Q2，但 roe/total_equity 全 NULL（日频快照）
+        _fin_row("000001.SZ", q2, date(2025, 7, 31), pe=11.0, pb=1.1),
+        _fin_row("000001.SZ", q2, date(2025, 8, 29), pe=11.5, pb=1.15),
+    ]
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000001.SZ"], as_of_date=date(2025, 9, 1))
+    assert len(res) == 1
+    r = res.iloc[0]
+    # 日频段：取最新交易日 08-29 的 pe/pb
+    assert r["publish_date"] == date(2025, 8, 29)
+    assert float(r["pe_ttm"]) == 11.5
+    # 基本面段：LOCF 回落 Q1（真空期），A5b 据此判定 forecast(Q2) > 本期(Q1) = 真空
+    assert r["report_period"] == q1
+    assert float(r["roe"]) == pytest.approx(0.15)
+    assert float(r["total_equity"]) == pytest.approx(1e10)
+
+
+@pytest.mark.asyncio
+async def test_repo_03c_latest_financial_locf_merges_split_rows(
+    repo: MarketDataRepository,
+) -> None:
+    """方案A：同报告期 roe(日频行) 与 total_equity(公告日行) 分行 → max 聚合合成一条。"""
+    q2 = date(2025, 6, 30)
+    rows = [
+        # 日频行：roe 有、total_equity NULL，publish_date=交易日
+        _fin_row("000002.SZ", q2, date(2025, 8, 15), pe=12.0, pb=1.2, roe=0.18, npyoy=0.25),
+        # 公告日行：total_equity 有、roe NULL，publish_date=ann_date（更早，选不中日频段）
+        _fin_row("000002.SZ", q2, date(2025, 8, 10), teq=3e10),
+    ]
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000002.SZ"], as_of_date=date(2025, 9, 1))
+    r = res.iloc[0]
+    assert r["report_period"] == q2
+    assert float(r["roe"]) == pytest.approx(0.18)          # 来自日频行
+    assert float(r["total_equity"]) == pytest.approx(3e10)  # 来自公告日行（分行经 max 合并）
+    # 日频段取最新 publish_date=08-15
+    assert r["publish_date"] == date(2025, 8, 15)
+    assert float(r["pe_ttm"]) == 12.0
+
+
+@pytest.mark.asyncio
+async def test_repo_03d_latest_financial_locf_beyond_lookback(
+    repo: MarketDataRepository,
+) -> None:
+    """方案A：基本面 publish_date 早于 LOCF 回看窗口 → 基本面 NaN，日频仍返回（降级）。"""
+    rows = [
+        # 唯一有基本面的行远早于 lookback（as_of-450d ≈ 2025-05）
+        _fin_row("000003.SZ", date(2022, 12, 31), date(2023, 1, 1),
+                 pe=9.0, pb=0.9, roe=0.1, teq=5e9, npyoy=0.05),
+        # 近期日频行无基本面
+        _fin_row("000003.SZ", date(2026, 6, 30), date(2026, 8, 3), pe=9.5, pb=0.95),
+    ]
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000003.SZ"], as_of_date=date(2026, 8, 5))
+    r = res.iloc[0]
+    assert r["publish_date"] == date(2026, 8, 3)  # 日频段仍返回最新交易日行
+    assert float(r["pe_ttm"]) == 9.5
+    assert pd.isna(r["report_period"])            # 基本面超窗口 → 缺失
+    assert pd.isna(r["roe"])
+    assert pd.isna(r["total_equity"])
+
+
 async def test_repo_a5_forecast_upsert_and_pit(repo: MarketDataRepository) -> None:
     """REPO-A5（V1.5-A A5）：upsert_financial_forecast 幂等 + get_latest_forecast PIT。
 

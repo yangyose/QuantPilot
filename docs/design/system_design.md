@@ -1,8 +1,8 @@
 # QuantPilot 系统设计文档
 
-> **版本：** v1.13
+> **版本：** v1.14
 > **基线依据：** QuantPilot_SDD（规范文档，专家审定版）
-> **日期：** 2026-07-29
+> **日期：** 2026-08-07
 > **说明：** 本文档为顶层架构基线，保持稳定。各开发阶段的详细设计见 `docs/design/phases/` 目录，按需创建。
 
 ---
@@ -28,6 +28,7 @@
 | **v1.12** | 2026-07-23 | **V1.5-G 实施回写（G-6 收尾）**：§3 结构树补入实施落位模块——`models/user.py::User`、`account.py` Account.user_id FK、`services/auth_service.py`、`services/signal_view_service.py`（API 期账户叠加）、`services/pipeline_monitor.py`（管线护栏，2026-07 生产事故产物）、`core/rate_limit.py`（slowapi 限频）、`security.py` 注释更新（sub=user_id + 密码强度）、`api/v1/auth.py` 端点扩展注释；§6 表新增 `/auth/register`、`GET/PATCH /auth/me` 三行 + login 限频注记 + 表前多用户约定块（账户层 account_id 由 token 推 + ownership 404 + 共享层不变 + GET /signals API 期叠加）；§6 删除 `POST /positions` 行（§14-10 已作废，此前漏回写）。实施细节权威见 `phases/v1_5_g_multiuser.md` + memory 进度档 |
 | **v1.11** | 2026-06-26 | **V1.5-G 多用户化 + L1/L2/L3 分层兑现（仅设计登记，实现排 RC 后）**：§9 Phase 6 行④「user_level…V1.5 实现分层」推迟标记翻转，指向新设计文档 `docs/design/phases/v1_5_g_multiuser.md` §6 + roadmap §2.2。V1.5-G = 开放自助注册 + 账户层数据完整隔离（新增 `user` 表 + `account.user_id` + JWT 带真实身份 + ownership 强制）+ 兑现 SDD §2/§9.3/§14 被 V1.0 折衷推迟的 L1/L2/L3 分层（`user.level` 自选偏好，默认 L1）。per-user/shared 边界：账户层（account 及其派生）隔离，市场/信号/评分计算层共享。env admin 迁移为首个 DB 用户后废弃。本条仅范围登记（C-5 先回写后实现），不触发任何 V1.0 §9 表变更——V1.5-G 权威登记在 roadmap §2.2/§6 V1.5-G 行 |
 | **v1.13** | 2026-07-29 | **V1.5-A 实施回写（回测深化 + 监控 + 市场宽度 + 财务 PIT）**：§2.6 市场状态叠加 NH-NL 市场宽度弱势修正（UPTREND 且 NH-NL≤0 → breadth_weak，评分按 OSCILLATION 查权重压制趋势，"权重承载方案(a)"，A3/SDD-EXT-07）；§4.1 新增 `financial_forecast` 表（业绩预告/快报 PIT，A5/SDD-EXT-03，alembic 0023）；§4.2 `market_state_history` 加 `breadth_weak` 列（alembic 0021）；§5.8 `BacktestConfig.slippage_scenarios`（滑点情景 A1b）+ `BacktestDataBundle.forecast`（回测前瞻 ROE 覆盖 A5b）+ `run(position_sink=…)` 流式持仓落库（A1a/S6-GAP-02）+ `BacktestResult.daily_positions` 由"不持久化"更正为持久化到 `backtest_daily_position` 表（alembic 0022，表定义见 `phases/v1_5_a_backtest_monitoring.md`）；§6 新增 `POST /backtest/import` 行 + `/backtest/{id}/result` daily_positions 分页注记。涨停成交（A2/SDD-EXT-02s）与监控增强（A4）为引擎/运维内部实现，无 §3-6 结构变更。权威见 `phases/v1_5_a_backtest_monitoring.md` |
+| **v1.14** | 2026-08-07 | **财务 PIT 缺陷修复（get_latest_financial 基本面 LOCF + refresh_financials_full arity）**——2026-08 管线验证挖出，A5b 落地缺陷：§4.1 financial_data 表补「最新财务解析」行为规范——拆日频段（pe/pb/dividend_yield 取最新交易日）与报告期基本面段（roe/yoy/total_equity 走 LOCF 取最近有值报告期，`GROUP BY(ts_code,report_period)+max` 跨行合并 roe[日频行] 与 total_equity[balancesheet 公告日行]，450 日回看窗，2GB 机 EXPLAIN 实测 2.7s，无窗 10.5s），返回 `report_period=基本面所属期`以支撑 A5b 真空判定。根因：旧「取最新 publish_date 行」使跨季度末真空期 roe/total_equity 恒 NULL（生产实证 latest 行 roe 非空 2.4%/total_equity 0%）→ 价值因子季节性退化 + F-4/A5b 失效；叠加 `refresh_financials_full` arity bug（逐股调批量方法缺 2 个 date 参，生产 06-30 success=0 fail=5515）使 total_equity 全市场恒 NULL。均无 §3/§5/§6 结构变更（仅取数语义 + 采集调用修复）。V1.5-A scope 权威登记见 `v1_post_release_roadmap §6 V1.5-A`；生产 total_equity 回填为独立 C-1 生产写 |
 
 ---
 
@@ -490,6 +491,19 @@ CREATE TABLE financial_data (
     UNIQUE (ts_code, report_period, publish_date)
 );
 CREATE INDEX idx_financial_code_publish ON financial_data(ts_code, publish_date DESC);
+
+-- 【最新财务解析：日频 pe/pb 与报告期基本面分离 + 基本面 LOCF】（V1.5-A 补，2026-08）
+-- fetch_financial_data 每交易日写一行 publish_date=交易日、report_period=日历季末：
+-- pe_ttm/pb/dividend_yield 每日刷新；roe/yoy/total_equity 是报告期属性，未披露期为 NULL。
+-- get_latest_financial 据此拆两段取数再按 ts_code 合并：
+--   · 日频段：DISTINCT ON(ts_code) ORDER BY publish_date DESC → pe/pb/dividend_yield。
+--   · 基本面段：GROUP BY(ts_code,report_period)+max(每字段)（跨行合并同报告期的 roe[日频行]
+--     与 total_equity[balancesheet 公告日行，不同 publish_date]）→ HAVING 有任一非空 →
+--     取最近有值报告期（LOCF；回看 450 日窗界定扫描量，2GB 机实测 2.7s）。
+-- 返回 report_period = 基本面所属期：真空期回落上一披露期，A5b 据 forecast.report_period >
+-- 本期判定真空并覆盖 roe。旧实现「取最新 publish_date 行」使真空期 roe/total_equity 恒 NULL
+-- → 价值因子季节性退化 + F-4/A5b 失效（2026-08 生产实证 latest 行 roe 非空 2.4%/total_equity 0%）。
+-- total_equity 由 refresh_financials_full 走 balancesheet 逐批补录（季度调度，见 §5.1）。
 
 -- 业绩预告/快报（PIT 存储，pre_announce_date 为可用时点；V1.5-A A5，SDD-EXT-03）
 -- 信息真空期（快报/预告已发、正式财报未发）用 est_net_profit 派生前瞻 ROE 修正估值
