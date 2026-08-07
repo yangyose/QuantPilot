@@ -196,6 +196,31 @@ async def test_repo_03d_latest_financial_locf_beyond_lookback(
     assert pd.isna(r["total_equity"])
 
 
+@pytest.mark.asyncio
+async def test_repo_03e_upsert_dedups_duplicate_conflict_keys(
+    repo: MarketDataRepository,
+) -> None:
+    """回填路径回归：fina_indicator 对同一 (ts_code, report_period, publish_date)
+    会返回重复行（原始 + 修订，ann_date 相同）。upsert 必须批内按冲突键去重，否则
+    单条 INSERT...ON CONFLICT 触发 CardinalityViolationError（cannot affect row a
+    second time）。2026-08-07 生产回填实证：全批 fail、total_equity 空转。"""
+    period, pub = date(2025, 3, 31), date(2025, 4, 30)
+    rows = [
+        _fin_row("000009.SZ", period, pub, pe=10.0, pb=1.0, roe=0.10, teq=1e10),
+        # 同一冲突键的重复行（修订值）→ 必须保留 last（keep="last"）
+        _fin_row("000009.SZ", period, pub, pe=10.0, pb=1.0, roe=0.12, teq=2e10),
+    ]
+    # 未去重会抛 CardinalityViolationError；去重修复后正常返回
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000009.SZ"], as_of_date=date(2025, 9, 1))
+    assert len(res) == 1
+    r = res.iloc[0]
+    # 保留 last：roe=0.12 / total_equity=2e10
+    assert float(r["roe"]) == pytest.approx(0.12)
+    assert float(r["total_equity"]) == pytest.approx(2e10)
+
+
 async def test_repo_a5_forecast_upsert_and_pit(repo: MarketDataRepository) -> None:
     """REPO-A5（V1.5-A A5）：upsert_financial_forecast 幂等 + get_latest_forecast PIT。
 
