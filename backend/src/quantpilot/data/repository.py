@@ -62,6 +62,11 @@ _FINANCIAL_BOUNDS = {
     "revenue_yoy": 10 ** (8 - 4),     # 1e4
     "dividend_yield": 10 ** (8 - 6),  # 1e2
     "debt_to_asset": 10 ** (8 - 6),   # 1e2
+    # total_equity Numeric(18,2) → max abs 1e16（元）。真实最大 ~4e12（工行级），
+    # 远低于界；Tushare 偶发脏值（错误巨数）≥1e16 会溢出整批 INSERT（2026-08-10 生产
+    # 回填实证 NumericValueOutOfRangeError，savepoint 隔离下仍损含该股的整 50-批 ≈10%）。
+    # 未 clamp 是历史遗漏（total_equity 由 refresh 路径独有，日常 ingest 不写此字段）。
+    "total_equity": 10 ** (18 - 2),   # 1e16
 }
 _QUOTE_BOUNDS = {
     # 行情字段一般不会超界但留接口；turnover_rate Numeric(8,6) 见 market.py

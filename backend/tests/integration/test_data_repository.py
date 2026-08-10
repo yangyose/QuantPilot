@@ -247,6 +247,35 @@ async def test_repo_03f_upsert_drops_null_conflict_key_rows(
     assert float(r["total_equity"]) == pytest.approx(1e10)
 
 
+@pytest.mark.asyncio
+async def test_repo_03g_upsert_clamps_total_equity_overflow(
+    repo: MarketDataRepository,
+) -> None:
+    """回填路径回归：total_equity 是 Numeric(18,2)（max abs 1e16 元）。Tushare 偶发脏值
+    ≥1e16 会溢出整批 INSERT（NumericValueOutOfRangeError）。upsert 必须把越界 total_equity
+    clamp 成 NULL（不丢整批）。2026-08-10 生产回填实证：含脏值股的整 50-批失败 ≈10% 覆盖损失。"""
+    period, pub = date(2025, 3, 31), date(2025, 4, 30)
+    rows = [
+        # 正常大市值：total_equity=4e12（工行级）→ 保留
+        _fin_row("000011.SZ", period, pub, pe=8.0, pb=0.8, roe=0.13, teq=4e12),
+        # 脏值：total_equity=1e17 超 Numeric(18,2) 上界 → 必须 clamp 成 NULL，不得溢出整批
+        _fin_row("000012.SZ", period, pub, pe=9.0, pb=0.9, roe=0.14, teq=1e17),
+    ]
+    # 未 clamp 会抛 NumericValueOutOfRangeError；clamp 后正常返回
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    # get_latest_financial index=ts_code，直接按 code 取
+    full = await repo.get_latest_financial(
+        ["000011.SZ", "000012.SZ"], as_of_date=date(2025, 9, 1)
+    )
+    assert len(full) == 2
+    normal = full.loc["000011.SZ"]
+    dirty = full.loc["000012.SZ"]
+    assert float(normal["total_equity"]) == pytest.approx(4e12)  # 正常值保留
+    assert pd.isna(dirty["total_equity"])                        # 脏值 clamp 成 NULL
+    assert float(dirty["roe"]) == pytest.approx(0.14)            # 该行其他字段仍入库
+
+
 async def test_repo_a5_forecast_upsert_and_pit(repo: MarketDataRepository) -> None:
     """REPO-A5（V1.5-A A5）：upsert_financial_forecast 幂等 + get_latest_forecast PIT。
 
