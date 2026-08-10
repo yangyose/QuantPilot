@@ -1,8 +1,8 @@
 # QuantPilot V1.0 发布后路线图
 
 > **文档类型：** V1.0 发布后（V1.5+ / V2.0）范围与主题规划设计文档
-> **版本：** v2.3
-> **创建日期：** 2026-04-30（原 V1.5 路线图）/ **2026-05-14 v2.0 重构** / **2026-06-26 v2.1 V1.5-G 范围展开** / **2026-07-29 v2.2 V1.5-A 交付回写** / **2026-08-07 v2.3 A5b 激活缺陷登记**
+> **版本：** v2.4
+> **创建日期：** 2026-04-30（原 V1.5 路线图）/ **2026-05-14 v2.0 重构** / **2026-06-26 v2.1 V1.5-G 范围展开** / **2026-07-29 v2.2 V1.5-A 交付回写** / **2026-08-07 v2.3 A5b 激活缺陷登记** / **2026-08-10 v2.4 A5b/F-4 激活收口**
 > **重构原因：** 2026-05-14 5y 真机验收（task #117）发现核心评分公式存在根本缺陷（rank-pct 跨期不可比 + 4 策略横截面反相关锁死顶分 70~72 + 绝对阈值 80 失效 → 5y 历史信号表 0 行）→ V1.0 重新定位为"**所有阻断用户达成核心目标的问题修复完成才能发布**"，原 V1.5 路线图中**评分链路 / 因子级溯源 / 数据质量监控 / 部署评审 / 账户资金链**相关项目升级为 V1.0 收尾 Phase 11~15 必修，本文档现承担**V1.0 发布后**的 V1.5+ 与 V2.0 范围。
 > **配套文档：**
 > - V1.0 收尾批次（Phase 11~15）见 `docs/design/system_design.md` §9 进度表 + 各 phase 设计文档
@@ -21,6 +21,7 @@
 | **v2.1** | 2026-06-26 | **V1.5-G 范围展开 + 设计文档登记**：§2.2 + §6 主题表 V1.5-G 由"多账户 + 权限"扩展为"用户注册 + 多用户隔离 + L1/L2/L3 层级"——整合开放自助注册 + 账户层数据完整隔离 + 兑现 SDD §2/§9.3/§14 被 V1.0 折衷推迟的 L1/L2/L3 分层（`user.level` 自选偏好）；估算 8-10 → 9-13 pd；新增设计文档 `docs/design/phases/v1_5_g_multiuser.md` v1.0。来源：用户拍板（完整多用户隔离 / 开放自助注册 / L1-L2-L3 自选偏好 / env admin 迁移为首用户后废弃）；C-5 范围变更同步回写 system_design v1.11 §9 Phase 6 ④ + SDD（多用户 + 分层）。实现排 V1.0 RC 之后 |
 | **v2.2** | 2026-07-29 | **V1.5-A 交付回写（链 C 收口）**：§6 主题表 V1.5-A 行标 ✅ 五子批代码全交付 CI 绿（A4→A2→A3→A1→A5）；§2.1（回测深化 S6-GAP-02 + 滑点情景）✅ + §4.5（Phase 13 P3 5 项 = A4 监控增强）✅ + §3 SDD-EXT-02s/07 ✅、SDD-EXT-03 ✅代码（唯 A5c 5y 生产回填待 C-1）+ §1 滑点敏感性 ✅。同步回写 system_design v1.13（§2.6 NH-NL / §4.1 financial_forecast / §4.2 breadth_weak / §5.8 slippage_scenarios+forecast+position_sink / §6 backtest import）。实施期抓修 A5a 采集三处 Tushare quirk（逗号多码不支持 / express yoy 语义 / 同键去重），详见 v1_5_a 进度档 |
 | **v2.3** | 2026-08-07 | **A5b 激活缺陷登记（2026-08 管线验证挖出）**：§3 SDD-EXT-03 进度注 + 行状态展开——A5b 前瞻 ROE 覆盖与 F-4 净资产过滤生产长期空转，根因 ① `refresh_financials_full` arity bug → total_equity 全市场恒 NULL（已修 commit 4ef9a3d）② `get_latest_financial` 取最新 publish_date 日频行使真空期基本面被 NULL 盖过 → 改基本面 LOCF（拆日频/基本面段 + GROUP BY+max 跨行合并 + 450 日窗，2GB 机 EXPLAIN 2.7s，待 commit/部署）。回写 system_design v1.14 §4.1「最新财务解析」行为规范。A5b/F-4 真激活 = LOCF 上线 + 生产 total_equity 回填（C-1）。均无 §3/§5/§6 结构变更 |
+| **v2.4** | 2026-08-10 | **A5b/F-4 激活收口（链 C）**：§3 SDD-EXT-03 进度注 + 行状态——LOCF 已 08-07 部署（commit 539464f+4ef9a3d，roe 非空率 2.4%→99.4%）；C-1 授权对生产回填 total_equity → `success=5515 fail=0`、覆盖 5507/5515 活跃股。回填逐层暴露并全修 7 连环 bug（arity/LOCF/dedup/null-publish/savepoint/多码/溢出，commit 1c4ff1d/3b668d3/cb22b60/4515a3b 全部署）。A5b/F-4 数据前置就位，功能级激活待今晚 17:30 管线首跑确认。无 §3/§5/§6 结构变更 |
 
 ---
 
@@ -187,13 +188,22 @@ V1.5+ 主题划分（8 主题）见本文档 §6，估算合计 **~57-85 pd（V1
 > 测试锁签名，CI 绿）。② `get_latest_financial` 取最新 publish_date 日频行 → 跨季度末真空期
 > roe/total_equity 被 NULL 盖过（生产 latest 行 roe 非空 2.4%/total_equity 0%）→ 价值因子季节性
 > 退化 + F-4/A5b 失效 → 改基本面 LOCF（拆日频/基本面段 + `GROUP BY+max` 跨行合并，450 日窗，
-> 2GB 机 EXPLAIN 2.7s；系统设计 v1.14 §4.1 回写；3 集成测试 + 消费方 e2e 全绿，**待 commit/部署**）。
-> **A5b/F-4 真激活 = get_latest_financial LOCF（代码就绪）+ 生产 total_equity 回填（C-1）两者上线**。
+> 2GB 机 EXPLAIN 2.7s；系统设计 v1.14 §4.1 回写；3 集成测试 + 消费方 e2e 全绿）。
+> **LOCF 已部署生产 ✅（2026-08-07 盘后，commit 539464f + 4ef9a3d）**：roe 非空率 2.4%→99.4%。
+>
+> **total_equity 回填收官 ✅（2026-08-10，C-1 授权）**：修好的 `refresh_financials_full` 对生产
+> 全量回填 → `ALL DONE success=5515 fail=0`，`total_equity>0` 覆盖 **5507/5515 活跃股**（差 8=真
+> 无 balancesheet 数据的次新/长停/Tushare 缺口）。回填过程逐层暴露 **7 连环 bug**（arity/LOCF/
+> 同键去重 dedup/null-publish 冲突键/per-batch savepoint 真隔离/balancesheet 多码静默空/
+> total_equity Numeric(18,2) 溢出未 clamp），全修+全 push+全部署（commit 1c4ff1d/3b668d3/
+> cb22b60/4515a3b），详见 memory `total-equity-null-refresh-bug`。**A5b/F-4 数据前置已就位**；
+> 功能级端到端激活（F-4 不再 `universe_filter_skipped_null_field` + A5b `forecast_roe_override_applied`
+> count>0）待今晚 17:30 管线首跑确认。
 
 | 编号 | 描述 | 评审优先级 | V1.5 实现要点 | 估算 | 所属主题 |
 |------|------|-----------|--------------|------|---------|
 | SDD-EXT-02s | 涨停板成交可行性建模（简化版）| P0 | 回测引擎信号触发日：当日收盘涨停 + 当日换手率 < 1% → 判定不可成交 | 0.5-1 pd | V1.5-A ✅ |
-| SDD-EXT-03 | 业绩预告/快报 PIT 数据接入 | P1 | 接入 Tushare `forecast` / `express`；新增 `data_priority` 字段 | 2-3 pd | V1.5-A ✅代码/A5b激活待 LOCF+total_equity 回填(C-1) |
+| SDD-EXT-03 | 业绩预告/快报 PIT 数据接入 | P1 | 接入 Tushare `forecast` / `express`；新增 `data_priority` 字段 | 2-3 pd | V1.5-A ✅ 代码+LOCF+total_equity 回填全上线（2026-08-10 数据级激活；功能级待今晚管线确认）|
 | SDD-EXT-04 | 均值回归策略 Piotroski F-Score 硬性前置过滤 | P1 | F-Score 8 项财务指标计算；F-Score < 6 则 mean_reversion_score = 0；金融类 ROE > 5% 替代 | 2-3 pd | V1.5-C |
 | SDD-EXT-06s | 行业集中度细化至申万三级行业（SW3）| P2 | 数据层补 `sw_industry_l3`；同 SW3 持仓合计 ≤ 15% | 1-1.5 pd | V1.5-D |
 | SDD-EXT-07 | 市场宽度指标 NH-NL（创 60 日新高 - 新低）| P2 | MarketStateEngine 新增 NH-NL；ADX>25 + MA20>MA60 + NH-NL≤0% → 降级为"弱势震荡" | 1-1.5 pd | V1.5-A ✅ |
