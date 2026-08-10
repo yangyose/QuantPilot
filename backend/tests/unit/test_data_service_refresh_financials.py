@@ -11,11 +11,25 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pandas as pd
 
 from quantpilot.services.data_service import DataService
+
+
+class _FakeSavepoint:
+    """模拟 repo.session.begin_nested() 返回的 async 上下文管理器（SAVEPOINT）。
+
+    __aexit__ 返回 False：异常不被吞，向上抛给 refresh_financials_full 的 per-batch
+    try/except（真实 SQLAlchemy 在异常时先 ROLLBACK TO SAVEPOINT 再重抛，控制流一致）。
+    """
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
 
 
 def _fin_df(ts_code: str) -> pd.DataFrame:
@@ -50,6 +64,10 @@ def _new_service(fin_side=None, bal_side=None, active_codes=None) -> DataService
         return_value=active_codes if active_codes is not None else ["000001.SZ"],
     )
     repo.upsert_financial_data = AsyncMock(return_value=1)
+    # 每批 savepoint：refresh_financials_full 用 repo.session.begin_nested() 包每批
+    repo.session = SimpleNamespace(
+        begin_nested=MagicMock(side_effect=lambda: _FakeSavepoint()),
+    )
     return DataService(
         adapter=adapter,
         validator=SimpleNamespace(),
@@ -121,6 +139,17 @@ async def test_refresh_batch_failure_isolated() -> None:
     assert result["failed_codes"] == ["B"]
     # 第 3 批（C）在第 2 批失败后仍被调用 → 失败隔离生效
     assert ["C"] in call_log
+
+
+async def test_refresh_wraps_each_batch_in_savepoint() -> None:
+    """每批包 savepoint（repo.session.begin_nested）：共享 session 上一批 upsert 抛
+    IntegrityError 会毒化整个事务（asyncpg InFailedSQLTransaction）→ 同 chunk 后续批
+    级联失败 + chunk-end commit 连带丢已成功批。savepoint 让异常只回滚该批，事务对
+    后续批仍可用。2026-08-10 生产回填实证：无 savepoint 时坏批毒化整 500-chunk。"""
+    svc = _new_service(active_codes=["A", "B", "C"])
+    await svc.refresh_financials_full(ts_codes=["A", "B", "C"], batch_size=1)
+    # 3 批 → begin_nested 恰好每批一次
+    assert svc._repo.session.begin_nested.call_count == 3
 
 
 async def test_refresh_skips_empty_upsert() -> None:

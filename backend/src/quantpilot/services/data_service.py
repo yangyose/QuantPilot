@@ -694,21 +694,30 @@ class DataService:
         for i in range(0, len(ts_codes), batch_size):
             batch = ts_codes[i : i + batch_size]
             try:
-                # 两处 upsert：fina_indicator（roe/成长性）+ balancesheet（total_equity）。
-                # upsert_financial_data 用 COALESCE 合并，bal_df 不会把 roe 冲成 NULL。
-                fin_df = await self._adapter.fetch_financial_by_stock(
-                    batch, start_date, end_date,
-                )
-                if not fin_df.empty:
-                    await self._repo.upsert_financial_data(fin_df)
-                bal_df = await self._adapter.fetch_balance_sheet(
-                    batch, start_date, end_date,
-                )
-                if not bal_df.empty:
-                    await self._repo.upsert_financial_data(bal_df)
+                # 每批包 savepoint（begin_nested）实现真·失败隔离：调用方（回填脚本 /
+                # 季度 job）在一个共享 session 上按 chunk 提交。若某批 upsert 抛
+                # IntegrityError，asyncpg 会把整个事务标记为 InFailedSQLTransaction →
+                # 同一 session 后续批全部级联失败 + chunk-end commit 连带丢弃已成功批
+                # （2026-08-10 生产回填实证：无 savepoint 时坏批毒化整 500-chunk）。
+                # savepoint 让异常只回滚该批，事务对后续批仍可用。用 repo.session 公共
+                # 属性（Phase 7 C-02：Service 不直接碰 _session 私有）。
+                async with self._repo.session.begin_nested():
+                    # 两处 upsert：fina_indicator（roe/成长性）+ balancesheet（total_equity）。
+                    # upsert_financial_data 用 COALESCE 合并，bal_df 不会把 roe 冲成 NULL。
+                    fin_df = await self._adapter.fetch_financial_by_stock(
+                        batch, start_date, end_date,
+                    )
+                    if not fin_df.empty:
+                        await self._repo.upsert_financial_data(fin_df)
+                    bal_df = await self._adapter.fetch_balance_sheet(
+                        batch, start_date, end_date,
+                    )
+                    if not bal_df.empty:
+                        await self._repo.upsert_financial_data(bal_df)
                 success_count += len(batch)
             except Exception as exc:
-                # 单批失败不阻断整体（失败隔离）；不静默——记 warning（C-4）
+                # 单批失败不阻断整体（失败隔离，savepoint 已回滚该批）；
+                # 不静默——记 warning（C-4）
                 fail_count += len(batch)
                 failed_codes.extend(batch)
                 logger.warning(

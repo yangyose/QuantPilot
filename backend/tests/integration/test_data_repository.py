@@ -221,6 +221,32 @@ async def test_repo_03e_upsert_dedups_duplicate_conflict_keys(
     assert float(r["total_equity"]) == pytest.approx(2e10)
 
 
+@pytest.mark.asyncio
+async def test_repo_03f_upsert_drops_null_conflict_key_rows(
+    repo: MarketDataRepository,
+) -> None:
+    """回填路径回归：fina_indicator/balancesheet 按区间取时，部分报告期 ann_date 为
+    NULL（未公告占位行）→ publish_date NULL。publish_date 是 NOT NULL 冲突键，直接 upsert
+    触发 NotNullViolationError 整批 fail。upsert 必须先丢弃冲突键任一为 NULL 的行（无
+    ann_date = 无 PIT 锚点，本就不可入库）。2026-08-10 生产 total_equity 回填实证暴露。"""
+    period = date(2025, 3, 31)
+    rows = [
+        # 合法行：三个冲突键齐全 → 入库
+        _fin_row("000010.SZ", period, date(2025, 4, 30), pe=10.0, pb=1.0, roe=0.11, teq=1e10),
+        # publish_date=None（未公告）→ 必须被丢弃，不得触发 NotNullViolationError
+        _fin_row("000010.SZ", period, None, pe=10.0, pb=1.0, roe=0.09, teq=9e9),
+    ]
+    # 未过滤会抛 NotNullViolationError；过滤修复后正常返回
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000010.SZ"], as_of_date=date(2025, 9, 1))
+    assert len(res) == 1
+    r = res.iloc[0]
+    # 只有合法行入库：roe=0.11 / total_equity=1e10
+    assert float(r["roe"]) == pytest.approx(0.11)
+    assert float(r["total_equity"]) == pytest.approx(1e10)
+
+
 async def test_repo_a5_forecast_upsert_and_pit(repo: MarketDataRepository) -> None:
     """REPO-A5（V1.5-A A5）：upsert_financial_forecast 幂等 + get_latest_forecast PIT。
 

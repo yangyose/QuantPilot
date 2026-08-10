@@ -465,17 +465,23 @@ class MarketDataRepository:
         total = 0
         # 极端值 → NaN → NULL（Tushare 微盘股 ROE/net_profit_yoy 偶发超 schema 范围）
         df = _clamp_to_schema_bounds(df, _FINANCIAL_BOUNDS)
-        # 批内按冲突键去重（保留 last=修订/最新行）：fina_indicator 全量按区间逐股取时，
-        # 对同一 (ts_code, report_period, publish_date) 会返回重复行（原始+修订，ann_date
-        # 相同）。若不去重，同一条 INSERT...ON CONFLICT 出现重复约束键 → asyncpg
-        # CardinalityViolationError（cannot affect row a second time），整批失败。日常
-        # ingest 每天取单 trade_date 不触发，故长期潜伏；2026-08-07 生产 total_equity
-        # 回填全批 fail 实证暴露（refresh_financials_full 路径），修在此处守全部调用方。
-        _dedup_keys = [
+        _key_cols = [
             c for c in ("ts_code", "report_period", "publish_date") if c in df.columns
         ]
-        if _dedup_keys:
-            df = df.drop_duplicates(subset=_dedup_keys, keep="last")
+        # ① 冲突键（三者均 NOT NULL）任一为 NULL 的行先丢弃：fina_indicator/balancesheet
+        # 全量按区间逐股取时，部分报告期 ann_date 为 NULL（未公告占位行）→ publish_date
+        # NULL → 直接 upsert 触发 NotNullViolationError 整批 fail。无 ann_date = 无 PIT
+        # 锚点，本就不可入库。日常 ingest 走 fetch_financial_data（publish_date=入库时点，
+        # 永不 NULL）不触发，故长期潜伏；2026-08-10 生产 total_equity 回填实证暴露。
+        if _key_cols:
+            df = df.dropna(subset=_key_cols)
+        # ② 批内按冲突键去重（保留 last=修订/最新行）：fina_indicator 对同一
+        # (ts_code, report_period, publish_date) 会返回重复行（原始+修订，ann_date 相同）。
+        # 若不去重，同一条 INSERT...ON CONFLICT 出现重复约束键 → asyncpg
+        # CardinalityViolationError（cannot affect row a second time），整批失败。同样
+        # 日常 ingest 单 trade_date 不触发，2026-08-07 生产回填实证暴露。守全部调用方。
+        if _key_cols:
+            df = df.drop_duplicates(subset=_key_cols, keep="last")
         # Bug 9 修复 v2：dict 层显式 NaN→None；详见 _df_to_dict_with_nulls 注释
         rows = _df_to_dict_with_nulls(df)
         for i in range(0, len(rows), _BATCH_SIZE):
