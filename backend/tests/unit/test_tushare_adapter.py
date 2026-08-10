@@ -405,23 +405,56 @@ async def test_td_07_fetch_balance_sheet_fields(adapter: TushareAdapter) -> None
 
 
 @pytest.mark.asyncio
-async def test_td_08_fetch_balance_sheet_batches(adapter: TushareAdapter) -> None:
-    """TD-08: 超过 50 只股票时分批调用"""
+async def test_td_08_fetch_balance_sheet_per_single_code(adapter: TushareAdapter) -> None:
+    """TD-08（2026-08-10 回归）：balancesheet **逐单码**调用，N 只 = N 次调用。
+    历史 bug：曾按 50 码逗号分批（2 次调用），但 pro.balancesheet 不支持多码 → 空返回
+    → total_equity 全 NULL。"""
     codes = [f"{i:06d}.SZ" for i in range(75)]
     call_count = 0
 
-    async def _batched_call(func, **kwargs):
+    async def _per_code_call(func, **kwargs):
         nonlocal call_count
         call_count += 1
         return pd.DataFrame(
             columns=["ts_code", "ann_date", "end_date", "total_hldr_eqy_exc_min_int"]
         )
 
-    with patch.object(adapter, "_call", new=_batched_call):
+    with patch.object(adapter, "_call", new=_per_code_call):
         await adapter.fetch_balance_sheet(codes, date(2024, 1, 1), date(2025, 1, 31))
 
-    # 75 只 / 50 只每批 = 2 次调用
-    assert call_count == 2, f"期望 2 次批次调用，实际 {call_count}"
+    # 75 只 → 逐单码 75 次调用（不再是 50 码/批 = 2 次）
+    assert call_count == 75, f"期望 75 次逐单码调用，实际 {call_count}"
+
+
+@pytest.mark.asyncio
+async def test_td_08b_fetch_balance_sheet_single_code_no_comma(
+    adapter: TushareAdapter,
+) -> None:
+    """TD-08b（2026-08-10 回归 · 核心契约）：每次调用 ts_code 必须是**单码、无逗号**。
+    pro.balancesheet 对 comma-joined ts_code 静默返回空 → total_equity 零产出。此测试锁死
+    绝不再拼逗号多码。"""
+    codes = ["000001.SZ", "000002.SZ", "600000.SH"]
+    passed_ts_codes = []
+
+    async def _capture_call(func, **kwargs):
+        passed_ts_codes.append(kwargs.get("ts_code"))
+        return pd.DataFrame({
+            "ts_code": [kwargs.get("ts_code")],
+            "ann_date": ["20250130"], "end_date": ["20241231"],
+            "total_hldr_eqy_exc_min_int": [1_000_000.0],
+        })
+
+    with patch.object(adapter, "_call", new=_capture_call):
+        result = await adapter.fetch_balance_sheet(
+            codes, date(2024, 1, 1), date(2025, 1, 31)
+        )
+
+    assert passed_ts_codes == codes, "每次调用必须传单个 ts_code（顺序逐股）"
+    for tc in passed_ts_codes:
+        assert "," not in tc, f"ts_code 不得含逗号（多码陷阱）：{tc!r}"
+    # 三只单码各 1 行 → 合并 3 行，total_equity 正常换算
+    assert len(result) == 3
+    assert abs(result.iloc[0]["total_equity"] - 1e10) < 1.0
 
 
 @pytest.mark.asyncio

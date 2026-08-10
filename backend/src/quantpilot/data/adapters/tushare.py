@@ -611,29 +611,36 @@ class TushareAdapter(DataSourceAdapter):
         start_date: date,
         end_date: date,
     ) -> pd.DataFrame:
-        """TD-2：逐股查询 balancesheet，获取 total_equity（总股东权益），每批 50 只。
+        """TD-2：**逐股单码**查询 balancesheet，获取 total_equity（总股东权益）。
 
         输出列：ts_code, publish_date（公告日）, report_period（报告期）, total_equity（元）
         单位换算：Tushare 原始值为万元，乘以 10000 转换为元。
+
+        ⚠️ **必须逐单码调用**（2026-08-10 生产 total_equity 回填实证）：`pro.balancesheet`
+        接口**不支持逗号多码** ts_code——对 comma-joined ts_code 返回**空 DataFrame（非报错）**，
+        会让回填静默零产出（success 照计但 total_equity 恒 NULL）。历史 bug：本方法曾
+        `ts_code=",".join(batch)` 拼 50 码 → 每批恒空 → total_equity 全市场 NULL → A5b/F-4
+        长期失效（被上游 arity/dedup/null-publish 三 bug 层层遮蔽，修完才暴露）。与
+        `fetch_forecast_express` 同款陷阱（fina_indicator 则支持多码，实证 single=11/multi=21）。
+        每 50 股批间 sleep(0.3s) 限流。
         """
         if not ts_codes:
             return pd.DataFrame(columns=[
                 "ts_code", "publish_date", "report_period", "total_equity",
             ])
-        batch_size = 50
         frames: list[pd.DataFrame] = []
-        for i in range(0, len(ts_codes), batch_size):
-            batch = ts_codes[i : i + batch_size]
+        for idx, code in enumerate(ts_codes):
             df = await self._call(
                 self._pro.balancesheet,
-                ts_code=",".join(batch),
+                ts_code=code,
                 start_date=self._fmt(start_date),
                 end_date=self._fmt(end_date),
                 fields="ts_code,ann_date,end_date,total_hldr_eqy_exc_min_int",
             )
-            if not df.empty:
+            if df is not None and not df.empty:
                 frames.append(df)
-            if i + batch_size < len(ts_codes):
+            # 每 50 股批间限流
+            if (idx + 1) % 50 == 0 and idx + 1 < len(ts_codes):
                 await asyncio.sleep(0.3)
 
         if not frames:
