@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+
+# 纯函数，模块级导入（其余重依赖仍在 job 函数内懒加载，保持既有约定）
+from quantpilot.services.factor_monitor_service import plan_catchup_dates
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis as AsyncRedis
@@ -23,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Phase 10 §5.5：止损预警距离阈值（≤ 2%）
 STOP_LOSS_WARN_THRESHOLD = 0.02
+
+# V1.5-C C0：日级 IC 生产者 Job 参数
+_DAILY_IC_LAG_DAYS = 20          # SDD §7.4 前向收益窗口（交易日）；= 可算的最晚因子值日回溯量
+_DAILY_IC_CATCHUP_MAX_DAYS = 3   # 单次运行处理上限（2GB 机：每日一次全 universe 评分）
+_DAILY_IC_LOOKBACK_DAYS = 400    # 追平回看窗口（日历日），覆盖长期断档
 
 
 def create_scheduler(
@@ -101,6 +109,20 @@ def create_scheduler(
         id="trade_calendar_refresh",
         replace_existing=True,
         misfire_grace_time=7200,
+    )
+
+    # 日级 IC 生产者 Job（每日 19:30）：V1.5-C C0——ICIR 权重校准的上游生产者。
+    # 19:30 避开 17:30 日线管线高峰（2GB 机不并发跑两次全 universe 评分）。
+    # 滞后消费：处理 t-20 交易日那天（其前向收益今日已实现），与 SDD §7.4 lag 20 一致。
+    # 此前日级 IC 只有一次性回填脚本能产出 → 生产 2026-05-11 后停更、ICIR 窗口样本
+    # 逐日流失（V1.5-C 设计 §2.1）；手动脚本不算功能闭环。
+    scheduler.add_job(
+        _daily_ic_producer_job,
+        trigger=CronTrigger(hour=19, minute=30, timezone="Asia/Shanghai"),
+        args=[session_factory, adapter, calendar],
+        id="daily_ic_producer",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     # 流水线卡死看门狗 Job（每 30min）：扫描 RUNNING 超时未完成的 pipeline_run 告警。
@@ -189,6 +211,97 @@ async def _monthly_job(
         await scheduler.run_all(today)
 
     logger.info("monthly_job_done: trigger_date=%s", today)
+
+
+def _set_daily_ic_lag_gauge(
+    today: date, existing: set[date], lookback_start: date,
+) -> None:
+    """刷新 `quantpilot_factor_ic_daily_lag_days`（V1.5-C C0 §2.2 C0-4）。
+
+    存量为空时报回看窗口全长（而非 0）——"查不到"必须表现为"滞后很大"触发告警，
+    否则生产者停摆会伪装成健康（正是 2026-05 断档 3 个月无人发现的形态）。
+    """
+    from quantpilot.core.metrics import FACTOR_IC_DAILY_LAG
+
+    newest = max(existing) if existing else None
+    lag = (today - newest).days if newest else (today - lookback_start).days
+    FACTOR_IC_DAILY_LAG.set(float(lag))
+
+
+async def _daily_ic_producer_job(
+    session_factory: async_sessionmaker,
+    adapter: DataSourceAdapter,
+    calendar: TradingCalendar,
+) -> None:
+    """日级 IC 生产者 Job（V1.5-C C0，每日 19:30）。
+
+    每次运行：查已有 daily IC 日 → `plan_catchup_dates` 取最旧的至多
+    ``_DAILY_IC_CATCHUP_MAX_DAYS`` 天（≤ ``t-20`` 交易日）→ 逐日
+    ``FactorMonitorService.produce_daily_ic``。断档由此逐日自动追平。
+
+    每日一个独立 session 显式 commit（调度 Job 不走 `get_db` 自动 commit）；
+    单日失败 `logger.exception` 后继续下一日——一天算不出来不该让整条追平停摆。
+    """
+    from datetime import timedelta
+
+    from quantpilot.data.factor_ic_repository import FactorICRepository
+    from quantpilot.engine.factor_monitor import FactorMonitorEngine
+    from quantpilot.services.factor_monitor_service import FactorMonitorService
+    from quantpilot.services.scoring_factory import build_default_scoring_service
+
+    today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
+    try:
+        last_eligible = calendar.get_prev_trade_date(today, _DAILY_IC_LAG_DAYS)
+    except (ValueError, IndexError):
+        logger.exception("daily_ic_producer_job_calendar_failed: today=%s", today)
+        return
+
+    # 回看窗口：足够覆盖长期断档（生产 2026-05 起断档约 60 交易日），
+    # 上限由 plan_catchup_dates 的 max_days 控制。
+    lookback_start = last_eligible - timedelta(days=_DAILY_IC_LOOKBACK_DAYS)
+    try:
+        async with session_factory() as session:
+            existing = await FactorICRepository().get_existing_daily_ic_dates(
+                session, lookback_start, last_eligible,
+            )
+        trade_dates = calendar.get_trade_dates(lookback_start, last_eligible)
+        planned = plan_catchup_dates(
+            trade_dates=trade_dates,
+            existing=existing,
+            last_eligible=last_eligible,
+            max_days=_DAILY_IC_CATCHUP_MAX_DAYS,
+        )
+        _set_daily_ic_lag_gauge(today, existing, lookback_start)
+    except Exception:
+        logger.exception("daily_ic_producer_job_plan_failed: today=%s", today)
+        return
+
+    if not planned:
+        logger.info("daily_ic_producer_nothing_to_do: last_eligible=%s", last_eligible)
+        return
+
+    total_rows = ok = failed = 0
+    for td in planned:
+        try:
+            async with session_factory() as session:
+                service = FactorMonitorService(
+                    session, FactorMonitorEngine(), FactorICRepository(),
+                    calendar=calendar,
+                )
+                scoring_service = build_default_scoring_service(session, calendar)
+                n = await service.produce_daily_ic(session, td, scoring_service)
+                await session.commit()
+            total_rows += n
+            ok += 1
+        except Exception:
+            failed += 1
+            logger.exception("daily_ic_producer_date_failed: trade_date=%s", td)
+
+    logger.info(
+        "daily_ic_producer_job_done: planned=%d ok=%d failed=%d rows=%d "
+        "last_eligible=%s",
+        len(planned), ok, failed, total_rows, last_eligible,
+    )
 
 
 async def _trade_calendar_refresh_job(

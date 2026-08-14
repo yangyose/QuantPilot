@@ -91,10 +91,13 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 
 ### 2.2 设计
 
-**C0-1 日级 IC 生产者服务方法**。在 `FactorMonitorService` 新增 `produce_daily_ic(session, trade_date) -> int`：
+**C0-1 日级 IC 生产者服务方法**。在 `FactorMonitorService` 新增
+`produce_daily_ic(session, trade_date, scoring_service, min_xs=_DAILY_IC_MIN_XS) -> int`
+（RED 阶段定稿签名：`scoring_service` 走**参数注入**而非构造注入——`ScoringService`
+本身已把 `FactorMonitorService` 作为构造依赖，反向构造注入会成环）：
 
 1. 取 `base_date = trade_date`，`end_date = calendar.get_next_trade_date(trade_date, 20)`；若 `end_date` 尚未到达（前向收益未实现）→ 直接返回 0（不写行）。
-2. 复用 `ScoringService.score_universe_for_date(base_date)` 取全 universe composites → `_extract_strategy_z`（现由 `scripts/backfill_daily_ic.py` 持有，本子批**下沉为 engine/service 层公共函数**，脚本改为调用，消除脚本与生产双实现）。
+2. 复用 `ScoringService.score_universe_for_date(base_date)` 取全 universe composites → `extract_strategy_z`（现由 `scripts/backfill_daily_ic.py` 以 `_extract_strategy_z` 持有，本子批**下沉至 `engine/diagnostics/ic_aggregator.py`**，脚本改为再导出别名，消除双实现）。下沉时**去掉硬编码的 4 策略元组**，改为从 `score_breakdown_raw` 的键推导策略名——这是 C3/C4 新策略自动进入 IC 监控的前提。
 3. 复用 `engine/diagnostics/ic_aggregator.compute_forward_returns` + `compute_daily_ic`（均为现成纯函数，且 `compute_daily_ic(strategy_z: dict[str, pd.Series], ...)` 与策略数无关——C3/C4 新策略自动纳入，无需改动）。
 4. `FactorICRepository.upsert_ic_daily` 写入；`state` 取 `base_date` 当日 market_state。
 
@@ -103,7 +106,8 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 - 触发：`CronTrigger(hour=19, minute=30, timezone="Asia/Shanghai")`（避开 17:30 日线管线的 CPU/内存高峰；2GB 机不并发跑两个全 universe 评分）。
 - 语义：**滞后消费**——每次运行处理 `t-20 个交易日`那一天（其前向收益在今日已实现），而非当日。这与 SDD §7.4 的 lag 20 约束天然一致。
 - 幂等：先查 `get_existing_daily_ic_dates` 跳过已有日；`upsert_ic_daily` 本身幂等。
-- 追平：Job 每次运行扫描 `[max(existing_daily_date)+1, t-20]` 区间内**最多 N 天**（`_CATCHUP_MAX_DAYS = 3`，2GB 机限流），断档自动逐日追平；不足则下次继续。
+- 追平：纯函数 `plan_catchup_dates(trade_dates, existing, last_eligible, max_days) -> list[date]`（置于 `services/factor_monitor_service.py` 模块级，便于单测）——只取 ≤ `last_eligible`（= `t-20` 交易日）、跳过 `existing`、按**升序取最旧的 `max_days` 天**（`_CATCHUP_MAX_DAYS = 3`，2GB 机限流）。升序补最旧是刻意的：ICIR 窗口要连续，必须从断档最左端往右填。
+- 单日异常隔离：某日失败 `logger.exception` 后继续下一日，不整批中止。
 - 自建 session 显式 commit（CLAUDE.md：调度 Job 不走 `get_db` 自动 commit）。
 
 **C0-3 断档追平（生产一次性）**。当前断档 2026-05-12 至今 ≈ 60 个交易日。两条路径：
@@ -114,10 +118,12 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 
 ### 2.3 C0 DoD
 
-- [ ] `produce_daily_ic` 单测：前向收益未实现 → 返回 0 不写行；正常日 → 每策略一行；已存在日 → 跳过（幂等）
-- [ ] `_extract_strategy_z` 下沉后，`scripts/backfill_daily_ic.py` 与生产 Job 共用同一实现（单测断言脚本 import 的是下沉后的公共函数，防双实现漂移）
-- [ ] 调度 Job 单测：注册存在、trigger 参数正确、`args` 显式传入依赖（APScheduler Job 无法访问 `app.state`）
-- [ ] 集成测试：合成 30 日面板 → Job 逻辑跑通 → `factor_ic_window_state` daily 行按预期落库（精确 `== N` 断言）
+- [x] `produce_daily_ic` 单测：前向收益未实现 → 返回 0 不写行；正常日 → 每策略一行；已存在日 → 跳过（幂等）（UT-C0-03a~e）
+- [x] `extract_strategy_z` 下沉后策略无关（新策略键自动抽取），且 `scripts/backfill_daily_ic.py` 与生产 Job 共用同一实现（单测以 `is` 断言同一对象，防双实现漂移）（UT-C0-01/06a）
+- [x] `ScoringService` 组装同样下沉为 `services/scoring_factory.py::build_default_scoring_service`，脚本与 Job 共用（同上 `is` 断言）；配套 `MarketDataRepository` 补 `get_max_daily_quote_date` / `get_excluded_codes_for_ic`（原为脚本内私有 SQL）（UT-C0-06b）
+- [x] 调度 Job 单测：注册存在、trigger 参数正确、`args` 显式传入依赖（APScheduler Job 无法访问 `app.state`）（UT-C0-04/05）
+- [x] 集成测试：合成面板 → `produce_daily_ic` 真跑 → `factor_ic_window_state` daily 行按预期落库（精确 `== N` 断言）+ PIT state + 幂等 + 前向窗口未实现零写入 + 追平计划与 DB 真实串联（INT-C0-01~04b，5 例）
+- [x] 早退路径测试钉死**原因**（caplog 断言 `daily_ic_forward_window_incomplete`），避免在"空 universe"等其它 0 值路径上假通过
 - [ ] 生产断档追平完成（C-1 授权），`max(daily trade_date)` 追至 `t-20` 附近；`factor_ic_daily_lag_days` < 30
 - [ ] 生产实证日志 `daily_ic_produced` 连续 3 个交易日出现且 rows > 0
 

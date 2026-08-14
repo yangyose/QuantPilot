@@ -1,7 +1,7 @@
 """UT-P13-A-01~02: Phase 13 MetricsRegistry 单元测试。
 
 依据 docs/design/phases/phase13_production_observability.md §3.1 + §6.1：
-- UT-P13-A-01: MetricsRegistry 单例 + 7 Counter / 3 Gauge / 2 Histogram 标签合法性
+- UT-P13-A-01: MetricsRegistry 单例 + 7 Counter / 4 Gauge / 2 Histogram 标签合法性
 - UT-P13-A-02: generate_latest(REGISTRY) 输出 Prometheus exposition 格式
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from prometheus_client.metrics import Counter, Gauge, Histogram
 
 
 def test_ut_p13_a_01_metrics_registry_singleton_and_labels() -> None:
-    """UT-P13-A-01: REGISTRY 是 CollectorRegistry 单例；7 Counter + 3 Gauge +
+    """UT-P13-A-01: REGISTRY 是 CollectorRegistry 单例；7 Counter + 4 Gauge +
     2 Histogram 全部注册成功，标签维度合法。"""
     from quantpilot.core import metrics
 
@@ -41,13 +41,14 @@ def test_ut_p13_a_01_metrics_registry_singleton_and_labels() -> None:
             f"{name} 标签 {counter._labelnames} != 预期 {expected_labels}"
         )
 
-    # 3 Gauge
+    # 4 Gauge（V1.5-C C0 增 FACTOR_IC_DAILY_LAG）
     gauges = {
         "FACTOR_ICIR": (metrics.FACTOR_ICIR, ["strategy", "factor", "state"]),
         "BACKTEST_QUEUE_DEPTH": (metrics.BACKTEST_QUEUE_DEPTH, []),
         "DATA_LATENCY": (metrics.DATA_LATENCY, ["data_type"]),
+        "FACTOR_IC_DAILY_LAG": (metrics.FACTOR_IC_DAILY_LAG, []),
     }
-    assert len(gauges) == 3
+    assert len(gauges) == 4
     for name, (gauge, expected_labels) in gauges.items():
         assert isinstance(gauge, Gauge), f"{name} 不是 Gauge"
         assert list(gauge._labelnames) == expected_labels, (
@@ -110,10 +111,11 @@ def test_ut_p13_a_02_generate_latest_prometheus_exposition() -> None:
     assert "quantpilot_scheduler_jobs_total" in payload
     assert "quantpilot_notifications_sent_total" in payload
 
-    # 3 Gauge
+    # 4 Gauge
     assert "quantpilot_factor_icir" in payload
     assert "quantpilot_backtest_queue_depth" in payload
     assert "quantpilot_data_latency_days" in payload
+    assert "quantpilot_factor_ic_daily_lag_days" in payload
 
     # 2 Histogram
     assert "quantpilot_pipeline_duration_seconds" in payload

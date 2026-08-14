@@ -1553,3 +1553,41 @@ class MarketDataRepository:
             select(Account).order_by(Account.id).limit(1)
         )
         return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # V1.5-C C0：日级 IC 产出闭环用（原为 scripts/backfill_daily_ic.py 内私有
+    # SQL，下沉为 repo 公共方法，供脚本与生产 Job 共用同一实现）
+    # ------------------------------------------------------------------
+
+    async def get_max_daily_quote_date(self) -> date | None:
+        """``daily_quote`` 中最大的 trade_date（判定前向窗口是否已有数据）。"""
+        result = await self._session.execute(select(func.max(DailyQuote.trade_date)))
+        return result.scalar()
+
+    async def get_excluded_codes_for_ic(
+        self,
+        ts_codes: list[str],
+        base_date: date,
+        end_date: date,
+    ) -> set[str]:
+        """base 或 end 日涨跌停 / 停牌的 ts_code（SDD §7.4：剔除异常收益样本）。
+
+        这些标的在窗口两端无法真实成交，其前向收益不代表可实现收益，纳入会污染 IC。
+        """
+        if not ts_codes:
+            return set()
+        stmt = (
+            select(DailyQuote.ts_code)
+            .where(
+                DailyQuote.ts_code.in_(ts_codes),
+                DailyQuote.trade_date.in_([base_date, end_date]),
+                or_(
+                    DailyQuote.limit_up.is_(True),
+                    DailyQuote.limit_down.is_(True),
+                    DailyQuote.is_suspended.is_(True),
+                ),
+            )
+            .distinct()
+        )
+        result = await self._session.execute(stmt)
+        return {r[0] for r in result.all()}

@@ -13,7 +13,7 @@
 
 脚本 `_run_one_trade_date` 内部新建 `AsyncSessionLocal`，与 db_session 事务回滚 fixture
 不兼容（参 INT-P14-2-01 同款说明）——本测试直接调脚本的纯函数 / 编排 helper
-（`_build_scoring_service` / `_extract_strategy_z` / `_excluded_codes`）+ engine 纯函数
+（`_build_scoring_service` / `_extract_strategy_z`）+ repo.get_excluded_codes_for_ic + engine 纯函数
 在 db_session 内复现 per-day 逻辑；脚本的 per-day 循环仅是 session 管理 wrapper。
 
 集成测试在独立 DB 跑（DATABASE_URL 指向 quantpilot-test-db @ port 5433）。
@@ -49,7 +49,6 @@ if str(_BACKEND_SCRIPTS) not in sys.path:
 from backfill_daily_ic import (  # noqa: E402
     _FORWARD_WINDOW,
     _build_scoring_service,
-    _excluded_codes,
     _extract_strategy_z,
 )
 
@@ -210,7 +209,8 @@ async def test_int_p14_9_01a_real_producer_writes_daily_rows_with_pit_state(
         t = calendar.get_next_trade_date(d, _FORWARD_WINDOW)
         ts_codes = [str(c.ts_code) for c in composites]
         adj = await repo.get_adj_prices_bulk(ts_codes, d, t)
-        excluded = await _excluded_codes(db_session, ts_codes, d, t)
+        # V1.5-C C0：原脚本内私有 _excluded_codes 已下沉为 repo 公共方法
+        excluded = await repo.get_excluded_codes_for_ic(ts_codes, d, t)
         fwd = compute_forward_returns(adj, d, t, excluded=excluded)
 
         points = compute_daily_ic(strategy_z, fwd, min_xs=_MIN_XS)

@@ -23,6 +23,7 @@ __all__ = [
     "build_panel",
     "compute_daily_ic",
     "compute_forward_returns",
+    "extract_strategy_z",
     "_DAILY_IC_MIN_XS",
 ]
 
@@ -137,6 +138,39 @@ def compute_daily_ic(
             continue
         out.append(DailyICPoint(strategy=strategy, ic_value=float(ic), sample_size=n))
     return out
+
+
+def extract_strategy_z(composites: list) -> dict[str, pd.Series]:
+    """从全 universe ``CompositeScore`` 列表抽每策略 ``z_raw`` Series。
+
+    数据源 ``CompositeScore.score_breakdown_raw[strategy]["z_raw"]``（Phase 11
+    Scorer Step 3 落产物；AttributionService / backfill_daily_ic 消费同字段）。
+
+    **策略无关**（V1.5-C C0）：策略名从 ``score_breakdown_raw`` 的键推导，不再
+    硬编码 4 策略元组——这是 C3/C4 新增策略（low_volatility / money_flow）无需
+    改本函数即可自动进入日级 IC → ICIR 监控的前提。
+
+    None / NaN 的 z_raw 跳过；某策略无任何有效值时该键整体缺席（不产出空 Series，
+    避免下游 ``compute_daily_ic`` 拿到空列算出无意义 IC）。
+
+    纯函数，无 IO。
+    """
+    data: dict[str, dict[str, float]] = {}
+    for c in composites:
+        raw = getattr(c, "score_breakdown_raw", None) or {}
+        if not isinstance(raw, dict):
+            continue
+        for strategy, entry in raw.items():
+            if not isinstance(entry, dict):
+                continue
+            z = entry.get("z_raw")
+            if z is None:
+                continue
+            z = float(z)
+            if math.isnan(z):
+                continue
+            data.setdefault(str(strategy), {})[str(c.ts_code)] = z
+    return {s: pd.Series(d) for s, d in data.items() if d}
 
 
 def compute_t_stat(mean: float, std: float, n: int) -> float | None:

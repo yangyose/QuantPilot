@@ -3,7 +3,7 @@
 设计原则：
 - 单例 CollectorRegistry，进程级唯一；多 worker 部署需用 multiprocess mode（V1.5+）
 - 业务 service 通过模块级常量 import metric handles，避免 service 持有 registry
-- 标签维度受控（V1.0 仅 7 个核心 Counter + 3 Gauge + 2 Histogram）
+- 标签维度受控（7 个核心 Counter + 4 Gauge + 2 Histogram；V1.5-C C0 增 1 Gauge）
 
 埋点接入点见设计 §3.1.2：
 - DailyPipeline / SignalService / TushareAdapter / DataService / NotificationService
@@ -59,7 +59,7 @@ NOTIFICATIONS_SENT = Counter(
     registry=REGISTRY,
 )
 
-# ────── 3 Gauge ─────────────────────────────────────────────────────────
+# ────── 4 Gauge ─────────────────────────────────────────────────────────
 FACTOR_ICIR = Gauge(
     "quantpilot_factor_icir",
     "因子 ICIR（月末批后更新）",
@@ -75,6 +75,15 @@ DATA_LATENCY = Gauge(
     "quantpilot_data_latency_days",
     "数据延迟（today - max(trade_date)）",
     ["data_type"],
+    registry=REGISTRY,
+)
+# V1.5-C C0：日级 IC 产出滞后（today - max(daily IC trade_date)）。
+# 正常稳态 ≈ 20~25（滞后消费 t-20 交易日 + 追平余量）；> 40 说明生产者停摆，
+# ICIR 滚动窗口正在流失样本 → 月末 rebalance 将回落 default_matrix。
+# 该指标的存在本身就是 2026-05~08 断档 3 个月无人知的直接教训（设计 §2.1）。
+FACTOR_IC_DAILY_LAG = Gauge(
+    "quantpilot_factor_ic_daily_lag_days",
+    "日级 IC 产出滞后天数（today - max(row_type='daily' trade_date)）",
     registry=REGISTRY,
 )
 
@@ -107,6 +116,7 @@ __all__ = [
     "FACTOR_ICIR",
     "BACKTEST_QUEUE_DEPTH",
     "DATA_LATENCY",
+    "FACTOR_IC_DAILY_LAG",
     "PIPELINE_DURATION",
     "API_REQUEST_DURATION",
 ]

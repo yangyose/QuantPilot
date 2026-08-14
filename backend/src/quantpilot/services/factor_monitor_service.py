@@ -31,8 +31,16 @@ from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import (
     FactorICRepository,
     ICAggregateRow,
+    ICDailyRow,
     MonthlyQualityRow,
     StrategyWeightsRow,
+)
+from quantpilot.data.repository import MarketDataRepository
+from quantpilot.engine.diagnostics.ic_aggregator import (
+    _DAILY_IC_MIN_XS,
+    compute_daily_ic,
+    compute_forward_returns,
+    extract_strategy_z,
 )
 from quantpilot.engine.factor_monitor import FactorMonitorEngine
 from quantpilot.engine.hysteresis import HysteresisStateMachine
@@ -81,6 +89,34 @@ def _default_order_for_state(state: str) -> list[str]:
     """冷启动正交化顺序：按 default_matrix 权重降序。"""
     weights = _default_weights_for_state(state)
     return sorted(weights, key=lambda s: weights[s], reverse=True)
+
+
+def plan_catchup_dates(
+    trade_dates: list[date],
+    existing: set[date],
+    last_eligible: date,
+    max_days: int,
+) -> list[date]:
+    """V1.5-C C0：日级 IC 追平计划（纯函数）。
+
+    Args:
+        trade_dates:   候选交易日（升序）
+        existing:      已有 daily IC 行的 trade_date 集合（跳过）
+        last_eligible: 可算的最晚因子值日（= ``t - 20 交易日``；更晚的日子前向
+                       收益尚未实现，算出来的 IC 无意义）
+        max_days:      单次运行处理上限（2GB 机限流；每日一次全 universe 评分）
+
+    Returns:
+        待处理日列表，**升序取最旧的 max_days 天**——ICIR 滚动窗口要求样本连续，
+        断档必须从最左端往右填；取最新几天会在窗口中间留永久空洞。
+    """
+    if max_days <= 0:
+        return []
+    pending = [
+        d for d in sorted(trade_dates)
+        if d <= last_eligible and d not in existing
+    ]
+    return pending[:max_days]
 
 
 @dataclass(frozen=True)
@@ -142,6 +178,107 @@ class FactorMonitorService:
         # calendar=None → 回退到旧路径（日历日近似），仅供旧测试兼容；生产路径
         # （main.py lifespan / MonthlyScheduler / DailyPipeline / deps.py）必须注入。
         self._calendar = calendar
+
+    # ------------------------------------------------------------------
+    # V1.5-C C0：日级 IC 产出（调度闭环的生产者）
+    # ------------------------------------------------------------------
+
+    async def produce_daily_ic(
+        self,
+        session: AsyncSession,
+        trade_date: date,
+        scoring_service,
+        min_xs: int = _DAILY_IC_MIN_XS,
+    ) -> int:
+        """对因子值日 ``trade_date`` 算全策略日级 IC 并写 ``row_type='daily'`` 行。
+
+        这是 Phase 14 §14-9 一次性回填脚本的**调度化对应物**：在 V1.5-C 之前，
+        日级 IC 只有脚本能产出，生产实证 2026-05-11 后即停更 → ICIR 窗口样本逐日
+        流失 → 月末 rebalance 回落 default_matrix（设计 §2.1）。
+
+        ``scoring_service`` 走**参数注入**而非构造注入：``ScoringService`` 已把
+        ``FactorMonitorService`` 作为构造依赖，反向构造注入会成环。
+
+        早退（均返回 0 且**不写占位行**——缺数据不等于 IC=0，见 C-4）：
+        - ``trade_date + 20 交易日`` 尚无行情 → 前向收益未实现（**在昂贵的全 universe
+          评分之前**判定，避免白算）
+        - 空 universe / 无有效 strategy_z / 无 IC point（横截面样本不足）
+
+        Returns:
+            写入的行数（每策略一行）。
+        """
+        market_repo = MarketDataRepository(session)
+
+        # --- 前置：前向窗口是否已实现（先判定再评分，省掉一次全市场计算）---
+        if self._calendar is None:
+            logger.warning(
+                "produce_daily_ic_no_calendar: trade_date=%s 未注入 TradingCalendar，跳过",
+                trade_date,
+            )
+            return 0
+        try:
+            end_date = self._calendar.get_next_trade_date(trade_date, _ICIR_LAG_DAYS)
+        except (ValueError, IndexError):
+            logger.info(
+                "daily_ic_forward_window_incomplete: trade_date=%s 日历无 t+%d 交易日",
+                trade_date, _ICIR_LAG_DAYS,
+            )
+            return 0
+        max_quote_date = await market_repo.get_max_daily_quote_date()
+        if max_quote_date is None or end_date is None or end_date > max_quote_date:
+            logger.info(
+                "daily_ic_forward_window_incomplete: trade_date=%s end=%s max_quote=%s",
+                trade_date, end_date, max_quote_date,
+            )
+            return 0
+
+        # --- 1. 全 universe 评分（5 步管线，不写 candidate_pool）---
+        composites = await scoring_service.score_universe_for_date(trade_date)
+        if not composites:
+            logger.info("daily_ic_empty_universe: trade_date=%s", trade_date)
+            return 0
+
+        strategy_z = extract_strategy_z(composites)
+        if not strategy_z:
+            logger.info("daily_ic_no_strategy_z: trade_date=%s", trade_date)
+            return 0
+
+        # --- 2. 前向收益（剔涨跌停 / 停牌）---
+        ts_codes = [str(c.ts_code) for c in composites]
+        adj_prices = await market_repo.get_adj_prices_bulk(ts_codes, trade_date, end_date)
+        excluded = await market_repo.get_excluded_codes_for_ic(
+            ts_codes, trade_date, end_date,
+        )
+        forward_returns = compute_forward_returns(
+            adj_prices, trade_date, end_date, excluded=excluded,
+        )
+
+        # --- 3. 逐策略 Spearman Rank IC ---
+        points = compute_daily_ic(strategy_z, forward_returns, min_xs=min_xs)
+        if not points:
+            logger.info(
+                "daily_ic_no_points: trade_date=%s（横截面样本不足 / 稀疏）", trade_date,
+            )
+            return 0
+
+        # --- 4. 落库（state 取因子值日当日市场状态）---
+        state_record = await market_repo.get_latest_market_state(
+            before_date=trade_date + timedelta(days=1)
+        )
+        state = state_record.market_state if state_record else MarketStateEnum.OSCILLATION
+        rows = [
+            ICDailyRow(
+                strategy=p.strategy, factor=p.strategy, state=str(state),
+                trade_date=trade_date, ic_value=p.ic_value, sample_size=p.sample_size,
+            )
+            for p in points
+        ]
+        await self._repo.upsert_ic_daily(session, rows)
+        logger.info(
+            "daily_ic_produced: trade_date=%s state=%s strategies=%d rows=%d",
+            trade_date, state, len(strategy_z), len(rows),
+        )
+        return len(rows)
 
     # ------------------------------------------------------------------ 月末计算
 

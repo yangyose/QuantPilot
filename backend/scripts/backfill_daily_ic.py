@@ -31,18 +31,7 @@ import logging
 import sys
 from datetime import date, datetime, timedelta
 
-import pandas as pd
-from sqlalchemy import func, or_, select
-
 from quantpilot.core.config import settings
-from quantpilot.core.config_defaults import (
-    DEFAULT_MEAN_REVERSION_STRATEGY,
-    DEFAULT_MOMENTUM_STRATEGY,
-    DEFAULT_STRATEGY_WEIGHTS,
-    DEFAULT_TREND_STRATEGY,
-    DEFAULT_UNIVERSE,
-    DEFAULT_VALUE_STRATEGY,
-)
 from quantpilot.core.database import AsyncSessionLocal
 from quantpilot.data.adapters.tushare import TushareAdapter
 from quantpilot.data.calendar import TradingCalendar
@@ -52,19 +41,9 @@ from quantpilot.engine.diagnostics.ic_aggregator import (
     _DAILY_IC_MIN_XS,
     compute_daily_ic,
     compute_forward_returns,
+    extract_strategy_z,
 )
-from quantpilot.engine.factor_monitor import FactorMonitorEngine
-from quantpilot.engine.factor_pipeline import FactorPipeline, FactorPipelineConfig
-from quantpilot.engine.pool import CandidatePoolManager
-from quantpilot.engine.scorer import Scorer
-from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
-from quantpilot.engine.strategies.momentum import MomentumStrategy
-from quantpilot.engine.strategies.trend import TrendStrategy
-from quantpilot.engine.strategies.value import ValueStrategy
-from quantpilot.engine.universe import UniverseFilter
-from quantpilot.models.market import DailyQuote
-from quantpilot.services.factor_monitor_service import FactorMonitorService
-from quantpilot.services.strategy_service import ScoringService
+from quantpilot.services.scoring_factory import build_default_scoring_service
 
 # 复用 candidate_pool 回填脚本的 graceful 中断（DRY）
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
@@ -73,7 +52,6 @@ from backfill_candidate_pool import _GracefulInterrupt  # noqa: E402, I001
 logger = logging.getLogger(__name__)
 
 _FORWARD_WINDOW = 20  # SDD §7.4：前向收益窗口 = 20 交易日（lag）
-_STRATEGY_NAMES = ("trend", "momentum", "mean_reversion", "value")
 _PROGRESS_INTERVAL = 50
 
 
@@ -106,22 +84,9 @@ def _plan_daily_ic(
     return to_process, to_skip
 
 
-def _extract_strategy_z(composites: list) -> dict[str, pd.Series]:
-    """从全 universe CompositeScore 列表抽每策略 z_raw Series（UT-P14-9-03b）。
-
-    `CompositeScore.score_breakdown_raw[strategy]["z_raw"]`（Phase 11 Scorer Step 3
-    落产物；AttributionService 已消费同字段）。空策略列省略。
-    """
-    data: dict[str, dict[str, float]] = {s: {} for s in _STRATEGY_NAMES}
-    for c in composites:
-        raw = getattr(c, "score_breakdown_raw", None) or {}
-        for s in _STRATEGY_NAMES:
-            entry = raw.get(s)
-            if entry is not None and entry.get("z_raw") is not None:
-                z = entry["z_raw"]
-                if not (isinstance(z, float) and pd.isna(z)):
-                    data[s][str(c.ts_code)] = float(z)
-    return {s: pd.Series(d) for s, d in data.items() if d}
+# V1.5-C C0：下沉至 engine 层后本脚本改为再导出别名——脚本与生产调度 Job 必须
+# 共用同一实现，否则策略集合变动（C3/C4）时两处会静默漂移。
+_extract_strategy_z = extract_strategy_z
 
 
 def _forward_complete_dates(
@@ -141,50 +106,9 @@ def _forward_complete_dates(
 
 # ---------------------------------------------------------------- 编排（INT 覆盖）
 
-def _build_scoring_service(session, calendar: TradingCalendar) -> ScoringService:
-    """组装 ScoringService（注入 FactorMonitorService 走 5 步管线，default config）。"""
-    repo = MarketDataRepository(session)
-    factor_monitor = FactorMonitorService(
-        session, FactorMonitorEngine(), FactorICRepository(), calendar=calendar,
-    )
-    fp_cfg = FactorPipelineConfig(
-        winsorize_lower_pct=0.01, winsorize_upper_pct=0.99,
-        neutralize_industry=True, neutralize_market_cap=True, neutralize_beta=False,
-    )
-    return ScoringService(
-        repo=repo,
-        universe_filter=UniverseFilter(DEFAULT_UNIVERSE),
-        strategies=[
-            TrendStrategy(DEFAULT_TREND_STRATEGY),
-            MomentumStrategy(DEFAULT_MOMENTUM_STRATEGY),
-            MeanReversionStrategy(DEFAULT_MEAN_REVERSION_STRATEGY),
-            ValueStrategy(DEFAULT_VALUE_STRATEGY),
-        ],
-        scorer=Scorer(DEFAULT_STRATEGY_WEIGHTS, pipeline=FactorPipeline(fp_cfg)),
-        pool_manager=CandidatePoolManager(DEFAULT_UNIVERSE),
-        calendar=calendar,
-        factor_monitor=factor_monitor,
-    )
-
-
-async def _excluded_codes(session, ts_codes: list[str], td: date, t: date) -> set[str]:
-    """base(d) 或 end(t) 日涨跌停 / 停牌的 ts_code（SDD §7.4 line 473 剔异常收益）。"""
-    if not ts_codes:
-        return set()
-    stmt = (
-        select(DailyQuote.ts_code)
-        .where(
-            DailyQuote.ts_code.in_(ts_codes),
-            DailyQuote.trade_date.in_([td, t]),
-            or_(
-                DailyQuote.limit_up.is_(True),
-                DailyQuote.limit_down.is_(True),
-                DailyQuote.is_suspended.is_(True),
-            ),
-        )
-        .distinct()
-    )
-    return {r[0] for r in (await session.execute(stmt)).all()}
+# V1.5-C C0：ScoringService 组装同样下沉（services/scoring_factory.py），本脚本
+# 再导出别名保持原调用点不变。
+_build_scoring_service = build_default_scoring_service
 
 
 async def _run_one_trade_date(
@@ -211,7 +135,7 @@ async def _run_one_trade_date(
             t = calendar.get_next_trade_date(td, _FORWARD_WINDOW)
             ts_codes = [str(c.ts_code) for c in composites]
             adj = await repo.get_adj_prices_bulk(ts_codes, td, t)
-            excluded = await _excluded_codes(session, ts_codes, td, t)
+            excluded = await repo.get_excluded_codes_for_ic(ts_codes, td, t)
             fwd = compute_forward_returns(adj, td, t, excluded=excluded)
 
             points = compute_daily_ic(strategy_z, fwd, min_xs=min_xs)
@@ -240,7 +164,8 @@ async def _run_one_trade_date(
 
 
 async def _max_daily_quote_date(session) -> date | None:
-    return (await session.execute(select(func.max(DailyQuote.trade_date)))).scalar()
+    # V1.5-C C0：下沉为 repo 公共方法（生产 Job 同用），此处保留薄封装供本脚本调用点。
+    return await MarketDataRepository(session).get_max_daily_quote_date()
 
 
 async def _main() -> int:
