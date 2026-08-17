@@ -29,7 +29,11 @@ STOP_LOSS_WARN_THRESHOLD = 0.02
 
 # V1.5-C C0：日级 IC 生产者 Job 参数
 _DAILY_IC_LAG_DAYS = 20          # SDD §7.4 前向收益窗口（交易日）；= 可算的最晚因子值日回溯量
-_DAILY_IC_CATCHUP_MAX_DAYS = 3   # 单次运行处理上限（2GB 机：每日一次全 universe 评分）
+# 单次运行处理上限。2026-08-17 实证：一次全 universe 评分在生产 2GB 机上 RSS 达
+# 1.58 GB，独立进程跑单日即触发 OOM killer（站点 530 共 43 分钟）。17:30 每日管线
+# 长期稳定跑的正是"每次运行一次评分"，故上限取 1——单次运行绝不连做多次评分。
+# 长断档不靠本 Job 追平（那需要 N 天），走本地算力中心批量回填后导入，见 CLAUDE.md §6 运维红线。
+_DAILY_IC_CATCHUP_MAX_DAYS = 1
 _DAILY_IC_LOOKBACK_DAYS = 400    # 追平回看窗口（日历日），覆盖长期断档
 
 
@@ -237,7 +241,9 @@ async def _daily_ic_producer_job(
 
     每次运行：查已有 daily IC 日 → `plan_catchup_dates` 取最旧的至多
     ``_DAILY_IC_CATCHUP_MAX_DAYS`` 天（≤ ``t-20`` 交易日）→ 逐日
-    ``FactorMonitorService.produce_daily_ic``。断档由此逐日自动追平。
+    ``FactorMonitorService.produce_daily_ic``。稳态下每次恰好补上新满足 t-20 的那
+    一天；小断档逐日自愈。**大断档不靠本 Job 追平**（1 天/次 → N 天才追平，期间
+    ICIR 窗口持续流失样本），走本地算力中心批量回填后导入生产。
 
     每日一个独立 session 显式 commit（调度 Job 不走 `get_db` 自动 commit）；
     单日失败 `logger.exception` 后继续下一日——一天算不出来不该让整条追平停摆。

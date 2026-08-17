@@ -1,7 +1,7 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.3（§2-§9 详细设计展开，2026-08-14）
-> 状态：**详细设计完成**；scope 锁定 C0-C5 六子批、零推迟；待用户确认 C0 纳入与实施序后进入 RED
+> 版本：v0.4（C0 实施期修订，2026-08-17）
+> 状态：**C0 代码交付完成**（20 UT + 5 INT + alembic 0024）；断档追平在本地算力中心执行中；C1-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
 > 估算：roadmap §6 登记 **9-13 pd** → 启动核查重估 **~12.5-20 pd** → 本次详细设计展开后 **~14.5-22 pd**（分项见 §1.2；增量来自 C0 前置闭环 + C1 策略约束落点统一，二者均为设计展开期实证发现的既有缺口，非范围扩张）
 > 实施顺序（沿用 V1.5-A「先轻后重」先例）：**C0 → C1 → C2 → C3 → C4 → C5**
 > 依据文档：
@@ -19,7 +19,8 @@
 |------|------|---------|
 | v0.1 | 2026-08-10 | 初版（启动核查）。执行 CLAUDE.md §5.1：确认 V1.5 主题不占 system_design §9（沿用 V1.5-A/G 先例）；辨明「V1.5-C 因子监控自动降权」为 v2.0 重构前旧标签、已被 Phase 11 §4.1/§4.4 ICIR 自动加权消费，与本主题（策略扩展）无关；grep 推迟项三处确认；**用户拍板两项范围决策（2026-08-10）**：① 资金动向策略的 moneyflow/北向数据层在本主题内一并建（非拆分推迟）；② 策略插件沙箱完整纳入本主题（非拆分/推迟）→ 全 5 模块纳入、零推迟。§2-§6 详细设计待展开 |
 | v0.2 | 2026-08-10 | **设计评审收口**（启动核查门评审通过 ✓，0 阻断 / 1 P2 / 4 P3）。P2：估算上修（~50%）的 roadmap §6 权威登记从「收尾回写」提前到启动放行时——已在 roadmap §6 V1.5-C 行加前向说明（→ ~12.5-20 pd）。P3 全部就地纠正：① §1.2 分项和下界据实 13→**12.5**；② C3 5y strategy_weights 历史回填补挂 **C-1 门控**（与 C2/C4 一致）；③ Piotroski 项数明确以经典 **9 项**为准 + 回修 roadmap §3「8 项」笔误；④ §3 financial_data 字段枚举据 market.py 补 revenue_yoy / pe_ttm 实名 + 金融股数据不全降级纳入 Altman Z-Score 备选 |
-| v0.3 | 2026-08-14 | **§2-§9 详细设计展开**（本次）。展开期对生产 + 代码做了 5 项实证核查，三项直接改变设计：① **日级 IC 产出无调度闭环**（生产 `factor_ic_window_state` daily 行止于 2026-05-11，距今 3 个月且持续拉大；UPTREND 聚合 sample_size 已贴 60 下限）→ 新增 **C0 前置子批**；② **Phase 4 时代写在 `score()` 里的策略硬约束在 Phase 11 五步管线全部失效**（动量追高剔除 / 动量数据不足 guard / **价值陷阱截断**——后者所在的 value 策略当前占生产 composite 权重 0.63~0.82）→ 并入 C1 作「策略约束落点统一」，并成为 C2 门控的落点前提；③ **零权重策略仍参与 Gram-Schmidt 正交化**，其 NaN 行经 `valid_mask` 交集收紧把整行 composite_z 打到 0 → §8 定为新策略入 composite 的头号陷阱 + 影子模式设计。另据实证：生产 momentum ICIR = −0.66/−0.73（权重已被压至 0.000）→ 成为 C1 可证伪验收锚点；生产磁盘 83% 已用（可用 8.2G）→ C4 回填窗口据实收敛为 2 年 + 列裁剪。scope 由 5 子批增至 6 子批，估算 ~12.5-20 → **~14.5-22 pd** |
+| v0.3 | 2026-08-14 | **§2-§9 详细设计展开**。展开期对生产 + 代码做了 5 项实证核查，三项直接改变设计：① **日级 IC 产出无调度闭环**（生产 `factor_ic_window_state` daily 行止于 2026-05-11，距今 3 个月且持续拉大；UPTREND 聚合 sample_size 已贴 60 下限）→ 新增 **C0 前置子批**；② **Phase 4 时代写在 `score()` 里的策略硬约束在 Phase 11 五步管线全部失效**（动量追高剔除 / 动量数据不足 guard / **价值陷阱截断**——后者所在的 value 策略当前占生产 composite 权重 0.63~0.82）→ 并入 C1 作「策略约束落点统一」，并成为 C2 门控的落点前提；③ **零权重策略仍参与 Gram-Schmidt 正交化**，其 NaN 行经 `valid_mask` 交集收紧把整行 composite_z 打到 0 → §8 定为新策略入 composite 的头号陷阱 + 影子模式设计。另据实证：生产 momentum ICIR = −0.66/−0.73（权重已被压至 0.000）→ 成为 C1 可证伪验收锚点；生产磁盘 83% 已用（可用 8.2G）→ C4 回填窗口据实收敛为 2 年 + 列裁剪。scope 由 5 子批增至 6 子批，估算 ~12.5-20 → **~14.5-22 pd** |
+| v0.4 | 2026-08-17 | **C0 实施期修订（本次）**，全部由生产实证驱动：① **C0-3 追平路径改写**——在生产容器跑回填脚本仅一个交易日即被 OOM killer 杀掉（RSS 1.58 GB），站点 530 共 43 分钟；单日耗时实测约 20 分钟（48 天 ≈ 16 小时）→ 改走本地算力中心（5434 全量副本）批量回填后导入生产，并写入**「先导入、后部署」硬顺序约束**（先部署会让 Job 在 19:30 对 48 天积压逐日全 universe 评分，即打挂生产的同一条路径）；② **`_CATCHUP_MAX_DAYS` 3 → 1**——单次运行绝不连做多次全 universe 评分，大断档不由 Job 承担；③ 新增 **C0-5 评分路径财务查询优化（alembic 0024）**——追平标定挖出 universe 过滤单次 9 分钟，卡在 `financial_data` 658 万行的两条查询（其中 `DISTINCT ON` 段 external merge 落盘 261 MB），该表日频行不可删故修在索引侧，两个覆盖索引经本地全量副本 A/B 实测分别 31.3s→2.3s、69.7s→25.9s 且排序节点全消。断档区间据前向窗口据实收敛为 **48 个交易日**（2026-05-12 → 2026-07-17，非原估 60）|
 
 ---
 
@@ -106,13 +107,28 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 - 触发：`CronTrigger(hour=19, minute=30, timezone="Asia/Shanghai")`（避开 17:30 日线管线的 CPU/内存高峰；2GB 机不并发跑两个全 universe 评分）。
 - 语义：**滞后消费**——每次运行处理 `t-20 个交易日`那一天（其前向收益在今日已实现），而非当日。这与 SDD §7.4 的 lag 20 约束天然一致。
 - 幂等：先查 `get_existing_daily_ic_dates` 跳过已有日；`upsert_ic_daily` 本身幂等。
-- 追平：纯函数 `plan_catchup_dates(trade_dates, existing, last_eligible, max_days) -> list[date]`（置于 `services/factor_monitor_service.py` 模块级，便于单测）——只取 ≤ `last_eligible`（= `t-20` 交易日）、跳过 `existing`、按**升序取最旧的 `max_days` 天**（`_CATCHUP_MAX_DAYS = 3`，2GB 机限流）。升序补最旧是刻意的：ICIR 窗口要连续，必须从断档最左端往右填。
+- 追平：纯函数 `plan_catchup_dates(trade_dates, existing, last_eligible, max_days) -> list[date]`（置于 `services/factor_monitor_service.py` 模块级，便于单测）——只取 ≤ `last_eligible`（= `t-20` 交易日）、跳过 `existing`、按**升序取最旧的 `max_days` 天**（`_CATCHUP_MAX_DAYS = 1`）。升序补最旧是刻意的：ICIR 窗口要连续，必须从断档最左端往右填。上限取 1 而非更大值是 2026-08-17 实证的结果：一次全 universe 评分在生产 2GB 机上 RSS 达 1.58 GB，单次运行绝不可连做多次；17:30 每日管线长期稳定跑的正是"每次运行一次评分"。稳态下每次恰好补上新满足 `t-20` 的那一天；**大断档不由本 Job 承担**（见 C0-3）。
 - 单日异常隔离：某日失败 `logger.exception` 后继续下一日，不整批中止。
 - 自建 session 显式 commit（CLAUDE.md：调度 Job 不走 `get_db` 自动 commit）。
 
-**C0-3 断档追平（生产一次性）**。当前断档 2026-05-12 至今 ≈ 60 个交易日。两条路径：
-- 优先：C0-2 的自动追平（3 天/日 × 60 天 ≈ 20 个自然日跑完，零人工）——但期间 UPTREND 可能已掉出 ICIR。
-- 或：**C-1 门控**下用 `scripts/backfill_daily_ic.py` 对生产做一次区间回填（`2026-05-12 → t-20`）快速追平，之后交给 Job 维持。⚠️ 该脚本会跑全 universe 评分，单日耗时在 2GB 机约数十秒至数分钟，须在夜间非管线时段执行并全程观测内存。
+**C0-3 断档追平（一次性）**。断档区间 **2026-05-12 → 2026-07-17 共 48 个交易日**（终点由前向窗口决定：`get_next_trade_date(d, 20) ≤ max(daily_quote.trade_date)`）。
+
+**执行路径：本地算力中心，禁止在生产跑。** 2026-08-17 在生产容器内跑本脚本**仅一个交易日**即被 OOM killer 杀掉（RSS 1.58 GB / 可用 1.0-1.4 GB），站点 530 共 43 分钟；同时实测单日耗时约 20 分钟（48 天 ≈ 16 小时，无论如何压不进不撞 17:30 管线的窗口）。故改走既有回测通路：
+
+1. `bash scripts/sync_local_backtest_db.sh --force` 把最新远端备份恢复进本地算力库（5434）；
+2. 以 `quantpilot-backend` 镜像 + bind-mount 本地 `src`/`scripts` 起一次性容器，`DATABASE_URL` 指向 5434，跑 `backfill_daily_ic.py --start 2026-05-12 --end <max daily_quote>`（末尾无前向窗口的日自动排除）；
+3. 导出该区间 daily 行 → 导入生产（`INSERT ... ON CONFLICT (strategy, factor, state, trade_date) DO UPDATE`，与 `upsert_ic_daily` 同语义；**不带 `id`**，该列自增）。导入前对 `factor_ic_window_state` 做 `pg_dump --data-only -t` 精确回滚点。
+
+**顺序约束（硬）**：必须**先导入、后部署 C0 代码**。若先部署，`daily_ic_producer` 会在 19:30 发现 48 天积压并开始逐日全 universe 评分——正是打挂生产的那条路径。导入后 Job 上线即无积压，稳态每次仅 1 天。
+
+**C0-5 评分路径财务查询优化（本子批实测挖出，alembic 0024）**。追平标定时发现 `score_universe_for_date` 的 universe 过滤单次耗时 9 分钟，卡在 `financial_data`（658 万行）的两条查询。该表日频行**不可删**（`publish_date` = 采集交易日是设计如此，PIT 过滤与 ValueStrategy 历史分位依赖之），故修在索引侧。本地全量副本 A/B 实测：
+
+| 查询 | 无索引 | 加覆盖索引 |
+|---|---|---|
+| `get_latest_n_financials`（两级去重第一级窗口） | 31,340 ms / 626 万 buffer | **2,323 ms / 41 万 buffer，排序消失** |
+| `get_latest_financial` 日频段（`DISTINCT ON`） | 69,673 ms / 625 万 buffer，**external merge 落盘 261 MB** | **25,878 ms / 38 万 buffer，排序消失** |
+
+两个索引均为纯新增（`CONCURRENTLY`，不阻塞 17:30 管线写入），合计约 835 MB。生产为磁盘瓶颈，磁盘读从 288 万次降至 4.6 万次，收益预期高于本地倍数。剩余耗时为 `DISTINCT ON` 仍需扫全部匹配索引项（PG 15 无 skip scan），彻底消除需改写为 loose index scan —— 【设计待定：是否值得为此改写 `get_latest_financial`，待索引上生产后按实测耗时决定】。
 
 **C0-4 可观测**。新增结构化日志 `daily_ic_produced: trade_date=%s strategies=%d rows=%d`（同 A5b `forecast_roe_override_applied` 先例——**激活必须可实证**）+ Prometheus Gauge `factor_ic_daily_lag_days`（= `t - max(daily trade_date)`，> 40 告警）。
 
@@ -124,7 +140,10 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 - [x] 调度 Job 单测：注册存在、trigger 参数正确、`args` 显式传入依赖（APScheduler Job 无法访问 `app.state`）（UT-C0-04/05）
 - [x] 集成测试：合成面板 → `produce_daily_ic` 真跑 → `factor_ic_window_state` daily 行按预期落库（精确 `== N` 断言）+ PIT state + 幂等 + 前向窗口未实现零写入 + 追平计划与 DB 真实串联（INT-C0-01~04b，5 例）
 - [x] 早退路径测试钉死**原因**（caplog 断言 `daily_ic_forward_window_incomplete`），避免在"空 universe"等其它 0 值路径上假通过
-- [ ] 生产断档追平完成（C-1 授权），`max(daily trade_date)` 追至 `t-20` 附近；`factor_ic_daily_lag_days` < 30
+- [x] 评分路径财务查询覆盖索引（alembic 0024，两个）：本地全量副本 A/B 实测有效，迁移 upgrade/downgrade 往返验证，ORM `__table_args__` 与迁移一致（C0-5）
+- [ ] 断档 48 个交易日在本地算力中心回填完成（C0-3 步骤 1-2）
+- [ ] 结果导入生产（`pg_dump --data-only` 回滚点前置），`max(daily trade_date)` = 2026-07-17；`factor_ic_daily_lag_days` < 30
+- [ ] C0 代码 + alembic 0024 部署生产（**必须在导入之后**，见 C0-3 顺序约束）
 - [ ] 生产实证日志 `daily_ic_produced` 连续 3 个交易日出现且 rows > 0
 
 ---

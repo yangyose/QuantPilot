@@ -89,6 +89,28 @@ class FinancialData(Base):
             name="uq_financial_code_period_publish",
         ),
         Index("idx_financial_code_publish", "ts_code", "publish_date"),
+        # alembic 0024：get_latest_n_financials 的覆盖索引。列序 = 该方法窗口
+        # PARTITION BY (ts_code, report_period) ORDER BY publish_date DESC 所需顺序
+        # → 消排序；INCLUDE 其读取的 5 个业务列 → Index Only Scan（Heap Fetches=0）。
+        # 本地全量副本 A/B 实测 31.3s → 2.3s、磁盘读 147 万次 → 0。
+        Index(
+            "idx_financial_code_period_publish_covering",
+            "ts_code", "report_period", "publish_date",
+            postgresql_ops={"publish_date": "DESC"},
+            postgresql_include=[
+                "roe", "net_profit_yoy", "revenue_yoy", "debt_to_asset", "total_equity",
+            ],
+        ),
+        # alembic 0024：get_latest_financial 日频段（DISTINCT ON (ts_code) ORDER BY
+        # publish_date DESC）的覆盖索引。上面的 idx_financial_code_publish 是升序，
+        # 方向相反 → 原计划须外部排序落盘 261MB（2GB 机的主要代价来源）。
+        # 本地全量副本 A/B 实测 69.7s → 25.9s、磁盘读 144 万次 → 4.6 万、排序消失。
+        Index(
+            "idx_financial_code_publish_desc_covering",
+            "ts_code", "publish_date",
+            postgresql_ops={"publish_date": "DESC"},
+            postgresql_include=["pe_ttm", "pb", "dividend_yield"],
+        ),
     )
 
 
