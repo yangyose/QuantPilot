@@ -42,9 +42,12 @@ uv run pytest tests/integration/ -q              # 需 DB:5433 + alembic upgrade
 ### 8. 文档头版本一致
 phase 设计文档头部 `版本：` 与文末修订历史最新版本号一致。评审报告 §8 修订追踪表对应行已勾选/更新状态。
 
-### 9. 经验沉淀
-- 新经验判断归属：项目专属 → 本仓 `CLAUDE.md §4`；跨项目通用（Python/async/DB/pytest）→ `~/.claude/CLAUDE.md`。
-- 值得跨会话记的写入 memory（`memory/` + `MEMORY.md` 加一行指针）。
+### 9. 经验沉淀（C-6）
+- 技术陷阱 / 工具坑 / 工程规范 → 本仓 `CLAUDE.md §4` 对应小节（§4.9 asyncio、§4.10 pandas、
+  §4.11 测试工程、§4.12 工具链、§4.13 调试范式）。判据：下次同样的错误会被哪一处拦住？
+- 一次性操作 runbook、事故档案、用户偏好 → memory（`memory/` + `MEMORY.md` 加一行指针）。
+- **禁止写入 `~/.claude/CLAUDE.md`**：那是不含技术细节的个人全局规则，且未经用户明确要求
+  不得修改。确有跨项目价值的，向用户**提议**，由用户决定是否加。
 - 更新 `CLAUDE.md §6 当前进度` + `system_design §9` 本 phase 状态。
 
 ## 提交

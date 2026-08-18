@@ -3,8 +3,11 @@
 > 量化领航：个人量化交易决策辅助系统
 > 单仓 monorepo，后端在 `backend/`。
 
-通用工程经验（Python / async / DB / pytest 等跨项目复用）见 `~/.claude/CLAUDE.md`。
-本文件只放**项目宪法 + QuantPilot 专属规则**。
+`~/.claude/CLAUDE.md`（个人全局）只放**跨项目通用的工作原则**——权限边界、最小改动、
+验证与汇报、破坏性操作的通则。它刻意不含任何技术栈细节。
+
+因此**所有具体技术陷阱都在本文件**：§4 = 项目工程规范 + 踩过的坑（每条都有实证来源），
+§5 = Phase 流程，§6 = 当前进度与运维红线。全局与本文件冲突时，以本文件 §0 宪法为准。
 
 ---
 
@@ -14,12 +17,12 @@
 
 **元目标**：所有决策最终为「**帮助用户获取最大利益**」服务。任何与此目标冲突的便利、习惯、效率取舍都让位于它。
 
-衍生五条不可妥协的原则——它们是元目标在工程实践中的展开：
+衍生六条不可妥协的原则——它们是元目标在工程实践中的展开：
 
 ### C-1：保护用户资产
 生产数据、用户配置、未提交的工作都是用户资产。
 
-- 生产 DB 端口 5432（容器内部，无 host 映射）；测试 DB 端口 5433。**永远不要混。**
+- 三个 DB 端口**永远不要混**：生产 5432（容器内部，无 host 映射）/ 测试 5433（pytest 会 DROP 全表）/ 本地算力中心 5434（`docker-compose.backtest-local.yml`，全量副本，跑重计算作业）
 - **严禁**对含真实数据的 DB 跑 `pytest tests/integration/`（conftest 会 alembic downgrade base 把所有表 DROP）
 - 生产栈操作必须显式 `docker compose -f docker-compose.prod.yml --env-file .env.prod ...`（默认 `docker-compose.yml` 是 dev 配置，挂错卷会让 psql 看到空库）
 - 破坏性动作（`alembic downgrade` / `DROP` / `rm -rf` / `git reset --hard` / `force push` / 删含 pg_data 卷的容器）执行前**必须**取得用户单独确认。"上次批准过"≠"永久授权"。
@@ -50,6 +53,17 @@
 - 推迟的模块在新 phase 设计文档引言处显式注明「模块 X 推迟至 Phase N，原因：……」
 - 设计文档正文的编号规约（禁止外部追踪编号）见 §5.5。
 
+### C-6：每个错误都要沉淀到「会再被读到的地方」
+只在脑子里记 = 必然复发。换会话、换机器、换人之后，同一个坑必须被**同一处**拦住。
+
+任何踩到的错误（自己写的 bug、误判、工具/命令陷阱、环境坑）都不止于"这次改对"：
+
+1. **修在源头**——代码 / 脚本 / skill / hook 命令本身，让错误不可能再犯，而不是靠下次记得
+2. **留一句"为什么"**——在对应的代码注释 / 设计文档 / 本文件 §4 / memory 里写清楚成因
+3. **判据**：下次同样的错误，会被上面哪一处拦住？答不上来 = 没沉淀完
+
+沉淀本身若引入新错误（修 A 命令时埋了 B 缺陷），同样适用本条——连环吸取，直到该处稳态。
+
 ---
 
 ## 1. 关键文档
@@ -61,7 +75,7 @@
 | Phase N 设计 | `docs/design/phases/phaseN_*.md` | 当前 phase 详细设计（开始任务前必读） |
 | 开发指南 | `docs/guides/dev_setup.md` | 环境配置 + 命令 |
 | 部署指南 | `docs/guides/deployment.md` | HTTPS / 备份 / 故障树 |
-| 通用工程经验 | `~/.claude/CLAUDE.md` | 跨项目复用的 Python/async/DB/pytest 教训 |
+| 个人全局规则 | `~/.claude/CLAUDE.md` | 跨项目通用**工作原则**（权限 / 最小改动 / 验证 / 汇报）；不含技术细节，勿往里加项目知识 |
 
 ---
 
@@ -99,7 +113,9 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d  # 生产�
 
 ---
 
-## 4. 项目特定规范
+## 4. 工程规范与技术陷阱
+
+> 本章每一条都来自真实事故或代码审查，不是"最佳实践"清单。改动相关代码前先扫对应小节。
 
 ### 4.1 ORM / 数据库
 
@@ -108,6 +124,9 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d  # 生产�
 - 混合 session 模式：Service 内部用 per-iteration session 同时其他工作单元走 `self._repo` 时，调用方需在 outer 块退出前显式 `await session.commit()`
 - 市场数据走 `MarketDataRepository`；Route 层禁止绕过 Service 直接操作 ORM
 - upsert：`insert(...).on_conflict_do_update()`；`updated_at` 显式写 `func.now()`
+- **bulk upsert 必须分批**：asyncpg 二进制协议 16-bit 占位符总数上限 **32767**，`n_rows × n_cols` 超限直接崩。`_BATCH_SIZE=500` 循环 `pg_insert.values(batch)` 是稳妥下限。合成数据测试绕得过去（< 3000 行不触发），需 ≥ 3000 行场景才抓得到
+- **upsert 前 `df.where(pd.notna(df), None)`** 把 NaN/NaT 转 None：pandas NaN 经 `to_dict("records")` 是 `float('nan')`，asyncpg 原样写进 PostgreSQL NUMERIC 是特殊值 `'NaN'`（**≠ NULL**）→ 下游 `IS NOT NULL` 误判、数值过滤失效
+- **`on_conflict_do_update().returning()` 拿到旧对象**：SQLAlchemy 身份映射缓存，`flush()` 后需 `await session.refresh(obj)` 强制刷新
 
 ### 4.2 API 响应格式
 
@@ -143,6 +162,7 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d  # 生产�
 ### 4.5 FastAPI 项目特有
 
 - **BackgroundTasks + UNIQUE 约束并存**：必须先 `await session.commit()` 再 `add_task()`（否则 `get_db()` 的隐式 commit 推迟到所有 BG task 跑完 → BG 写同一 UNIQUE 行被外层未 commit 行阻塞 → 循环死锁，`POST /pipeline/trigger` 真机抓到 90s 504）
+- **日期查询参数直接声明 `date | None`**：FastAPI 自动解析 + 格式错误返回 422；用 `str` + 手动 `fromisoformat` 会绕过校验，非法输入变 500
 
 ### 4.6 安全
 
@@ -177,6 +197,66 @@ DEBUG=false
 - 降序索引 `sa.text("col DESC")`；ORM `__table_args__` 与迁移文件保持一致
 - **必须在 `backend/` 目录**执行 alembic（`alembic.ini` 在此）
 
+### 4.9 asyncio
+
+- **线程回调中的 event loop**：async 上下文创建线程回调时，用 `asyncio.get_running_loop()` **预捕获** loop 再传进去；**禁止**在子线程内 `asyncio.get_event_loop()`（Python 3.12 起 DeprecationWarning，且行为不可靠）
+- Tushare 等同步 SDK 一律走 `asyncio.to_thread` + Semaphore 包装（见 §4.3）
+
+### 4.10 pandas / 数值
+
+- **MultiIndex `in` 判断 O(n) → O(1)**：循环**外**预计算 `available = set(df.index.get_level_values("ts_code"))`，循环内 `if x not in available`。循环内直接写 `ts_code in index.get_level_values("ts_code")` 是 O(n)，几千只股票 × 几千日 = 几百万次全扫
+- **`rank(pct=True)` 边界**：n 个相同值 → rank = `(n+1)/(2n)`，**不是 0.5**。测试断言「全相等」用 `len(set(scores)) == 1`，别断言具体值
+- **策略内加权用 `skipna=False`**：`.sum(axis=1, skipna=False)` 才能让「任一因子为 NaN」的样本被排除；默认 `skipna=True` 会把 NaN 当 0 处理，静默污染结果
+- PostgreSQL `NUMERIC` 传 pandas_ta 前 `.astype(float)`（见 §4.4）
+
+### 4.11 测试工程（pytest-asyncio 陷阱 + TDD 细则）
+
+**跨 event loop 类（本项目已 regression 两次，最贵的一类）**
+
+- **`asyncio_mode = "auto"` 下禁止 `@pytest.mark.anyio`** 装饰任何 test/fixture：marker 被 anyio runner 接管（loop B），fixture 仍归 pytest-asyncio（loop A）→ asyncpg waiter future 在 A 创建、test body 在 B 唤醒 → `RuntimeError: Future attached to a different loop`。**CI Linux 必现，Windows 偶发不报**。新写 async 测试一律 plain `async def test_xxx()`，不加任何 marker
+- **集成测试 async engine fixture**：必须 `poolclass=NullPool`（防跨 loop 复用连接）+ **function scope**（禁 `scope="session"`）。schema 建表用单独的**同步** fixture（`scope="session"`）跑 alembic
+- **禁止让全局 app engine（QueuePool）跨 loop**：测试若直接 `from quantpilot...import AsyncSessionLocal`（或调用内部自建该 session 的生产脚本）做真 commit，全局 engine 的 QueuePool + `pool_pre_ping=True` 会把**上一个测试 loop** 的连接留在池里；本测试复用时 pre_ping/close 打到已关闭的旧 loop → asyncpg `'NoneType' object has no attribute 'send'` / `RuntimeError: Event loop is closed`，且**炸在首个 DB 操作处**（极易误读成该处业务 bug）。根治：集成目录 `conftest.py` autouse fixture 每测试前 `await app_engine.dispose(close=False)`（只换池、不在当前 loop 关旧连接，残连交 GC）
+
+**测试隔离类**
+
+- **测试路由动态注册**：在 `client` fixture 内以 `include_in_schema=False` 注册，yield 后移除，避免污染全局路由表
+- **触发「自建 session 真 commit」副作用路径时，`finally` 必须清副作用表**：被测代码若在失败/通知分支用 `session_factory()` 自建 session 真 commit（失败告警写站内信、审计流水等），只清主表（`PipelineRun` 等）会把副作用行泄漏给共享 DB 中**按字母序后跑**的测试。本地只跑"受影响子集"抓不到——受影响的是读同一副作用表的**别的测试文件**，推送前须跑全量集成
+- **同一测试 DB 严禁并发两个集成 pytest 会话**：conftest 的 session 级 alembic（建表 / downgrade base）会互相拆台，典型症状是**单个**测试随机 `UndefinedTableError` 而前后测试全过（表被另一会话瞬时 DROP）
+
+**结果判定（2026-08-18 再次踩到）**
+
+- 后台 `uv run pytest` 的"完成"通知**不可信**：可能提前发出（输出文件为空、pytest 沦为孤儿继续跑），也可能 shell 退出码为 0 而 pytest 根本没跑（cwd 不对 → `no tests ran`，exit 5/4）
+- **只认两样东西**：落盘 log 里的 pytest summary 行 + 自写的 `pytest_exit=$?` 哨兵行。**不认** shell 管道退出码（`cmd | tail` 的退出码是 `tail` 的）
+- 通知与输出不符时，先 `tasklist` / `ps` 确认 pytest 进程真退出，再起下一轮
+
+**TDD 细则**
+
+- **集成测试断言精确**：用 `== N`，不用 `<= N` 宽松上界——宽松断言会掩盖"写多了"的 bug
+- **测试命名**：`tests/unit/test_<模块>.py` / `tests/e2e/test_<功能>_api.py` / `tests/integration/test_<主题>.py`
+- **合成日期跳周末**（`weekday() < 5`）：交易日序列不含周末，否则数据填充逻辑与真实情况不符
+- **批量编辑 / sed 大改后**：推送前必跑 `ruff` + 受影响测试目录，不依赖 CI 兜底
+
+### 4.12 工具链陷阱（Windows / Docker / Git）
+
+- **不要 `git add -A` / `git add .`**：按文件名 add，防误传 `.env` / 凭证 / 大型二进制。本仓长期存在 `.agents/` `.codex/` `AGENTS.md` 三个未跟踪项，`-A` 会把它们一并带走
+- **Bash 工具 ≠ PowerShell**：两者语法各不相通。PowerShell here-string `@'...'@` 写进 Bash 会把首尾的 `@` 当字面量混进内容（2026-08-18 混进过 commit message）。Bash 里多行文本一律用 heredoc `<<'EOF'`
+- **Bash 工具的 cwd 会漂移**：`cd` 过一次就持续生效，之后在仓库根跑 `uv run ruff/pytest/alembic` 会报 `program not found`（venv 在 `backend/`）。凡 `uv run` 一律前置 `cd .../backend &&`
+- **`MSYS_NO_PATHCONV=1` 会连 `--env-file` 一起停止转换**：该参数因此必须传 **Windows 路径**（`C:\...`），否则 docker 报 "cannot find the path"。同一条命令里 `-v` 用 Windows 路径、其余参数也得跟着走
+- **`git rev-parse --short HEAD origin/main`（双参数）在本仓 fatal**：改用 `git rev-parse --short HEAD` + `git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/origin/main`
+- **`docker exec` 喂 stdin（heredoc / 管道）必须带 `-i`**：不带 `-i` 时容器内进程拿不到 stdin → SQL 完全没执行，而 psql 退出码仍是 0（`set -e` 抓不到），极易误判"已生效"。多语句 SQL 用 `psql -c "stmt1; stmt2; ..."`（单 `-c` 多语句 = 一个隐式事务，配 `-v ON_ERROR_STOP=1`）或 `docker exec -i`
+- **破坏性 DB 操作前先做针对性备份**：`pg_dump --data-only -t <表>...` 导出受影响表作精确回滚点（比全库备份快、可定点还原），再在单事务内执行；执行后**必须查行数/状态实证生效**，不信命令退出码
+
+### 4.13 调试范式：SUCCESS 但产出为零
+
+流程状态成功（task status=SUCCESS、无 ERROR 日志）但业务产出**空或恒定**（零信号、NAV 恒为 1.0、空列表、评分全 0）时，**按此顺序**排查：
+
+1. **先查吞异常**——把主循环所有 `try/except Exception` 分支临时去掉 `except`，或把日志级别从 DEBUG 提到 ERROR，看是否有 `KeyError` / `AttributeError` / `TypeError` 被静默捕获。Engine/Service 层的 `except Exception: return []` 是这类问题最常见的来源
+2. **主循环 print 二分**——在**真实代码路径**加 `print`（`state` / `len(universe)` / `len(composite)` / `len(signals)`），定位哪一步把数据全拦下
+3. **禁止另起脚本重建路径**——手工构造数据极易漏键或漏降级分支，比改真实代码加 print 更慢也更错
+4. **最后才查业务层逻辑**（因子 / 策略 / 评分）
+
+根源：静默降级让上游异常**看起来像**业务层无结果，从业务层开始查必然绕远。
+
 ---
 
 ## 5. Phase 流程
@@ -197,7 +277,9 @@ DEBUG=false
 - `uv run ruff check src/ tests/` 输出 **0 error**
 - 新增 REST API 端点须在 `tests/smoke/test_api_live.py` 补冒烟测试（逐行对照设计文档 §8 场景表，不能只核对数量）
 - 集成测试跑通（容器自动启动 + alembic upgrade head）
-- 检查新经验是否需写入 CLAUDE.md（项目专属）或 `~/.claude/CLAUDE.md`（跨项目通用）
+- 按 **C-6** 沉淀本 phase 踩到的坑：技术陷阱 / 工具坑 → 本文件 §4 对应小节；一次性的操作
+  runbook 与事故档案 → memory。**不要往 `~/.claude/CLAUDE.md` 加东西**——那是不含技术细节的
+  个人全局规则，且未经用户明确要求不得修改；确有跨项目价值的，向用户提议而不是自行写入
 
 ### 5.3 自动测试钩子（`.claude/hooks/auto_test.sh`）
 
@@ -234,8 +316,21 @@ DEBUG=false
 
 ## 6. 当前进度
 
-V1.0 收尾批次：Phase 11 / 12 / 13 / **14 ✓**（§14-1~§14-10 全交付：账户幂等 + 5y candidate_pool 回填 + 日级 IC/ICIR 历史回算 + BacktestEngine 真 5 步 + 共表拆分 + Phase 13/12 评审 P2 + 交易日历持久化 CAL-1~6 + §14-10 成交/资金流水作废订正）| **Phase 15 ✓**（V1.0 RC 验收：8 子项全交付 + 收尾门槛全过 + 冒烟对生产 105 PASS；RC 期根治回测 2GB OOM——生产经 `backtest_enabled=false` 禁用回测 503，回测走本地算力中心）| **V1.5-G 多用户 代码交付完成 ✓**（2026-07-23：G-1 数据模型 / G-2a 认证 / G-2b 限频+EmailStr / G-3 账户隔离+ownership / G-4 level 分层+通知隔离+Job 多用户化+管线解耦 / G-5 前端 / G-6 测试冒烟文档收尾；unit+e2e 726 / integration 201 / ruff 0 / vue-tsc 0；设计文档 v1.4 DoD 全勾）| **V1.5-G 生产部署完成 ✓**（2026-07-23：pg_dump 前置 + 0017→0020 迁移实证 + ADMIN_* 退役 + 冒烟对生产 112 PASS/写入已 void 还原 + 前端新 bundle 上线；只重建 backend 须补 `nginx -s reload`，见 deployment.md §4.2）| **下一步**：观察今晚 17:30 管线首次以解耦代码自然运行 → 之后按 roadmap 择下一 V1.5 主题
+**已完成**：Phase 1~15 ✓（V1.0 RC 验收收口）| **V1.5-G 多用户** ✓ 代码 + 生产部署（2026-07-23）
+| **V1.5-A 回测与监控** ✓ 全上线，A5b/F-4 功能级激活已实证 PASS
+
+**进行中：V1.5-C 策略扩展**（设计文档 `docs/design/phases/v1_5_c_strategy_expansion.md` v0.5，
+C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
+
+- **C0 日级 IC 产出闭环**：代码已交付（25 UT + 5 INT + alembic 0024 财务覆盖索引 ×2）。
+  2026-08-18 补 C0-6（零权重策略仍产出 z_raw 供日级 IC）+ 提前实施 §8.3 陷阱 1
+  （零权重策略退出 Gram-Schmidt）。48 交易日断档（2026-05-12 → 2026-07-17）**正在本地
+  算力中心回填**；跑法 / 停止 / 续跑 / 收尾顺序见 memory `c0_daily_ic_catchup_runbook`
+- **收尾硬顺序**：回填产出 → 导入生产 → **再**部署代码。反序会让 `daily_ic_producer`
+  Job 在 19:30 对积压逐日全 universe 评分，正是打挂生产的那条路径
+- C1~C5 待启动
 
 > **运维红线（RC 验收期实证）**：① 生产 2GB 机**禁止一切「全 universe 评分」作业**——判据是代码路径是否调用 `score_universe_for_date` / `ScoringService.score_universe`，**不是功能叫什么名字**。已实证会打挂生产的两例：回测（单个 6 日任务拖垮 11 分钟 → `POST /backtest/run` 已 `backtest_enabled=false` 返 503）、日级 IC 回填（`scripts/backfill_daily_ic.py` **仅跑一个交易日** 即 RSS 1.58G 触发 OOM killer，2026-08-17 致站点 530 共 43 分钟）。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
 
-详细 phase 表 + 历史里程碑（V1.0 整改 3 批次 / V1.0 真机验收 15 bug / Phase 11~13 实施细节）→ `docs/design/system_design.md §9`。
+详细 phase 表 + 历史里程碑（V1.0 整改 3 批次 / V1.0 真机验收 15 bug / Phase 11~15 实施细节）
+→ `docs/design/system_design.md §9`。
