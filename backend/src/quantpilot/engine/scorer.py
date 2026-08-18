@@ -87,6 +87,14 @@ class CompositeScore:
     # industry_missing_skipped / collinear_skipped
     weights_source: str = "legacy_phase4"
     hysteresis_status: str = "stable"
+    # V1.5-C C0 补丁：**全部** active 策略的 z_raw（含 weights_runtime 权重为 0 者），
+    # 与 score_breakdown_raw 的差别在于后者只含真正参与 composite 合成的策略。
+    # 存在理由：R1（ICIR<0 连续 6 月）把策略判 offline → 权重 0 → 不进
+    # score_breakdown_raw → extract_strategy_z 抽不到 → 不产日级 IC → ICIR 窗口
+    # 断供 → 该策略永远无法被评估为已恢复（R1 每月重评的复活路径被自己掐断）。
+    # 故把「IC 观测」与「composite 加权」解耦：观测走本字段，加权仍走 valid_weights。
+    # 仅内存传递（daily IC 两条路径都消费内存对象），不落 candidate_pool。
+    strategy_z_all: dict[str, float] | None = field(default=None)
     # P11 §6.2 lineage 用，aggregate 透传
     factor_winsorized: dict | None = field(default=None)
     factor_neutralized: dict | None = field(default=None)
@@ -246,15 +254,27 @@ class Scorer:
 
         # --- Step 4a + 4b：Gram-Schmidt 正交化 + 残差再标准化（单策略模式跳过）---
         active_strategies = list(strategy_z_matrix.columns)
-        if single_strategy_mode or len(active_strategies) <= 1:
+        # V1.5-C §8.3 陷阱 1：**只有权重 > 0 的策略进正交化**。零权重策略若混入，
+        # `gram_schmidt` 的 `valid_mask`（要求 order 各列同时非 NaN）会把它们的 NaN 行
+        # 整行残差置 NaN → 本方法下游 `z_col.fillna(0.0)` → weighted_z = 0 →
+        # composite_z = 0 → `Φ(0)×100 = 50` 的**假中位分**，而 `any_valid`（基于 raw z）
+        # 仍为 True 故该行不被剔除 → 真实高分股被压平到中位。
+        # 零权重策略仍保留在 strategy_z_matrix 中：strategy_z_all（日级 IC，C0-6）与
+        # 旧四标量字段（trend_score 等）都从它取值，不受本收敛影响。
+        weighted_strategies = [
+            s for s in active_strategies if float(weights_runtime.get(s, 0.0)) > 0.0
+        ]
+        if not weighted_strategies:
+            return []
+        if single_strategy_mode or len(weighted_strategies) <= 1:
             # 单策略：直接把 strategy_z 当作 z_normalized
-            orthogonal_matrix = strategy_z_matrix.copy()
+            orthogonal_matrix = strategy_z_matrix[weighted_strategies].copy()
             orthogonal_matrix.columns = [f"{c}_normalized" for c in orthogonal_matrix.columns]
-            effective_order = active_strategies
+            effective_order = weighted_strategies
         else:
-            effective_order = [s for s in orthogonalize_order if s in active_strategies]
+            effective_order = [s for s in orthogonalize_order if s in weighted_strategies]
             # 兜底：order 缺失的策略按 weights_runtime 降序补齐
-            missing = [s for s in active_strategies if s not in effective_order]
+            missing = [s for s in weighted_strategies if s not in effective_order]
             missing.sort(key=lambda s: weights_runtime.get(s, 0.0), reverse=True)
             effective_order.extend(missing)
             orthogonal_matrix = self._orthogonalizer.compute(strategy_z_matrix, effective_order)
@@ -325,6 +345,14 @@ class Scorer:
                     "contribution": float(z_raw) * float(w),
                 }
 
+            # V1.5-C C0：IC 观测用 z_raw，覆盖全部 active 策略（权重 0 者也收）
+            z_all: dict[str, float] = {}
+            for s_name in active_strategies:
+                z_obs = strategy_z_matrix.loc[ts_code, s_name]
+                if pd.isna(z_obs):
+                    continue
+                z_all[s_name] = float(z_obs)
+
             # residual breakdown：z_orthogonal_normalized × weight / sqrt(Σw²)
             breakdown_residual: dict[str, dict] = {}
             for s_name, w in valid_weights.items():
@@ -389,6 +417,7 @@ class Scorer:
                 composite_pct_in_market=pct_value,
                 score_breakdown_raw=breakdown_raw,
                 score_breakdown_residual=breakdown_residual,
+                strategy_z_all=z_all or None,
                 weights_source=weights_source,
                 hysteresis_status=hysteresis_status,
                 # P12 评审 P1-4：5 步管线 Step 1/2/4b 中间产物每股快照

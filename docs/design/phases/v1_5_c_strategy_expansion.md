@@ -1,7 +1,7 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.4（C0 实施期修订，2026-08-17）
-> 状态：**C0 代码交付完成**（20 UT + 5 INT + alembic 0024）；断档追平在本地算力中心执行中；C1-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
+> 版本：v0.5（C0 追平期修订，2026-08-18）
+> 状态：**C0 代码交付完成**（25 UT + 5 INT + alembic 0024）；断档追平在本地算力中心执行中；C1-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
 > 估算：roadmap §6 登记 **9-13 pd** → 启动核查重估 **~12.5-20 pd** → 本次详细设计展开后 **~14.5-22 pd**（分项见 §1.2；增量来自 C0 前置闭环 + C1 策略约束落点统一，二者均为设计展开期实证发现的既有缺口，非范围扩张）
 > 实施顺序（沿用 V1.5-A「先轻后重」先例）：**C0 → C1 → C2 → C3 → C4 → C5**
 > 依据文档：
@@ -20,7 +20,8 @@
 | v0.1 | 2026-08-10 | 初版（启动核查）。执行 CLAUDE.md §5.1：确认 V1.5 主题不占 system_design §9（沿用 V1.5-A/G 先例）；辨明「V1.5-C 因子监控自动降权」为 v2.0 重构前旧标签、已被 Phase 11 §4.1/§4.4 ICIR 自动加权消费，与本主题（策略扩展）无关；grep 推迟项三处确认；**用户拍板两项范围决策（2026-08-10）**：① 资金动向策略的 moneyflow/北向数据层在本主题内一并建（非拆分推迟）；② 策略插件沙箱完整纳入本主题（非拆分/推迟）→ 全 5 模块纳入、零推迟。§2-§6 详细设计待展开 |
 | v0.2 | 2026-08-10 | **设计评审收口**（启动核查门评审通过 ✓，0 阻断 / 1 P2 / 4 P3）。P2：估算上修（~50%）的 roadmap §6 权威登记从「收尾回写」提前到启动放行时——已在 roadmap §6 V1.5-C 行加前向说明（→ ~12.5-20 pd）。P3 全部就地纠正：① §1.2 分项和下界据实 13→**12.5**；② C3 5y strategy_weights 历史回填补挂 **C-1 门控**（与 C2/C4 一致）；③ Piotroski 项数明确以经典 **9 项**为准 + 回修 roadmap §3「8 项」笔误；④ §3 financial_data 字段枚举据 market.py 补 revenue_yoy / pe_ttm 实名 + 金融股数据不全降级纳入 Altman Z-Score 备选 |
 | v0.3 | 2026-08-14 | **§2-§9 详细设计展开**。展开期对生产 + 代码做了 5 项实证核查，三项直接改变设计：① **日级 IC 产出无调度闭环**（生产 `factor_ic_window_state` daily 行止于 2026-05-11，距今 3 个月且持续拉大；UPTREND 聚合 sample_size 已贴 60 下限）→ 新增 **C0 前置子批**；② **Phase 4 时代写在 `score()` 里的策略硬约束在 Phase 11 五步管线全部失效**（动量追高剔除 / 动量数据不足 guard / **价值陷阱截断**——后者所在的 value 策略当前占生产 composite 权重 0.63~0.82）→ 并入 C1 作「策略约束落点统一」，并成为 C2 门控的落点前提；③ **零权重策略仍参与 Gram-Schmidt 正交化**，其 NaN 行经 `valid_mask` 交集收紧把整行 composite_z 打到 0 → §8 定为新策略入 composite 的头号陷阱 + 影子模式设计。另据实证：生产 momentum ICIR = −0.66/−0.73（权重已被压至 0.000）→ 成为 C1 可证伪验收锚点；生产磁盘 83% 已用（可用 8.2G）→ C4 回填窗口据实收敛为 2 年 + 列裁剪。scope 由 5 子批增至 6 子批，估算 ~12.5-20 → **~14.5-22 pd** |
-| v0.4 | 2026-08-17 | **C0 实施期修订（本次）**，全部由生产实证驱动：① **C0-3 追平路径改写**——在生产容器跑回填脚本仅一个交易日即被 OOM killer 杀掉（RSS 1.58 GB），站点 530 共 43 分钟；单日耗时实测约 20 分钟（48 天 ≈ 16 小时）→ 改走本地算力中心（5434 全量副本）批量回填后导入生产，并写入**「先导入、后部署」硬顺序约束**（先部署会让 Job 在 19:30 对 48 天积压逐日全 universe 评分，即打挂生产的同一条路径）；② **`_CATCHUP_MAX_DAYS` 3 → 1**——单次运行绝不连做多次全 universe 评分，大断档不由 Job 承担；③ 新增 **C0-5 评分路径财务查询优化（alembic 0024）**——追平标定挖出 universe 过滤单次 9 分钟，卡在 `financial_data` 658 万行的两条查询（其中 `DISTINCT ON` 段 external merge 落盘 261 MB），该表日频行不可删故修在索引侧，两个覆盖索引经本地全量副本 A/B 实测分别 31.3s→2.3s、69.7s→25.9s 且排序节点全消。断档区间据前向窗口据实收敛为 **48 个交易日**（2026-05-12 → 2026-07-17，非原估 60）|
+| v0.4 | 2026-08-17 | **C0 实施期修订**，全部由生产实证驱动：① **C0-3 追平路径改写**——在生产容器跑回填脚本仅一个交易日即被 OOM killer 杀掉（RSS 1.58 GB），站点 530 共 43 分钟；单日耗时实测约 20 分钟（48 天 ≈ 16 小时）→ 改走本地算力中心（5434 全量副本）批量回填后导入生产，并写入**「先导入、后部署」硬顺序约束**（先部署会让 Job 在 19:30 对 48 天积压逐日全 universe 评分，即打挂生产的同一条路径）；② **`_CATCHUP_MAX_DAYS` 3 → 1**——单次运行绝不连做多次全 universe 评分，大断档不由 Job 承担；③ 新增 **C0-5 评分路径财务查询优化（alembic 0024）**——追平标定挖出 universe 过滤单次 9 分钟，卡在 `financial_data` 658 万行的两条查询（其中 `DISTINCT ON` 段 external merge 落盘 261 MB），该表日频行不可删故修在索引侧，两个覆盖索引经本地全量副本 A/B 实测分别 31.3s→2.3s、69.7s→25.9s 且排序节点全消。断档区间据前向窗口据实收敛为 **48 个交易日**（2026-05-12 → 2026-07-17，非原估 60）|
+| v0.5 | 2026-08-18 | **C0 追平期修订**：新增 **C0-6 零权重策略的 IC 可观测性**——本地追平实测发现 2026-06-09 起 `trend`/`momentum` 完全不产日级 IC 行，查证为 R1 判 offline → 权重 0 → `Scorer.aggregate` Step 5 的 `valid_weights` 过滤把二者挡在 `score_breakdown_raw` 之外 → `extract_strategy_z` 抽不到。R1 的判定本身正确（momentum ICIR 稳定 −0.66~−0.94、样本 144~188），坏掉的是**复活路径**：无新 IC 则永远评估不出「已恢复」，且已实证 UPTREND 窗口冻结（连续两月 sample_size=60、ICIR 数值完全相同）。处置为解耦 IC 观测与 composite 加权：新增仅内存字段 `CompositeScore.strategy_z_all`，`extract_strategy_z` 优先消费、缺失回退旧字段——无迁移、`score_breakdown_raw` 语义不变、下游消费方零改动。同批**提前实施 §8.3 陷阱 1 的处置**（原定 C3）——该条并非「新增策略才触发的风险」而是当前生产正在犯的缺陷：trend/momentum 权重已为 0 却仍进 Gram-Schmidt，`valid_mask` 使其 NaN 行残差全 NaN → `fillna(0.0)` → `composite_z=0` → `Φ(0)×100=50` 假中位分且不被 `any_valid` 剔除，真实高分股正被压平到中位；与 C0-6 同处 Step 4/5，同批修复同批回归（UT-C0-08a/b）|
 
 ---
 
@@ -132,6 +133,20 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 
 **C0-4 可观测**。新增结构化日志 `daily_ic_produced: trade_date=%s strategies=%d rows=%d`（同 A5b `forecast_roe_override_applied` 先例——**激活必须可实证**）+ Prometheus Gauge `factor_ic_daily_lag_days`（= `t - max(daily trade_date)`，> 40 告警）。
 
+**C0-6 零权重策略的 IC 可观测性（追平实测挖出，2026-08-18）**。回填到 2026-06-09 起 `trend` / `momentum` 完全不再产出日级 IC 行（26 天仅 92 行而非 104）。因果已在代码层查证：
+
+1. `check_factor_offline_rules` R1（ICIR < 0 连续 6 月）对二者判 `offline` → 月末 rebalance 权重置 0（生产实证：OSCILLATION 自 2026-05-01 起连续 4 次 rebalance 均为 0.0000，UPTREND 自 2026-08-01 起亦为 0）；
+2. `Scorer.aggregate` Step 5 以 `float(w) > 0.0` 过滤出 `valid_weights`，`score_breakdown_raw` **仅**由它构建 → 零权重策略无 `z_raw`；
+3. `extract_strategy_z` 抽不到 → `compute_daily_ic` 无输入 → 不写 daily 行 → ICIR 滚动窗口 `[t-252, t-20]` 逐月流失样本。
+
+后果不是权重判错——**R1 的判定本身是对的**（momentum ICIR 稳定在 −0.66 ~ −0.94，样本 144~188，非冷启动噪声）——而是**掐断了复活路径**：`check_factor_offline_rules` 每月从聚合行重新评估，本设计带自动复活能力，但没有新 IC 就永远评估不出「已恢复」。已实证窗口正在冻结：UPTREND 的 2026-06-30 与 2026-07-31 两次聚合 `sample_size` 同为 60、ICIR 数值完全相同（−0.1045 / −0.7306），即同一批旧样本被反复读取，再流失即回落 `default_matrix`。
+
+**处置：把「IC 观测」与「composite 加权」解耦。** `CompositeScore` 新增仅内存字段 `strategy_z_all: dict[str, float]`，记录**全部** `active_strategies` 的 `z_raw`（含权重 0 者）；`extract_strategy_z` 优先消费它，缺失时回退 `score_breakdown_raw`（`aggregate_legacy` / 回测 fallback 路径）。
+
+- 不选「把权重 0 的条目塞进 `score_breakdown_raw`」：`signal_service` 与 `explanation` 均按 `contribution` 降序取「主要驱动」，`contribution=0` 的条目在全负场景下会窜到首位，须连带改多处消费方。
+- 不落 `candidate_pool`：日级 IC 的两条路径（`produce_daily_ic` 与 `scripts/backfill_daily_ic.py`）都消费内存 `composites`，无一读 DB JSONB → 无需迁移、无回填语义、attribution / 前端零影响。
+- 已知边界：`AttributionService` 的月度暴露仍从 DB `score_breakdown_raw` 读，故零权重策略不进暴露表。这与该表「解释已实现的 composite」的语义自洽（权重 0 的策略确实贡献为 0），**不视为缺陷**。
+
 ### 2.3 C0 DoD
 
 - [x] `produce_daily_ic` 单测：前向收益未实现 → 返回 0 不写行；正常日 → 每策略一行；已存在日 → 跳过（幂等）（UT-C0-03a~e）
@@ -141,7 +156,9 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 - [x] 集成测试：合成面板 → `produce_daily_ic` 真跑 → `factor_ic_window_state` daily 行按预期落库（精确 `== N` 断言）+ PIT state + 幂等 + 前向窗口未实现零写入 + 追平计划与 DB 真实串联（INT-C0-01~04b，5 例）
 - [x] 早退路径测试钉死**原因**（caplog 断言 `daily_ic_forward_window_incomplete`），避免在"空 universe"等其它 0 值路径上假通过
 - [x] 评分路径财务查询覆盖索引（alembic 0024，两个）：本地全量副本 A/B 实测有效，迁移 upgrade/downgrade 往返验证，ORM `__table_args__` 与迁移一致（C0-5）
-- [ ] 断档 48 个交易日在本地算力中心回填完成（C0-3 步骤 1-2）
+- [x] 零权重策略仍产出日级 IC：`strategy_z_all` 覆盖全部 active 策略、`score_breakdown_raw` 语义不变、composite_z 逐股不受影响、旧对象回退路径可用（UT-C0-07a~e，C0-6）
+- [x] 零权重策略退出 Gram-Schmidt（§8.3 陷阱 1 提前实施）：其 NaN 行不再把 composite_z 打成 0 / 假中位分 50，且「存在与否」composite_z 逐股一致；与 C0-6 互不抵消（退出正交化但仍在 `strategy_z_all` 中）（UT-C0-08a/b）
+- [ ] 断档 48 个交易日在本地算力中心回填完成（C0-3 步骤 1-2）；其中 2026-06-09 起的 OSCILLATION 日须在 C0-6 修复后以 `--force` 重跑，产出行数按 4 策略核对
 - [ ] 结果导入生产（`pg_dump --data-only` 回滚点前置），`max(daily trade_date)` = 2026-07-17；`factor_ic_daily_lag_days` < 30
 - [ ] C0 代码 + alembic 0024 部署生产（**必须在导入之后**，见 C0-3 顺序约束）
 - [ ] 生产实证日志 `daily_ic_produced` 连续 3 个交易日出现且 rows > 0
@@ -536,7 +553,9 @@ return residual_df.reindex(strategy_z_matrix.index)   # 其余行全列 NaN
 
 后果：任何新策略只要对某些股票是 NaN，这些股票的 composite 就被打平到中位，**即使新策略权重为 0**。C4 的北向因子、C3 的历史不足股都会命中。
 
-**处置**：`Scorer.aggregate` 中把送入正交化的矩阵从「所有 active_strategies」收敛为「`valid_weights` 中权重 > 0 的策略」（零权重策略不参与正交化，但仍保留在 `strategy_z_matrix` 中以便写 `score_breakdown_raw` / 日级 IC）。
+**处置（已于 C0 实施，2026-08-18，提前于原定 C3）**：`Scorer.aggregate` 中把送入正交化的策略集从「所有 `active_strategies`」收敛为「`weights_runtime` 中权重 > 0 的策略」（零权重策略不参与正交化，但仍保留在 `strategy_z_matrix` 中——日级 IC 由 C0-6 的 `strategy_z_all` 保障，旧四标量字段 `trend_score` 等照常取值，`score_breakdown_raw` 语义维持不变、只含参与合成的策略）。
+
+提前实施的理由：本条不是「C3/C4 新增策略才会触发的风险」，而是**当前生产正在犯的缺陷**——trend / momentum 权重自 2026-05-01 起即为 0.000 却仍在正交化矩阵中，凡在这两个策略上有 NaN 的股票，其 composite 此刻正被压平到中位分。与 C0-6 同处 `Scorer.aggregate` Step 4/5，同批修复、同批回归，边际成本接近零。测试见 UT-C0-08a/b（零权重策略「存在与否」composite_z 逐股一致 + 未覆盖股票不再得 50 分）。
 - 这同时修复一个**既有生产缺陷**：当前 trend、momentum 权重已是 0.000，却仍在正交化矩阵里，其 NaN 行正在把对应股票的 composite 压到 0。修复后这些股票恢复按真实权重（mean_reversion + value）打分。
 - ⚠️ 此改动会**改变生产评分结果**（属修复而非回归），必须：① 单测锁定新旧行为差异；② 本地 5y 面板跑改前/改后 composite 分布对比；③ 上线后首日人工核对 top 信号变化。**不得与 C3/C4 同批上线**——在 C1 阶段单独上线并观察，把变量分开。
 

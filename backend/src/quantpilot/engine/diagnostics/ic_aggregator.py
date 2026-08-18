@@ -143,8 +143,9 @@ def compute_daily_ic(
 def extract_strategy_z(composites: list) -> dict[str, pd.Series]:
     """从全 universe ``CompositeScore`` 列表抽每策略 ``z_raw`` Series。
 
-    数据源 ``CompositeScore.score_breakdown_raw[strategy]["z_raw"]``（Phase 11
-    Scorer Step 3 落产物；AttributionService / backfill_daily_ic 消费同字段）。
+    数据源优先 ``CompositeScore.strategy_z_all``（V1.5-C C0 补丁：覆盖全部 active
+    策略，含权重 0 者），缺失时回退 ``score_breakdown_raw[strategy]["z_raw"]``
+    （Phase 11 Scorer Step 3 落产物；AttributionService 消费同字段）。
 
     **策略无关**（V1.5-C C0）：策略名从 ``score_breakdown_raw`` 的键推导，不再
     硬编码 4 策略元组——这是 C3/C4 新增策略（low_volatility / money_flow）无需
@@ -157,6 +158,22 @@ def extract_strategy_z(composites: list) -> dict[str, pd.Series]:
     """
     data: dict[str, dict[str, float]] = {}
     for c in composites:
+        code = str(c.ts_code)
+        # V1.5-C C0 补丁：优先 strategy_z_all —— 它覆盖**全部** active 策略，含
+        # 被 R1 判 offline 而权重为 0 的策略。若只读 score_breakdown_raw，零权重
+        # 策略无 z_raw → 无日级 IC → ICIR 窗口断供 → R1 的每月复活路径被掐断，
+        # 该策略永久出局（2026-08-18 生产实证：trend/momentum 已如此）。
+        z_all = getattr(c, "strategy_z_all", None)
+        if isinstance(z_all, dict) and z_all:
+            for strategy, z in z_all.items():
+                if z is None:
+                    continue
+                z = float(z)
+                if math.isnan(z):
+                    continue
+                data.setdefault(str(strategy), {})[code] = z
+            continue
+        # 回退：aggregate_legacy / 回测 fallback 路径不填 strategy_z_all
         raw = getattr(c, "score_breakdown_raw", None) or {}
         if not isinstance(raw, dict):
             continue
@@ -169,7 +186,7 @@ def extract_strategy_z(composites: list) -> dict[str, pd.Series]:
             z = float(z)
             if math.isnan(z):
                 continue
-            data.setdefault(str(strategy), {})[str(c.ts_code)] = z
+            data.setdefault(str(strategy), {})[code] = z
     return {s: pd.Series(d) for s, d in data.items() if d}
 
 
