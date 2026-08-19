@@ -56,6 +56,11 @@ from backfill_candidate_pool import (  # noqa: E402, I001
 )
 
 
+# 日历起点缓冲（自然日）。须覆盖 ICIR 窗口回看的 252 + 20 = 272 个**交易日**，
+# 详见 _main 中 cal_start 处的注释。
+_CALENDAR_LOOKBACK_DAYS = 500
+
+
 def _parse_year_month(s: str) -> date:
     return datetime.strptime(s, "%Y-%m").date()
 
@@ -177,9 +182,22 @@ async def _main() -> int:
         f"mode: {'force-overwrite' if args.force else 'skip-existing'} ==="
     )
 
-    # 拉日历（前后 30 天 buffer）
+    # 拉日历。**起点缓冲必须覆盖 ICIR 的回看深度**，不是象征性的 30 天：
+    # apply_monthly_rebalance 对每个 month_end 取窗口 [t-252 交易日, t-20 交易日]
+    # （factor_monitor_service._ICIR_WINDOW_DAYS / _ICIR_LAG_DAYS），日历若不够深，
+    # TradingCalendar 直接抛 ValueError: Not enough trading dates before …。
+    #
+    # 2026-08-19 实测：缓冲为 30 天时跑 --start 2022-05 --end 2026-07，开头 12 个月
+    # （2022-05 ~ 2023-04）全数失败而其余 39 月正常写入，脚本仅以 exit 1 收场——
+    # 「部分成功」极易被当成跑完了。原 5y 回填之所以没暴露，是因为它恰好从更早的
+    # 月份起跑，把失败区间落在了本就无数据的年份里。
+    #
+    # 272 交易日 ≈ 409 自然日，取 500 留足春节/长假与停市余量。
     adapter = TushareAdapter(token=settings.tushare_token)
-    cal_start = date(args.start.year, args.start.month, 1) - timedelta(days=30)
+    cal_start = (
+        date(args.start.year, args.start.month, 1)
+        - timedelta(days=_CALENDAR_LOOKBACK_DAYS)
+    )
     cal_end_first = (
         date(args.end.year + 1, 1, 1) if args.end.month == 12
         else date(args.end.year, args.end.month + 1, 1)
