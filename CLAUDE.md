@@ -76,6 +76,7 @@
 | 开发指南 | `docs/guides/dev_setup.md` | 环境配置 + 命令 |
 | 部署指南 | `docs/guides/deployment.md` | HTTPS / 备份 / 故障树 |
 | 个人全局规则 | `~/.claude/CLAUDE.md` | 跨项目通用**工作原则**（权限 / 最小改动 / 验证 / 汇报）；不含技术细节，勿往里加项目知识 |
+| 全局规则历史快照 | `docs/reference/global-claude-md/` | 上条文件不在任何仓库里 → 此处按 `NNNN_` 序号归档历史版本；**换版前**先快照并按 README 规程判定被删内容的去向 |
 
 ---
 
