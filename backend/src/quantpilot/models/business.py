@@ -217,22 +217,20 @@ class FactorICWindowState(Base):
     )
 
     __table_args__ = (
+        # alembic 0025（V1.5-C C0-7）：唯一键含 row_type。Phase 11（0009）建的 4 列
+        # 全表唯一约束让 daily 与 aggregate 行在同一 4 元组上**互斥**——月末当日状态
+        # 若等于某 aggregate 行的 state，upsert_ic_daily 会命中该 aggregate 行并把
+        # 日级 ic_value/sample_size 写进去，两行合并、日级观测对 ICIR 窗口消失。
+        # 生产实测 156 行 / 39 个月末被污染。三处 upsert 的 index_elements 须同步含
+        # row_type，否则 ON CONFLICT 推断不到唯一索引。
         UniqueConstraint(
-            "strategy", "factor", "state", "trade_date",
-            name="uq_factor_ic_window_state_skft",
+            "strategy", "factor", "state", "trade_date", "row_type",
+            name="uq_factor_ic_window_state_skftr",
         ),
         Index(
             "idx_factor_ic_window_state_date_strategy",
             "trade_date", "strategy",
             postgresql_ops={"trade_date": "DESC"},
-        ),
-        # Phase 14 §14-6：partial unique on aggregate 行，配合 row_type 列
-        # 让 WHERE row_type='aggregate' 查询走 index-only scan。
-        Index(
-            "uq_factor_ic_window_state_aggregate",
-            "strategy", "factor", "state", "trade_date",
-            unique=True,
-            postgresql_where=sa.text("row_type = 'aggregate'"),
         ),
     )
 

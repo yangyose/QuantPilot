@@ -1,7 +1,7 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.5（C0 追平期修订，2026-08-18）
-> 状态：**C0 代码交付完成**（25 UT + 5 INT + alembic 0024）；断档追平在本地算力中心执行中；C1-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
+> 版本：v0.6（C0 收尾期修订，2026-08-18）
+> 状态：**C0 代码交付完成**（25 UT + 13 INT + alembic 0024/0025）；断档追平已跑完，待收尾导入生产；C1-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
 > 估算：roadmap §6 登记 **9-13 pd** → 启动核查重估 **~12.5-20 pd** → 本次详细设计展开后 **~14.5-22 pd**（分项见 §1.2；增量来自 C0 前置闭环 + C1 策略约束落点统一，二者均为设计展开期实证发现的既有缺口，非范围扩张）
 > 实施顺序（沿用 V1.5-A「先轻后重」先例）：**C0 → C1 → C2 → C3 → C4 → C5**
 > 依据文档：
@@ -22,6 +22,7 @@
 | v0.3 | 2026-08-14 | **§2-§9 详细设计展开**。展开期对生产 + 代码做了 5 项实证核查，三项直接改变设计：① **日级 IC 产出无调度闭环**（生产 `factor_ic_window_state` daily 行止于 2026-05-11，距今 3 个月且持续拉大；UPTREND 聚合 sample_size 已贴 60 下限）→ 新增 **C0 前置子批**；② **Phase 4 时代写在 `score()` 里的策略硬约束在 Phase 11 五步管线全部失效**（动量追高剔除 / 动量数据不足 guard / **价值陷阱截断**——后者所在的 value 策略当前占生产 composite 权重 0.63~0.82）→ 并入 C1 作「策略约束落点统一」，并成为 C2 门控的落点前提；③ **零权重策略仍参与 Gram-Schmidt 正交化**，其 NaN 行经 `valid_mask` 交集收紧把整行 composite_z 打到 0 → §8 定为新策略入 composite 的头号陷阱 + 影子模式设计。另据实证：生产 momentum ICIR = −0.66/−0.73（权重已被压至 0.000）→ 成为 C1 可证伪验收锚点；生产磁盘 83% 已用（可用 8.2G）→ C4 回填窗口据实收敛为 2 年 + 列裁剪。scope 由 5 子批增至 6 子批，估算 ~12.5-20 → **~14.5-22 pd** |
 | v0.4 | 2026-08-17 | **C0 实施期修订**，全部由生产实证驱动：① **C0-3 追平路径改写**——在生产容器跑回填脚本仅一个交易日即被 OOM killer 杀掉（RSS 1.58 GB），站点 530 共 43 分钟；单日耗时实测约 20 分钟（48 天 ≈ 16 小时）→ 改走本地算力中心（5434 全量副本）批量回填后导入生产，并写入**「先导入、后部署」硬顺序约束**（先部署会让 Job 在 19:30 对 48 天积压逐日全 universe 评分，即打挂生产的同一条路径）；② **`_CATCHUP_MAX_DAYS` 3 → 1**——单次运行绝不连做多次全 universe 评分，大断档不由 Job 承担；③ 新增 **C0-5 评分路径财务查询优化（alembic 0024）**——追平标定挖出 universe 过滤单次 9 分钟，卡在 `financial_data` 658 万行的两条查询（其中 `DISTINCT ON` 段 external merge 落盘 261 MB），该表日频行不可删故修在索引侧，两个覆盖索引经本地全量副本 A/B 实测分别 31.3s→2.3s、69.7s→25.9s 且排序节点全消。断档区间据前向窗口据实收敛为 **48 个交易日**（2026-05-12 → 2026-07-17，非原估 60）|
 | v0.5 | 2026-08-18 | **C0 追平期修订**：新增 **C0-6 零权重策略的 IC 可观测性**——本地追平实测发现 2026-06-09 起 `trend`/`momentum` 完全不产日级 IC 行，查证为 R1 判 offline → 权重 0 → `Scorer.aggregate` Step 5 的 `valid_weights` 过滤把二者挡在 `score_breakdown_raw` 之外 → `extract_strategy_z` 抽不到。R1 的判定本身正确（momentum ICIR 稳定 −0.66~−0.94、样本 144~188），坏掉的是**复活路径**：无新 IC 则永远评估不出「已恢复」，且已实证 UPTREND 窗口冻结（连续两月 sample_size=60、ICIR 数值完全相同）。处置为解耦 IC 观测与 composite 加权：新增仅内存字段 `CompositeScore.strategy_z_all`，`extract_strategy_z` 优先消费、缺失回退旧字段——无迁移、`score_breakdown_raw` 语义不变、下游消费方零改动。同批**提前实施 §8.3 陷阱 1 的处置**（原定 C3）——该条并非「新增策略才触发的风险」而是当前生产正在犯的缺陷：trend/momentum 权重已为 0 却仍进 Gram-Schmidt，`valid_mask` 使其 NaN 行残差全 NaN → `fillna(0.0)` → `composite_z=0` → `Φ(0)×100=50` 假中位分且不被 `any_valid` 剔除，真实高分股正被压平到中位；与 C0-6 同处 Step 4/5，同批修复同批回归（UT-C0-08a/b）|
+| v0.6 | 2026-08-18 | **C0 收尾期修订**：新增 **C0-7 daily/aggregate 行唯一约束撞车**（alembic 0025）——`factor_ic_window_state` 的全表唯一键不含 `row_type`，月末当日状态等于某 aggregate 行 state 时两行合并，日级观测对 ICIR 窗口消失、aggregate 的 `sample_size` 被覆盖；生产实测 156 行 / 39 个月末，且**本次追平终态 47 天 / 188 行而非 48 / 192 正是它的指纹**。Phase 14（0014）注释显示这是当时「冗余但向后兼容」的有意取舍，判定为错误取舍并纠正。同步记录部署期新增风险：0025 生效后旧代码三处 upsert 立即失效（4 列 `index_elements` 推断不到唯一索引），收尾须避开月末批 |
 
 ---
 
@@ -131,6 +132,23 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 
 两个索引均为纯新增（`CONCURRENTLY`，不阻塞 17:30 管线写入），合计约 835 MB。生产为磁盘瓶颈，磁盘读从 288 万次降至 4.6 万次，收益预期高于本地倍数。剩余耗时为 `DISTINCT ON` 仍需扫全部匹配索引项（PG 15 无 skip scan），彻底消除需改写为 loose index scan —— 【设计待定：是否值得为此改写 `get_latest_financial`，待索引上生产后按实测耗时决定】。
 
+**C0-7 daily/aggregate 行在唯一约束上撞车（追平收尾期实测挖出，alembic 0025）**。`factor_ic_window_state` 上 Phase 11（0009）建的全表唯一约束 `(strategy, factor, state, trade_date)` **不含 `row_type`**；Phase 14（0014）加 partial unique `... WHERE row_type='aggregate'` 时注释明确写着与之「并存 …… 冗余但向后兼容，方案 A 设计取舍」——即**有意保留**跨类型唯一性。该取舍是错的：它让 daily 行与 aggregate 行在同一 4 元组上**互斥**。
+
+月末那一天，当日市场状态若恰等于某已有 aggregate 行的 state，两次 upsert 会合并成一行：
+
+| 最后写者 | daily.ic_value | daily.sample_size | aggregate 统计列 |
+|---------|---------------|-------------------|-----------------|
+| aggregate（生产 156 行的形态） | 残留完好 | **丢失** | 完好 |
+| daily（本次追平 2026-06-30 的形态） | 完好 | 完好 | `sample_size` 被覆盖 |
+
+后果：① 该日日级 IC 对 ICIR 窗口不可见（`get_ic_daily_window` 按 `row_type='daily'` 过滤——§14-9 P2-2 只加固了读路径、没治根），每月静默少一个观测；② aggregate 的 `sample_size` 被日级横截面股票数覆盖时，R4（`sample_size < 60` 连续 3 月）在这些行上失效。
+
+**实测**：生产 **156 行 / 39 个月末**（2022-05 ~ 2026-03，源自 §14-9 五年回填）。本次追平的 48 天里命中 1 天（2026-06-30；2026-05-29 侥幸逃过——当日 UPTREND 而该日只有 OSCILLATION 的 aggregate 行）。**这也是追平终态为 47 天 / 188 行而非 48 / 192 的原因**。
+
+**处置**：唯一键改 5 列 `(strategy, factor, state, trade_date, row_type)`（alembic 0025），三处 upsert 的 `index_elements` 同步补列；存量由 `scripts/repair_ic_row_type_collision.py` 拆分（日级 `ic_value` 精确还原；日级 `sample_size` 在「aggregate 最后写」的 156 行上不可还原，写 0 并计数上报——**【降级说明】**：仅影响 `aggregate_monthly` 的 `avg_xs_sample` 展示列，ICIR/权重全链路只读 `ic_value` 故不受影响；恢复条件为在本地算力中心对这些日期跑 `backfill_daily_ic.py --force`）。aggregate 侧被覆盖的统计列交由 `backfill_icir_rebalance.py --force` 重算，精确、无需估算。
+
+**部署期新增风险**：0025 生效后，**旧代码的三处 upsert 会立即失效**（4 列 `index_elements` 推断不到唯一索引）。故迁移与代码部署之间的窗口必须可控——所幸这三处只在 `daily_ic_producer` Job（尚未上线）与月末批（`apply_monthly_rebalance` / 月度质量）触发，日常交易日不写该表，窗口内无实际写入。收尾须避开月末。
+
 **C0-4 可观测**。新增结构化日志 `daily_ic_produced: trade_date=%s strategies=%d rows=%d`（同 A5b `forecast_roe_override_applied` 先例——**激活必须可实证**）+ Prometheus Gauge `factor_ic_daily_lag_days`（= `t - max(daily trade_date)`，> 40 告警）。
 
 **C0-6 零权重策略的 IC 可观测性（追平实测挖出，2026-08-18）**。回填到 2026-06-09 起 `trend` / `momentum` 完全不再产出日级 IC 行（26 天仅 92 行而非 104）。因果已在代码层查证：
@@ -158,7 +176,8 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 - [x] 评分路径财务查询覆盖索引（alembic 0024，两个）：本地全量副本 A/B 实测有效，迁移 upgrade/downgrade 往返验证，ORM `__table_args__` 与迁移一致（C0-5）
 - [x] 零权重策略仍产出日级 IC：`strategy_z_all` 覆盖全部 active 策略、`score_breakdown_raw` 语义不变、composite_z 逐股不受影响、旧对象回退路径可用（UT-C0-07a~e，C0-6）
 - [x] 零权重策略退出 Gram-Schmidt（§8.3 陷阱 1 提前实施）：其 NaN 行不再把 composite_z 打成 0 / 假中位分 50，且「存在与否」composite_z 逐股一致；与 C0-6 互不抵消（退出正交化但仍在 `strategy_z_all` 中）（UT-C0-08a/b）
-- [ ] 断档 48 个交易日在本地算力中心回填完成（C0-3 步骤 1-2）；其中 2026-06-09 起的 OSCILLATION 日须在 C0-6 修复后以 `--force` 重跑，产出行数按 4 策略核对
+- [x] 断档 48 个交易日在本地算力中心回填完成（C0-3 步骤 1-2）——2026-08-18 跑完，`success=48 fail=0`，2026-05-12 → 2026-07-17；落库 47 天 / 188 行（差额 4 行 = 2026-06-30，由 C0-7 撞车所致，修复后拆出即 48 / 192）
+- [x] daily 与 aggregate 行可在同一 4 元组共存：唯一键补 `row_type`（alembic 0025，upgrade/downgrade 往返实测 + downgrade 阻断守卫）、三处 upsert `index_elements` 同步、存量拆分脚本双方向 + 幂等（INT-C0-05a~h，C0-7）
 - [ ] 结果导入生产（`pg_dump --data-only` 回滚点前置），`max(daily trade_date)` = 2026-07-17；`factor_ic_daily_lag_days` < 30
 - [ ] C0 代码 + alembic 0024 部署生产（**必须在导入之后**，见 C0-3 顺序约束）
 - [ ] 生产实证日志 `daily_ic_produced` 连续 3 个交易日出现且 rows > 0

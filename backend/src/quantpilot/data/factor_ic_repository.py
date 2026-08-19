@@ -138,12 +138,13 @@ class FactorICRepository:
         ]
         stmt = pg_insert(FactorICWindowState).values(values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["strategy", "factor", "state", "trade_date"],
+            index_elements=["strategy", "factor", "state", "trade_date", "row_type"],
             set_={
                 "ic_value": stmt.excluded.ic_value,
                 "sample_size": stmt.excluded.sample_size,
-                # 不覆盖 row_type：若同 4-tuple 已存在 aggregate 行（含 ic_value），
-                # 保留 'aggregate' 标记，本日级 upsert 仅更新 ic_value/sample_size
+                # alembic 0025 起 row_type 进唯一键 → 本 upsert 只可能命中同为
+                # 'daily' 的行，不再有「撞上 aggregate 行并把它改写」的路径
+                # （那正是 156 行被污染的成因）。故无需也不应覆盖 row_type。
             },
         )
         await session.execute(stmt)
@@ -162,8 +163,11 @@ class FactorICRepository:
         """
         if not rows:
             return 0
-        # Phase 14 §14-6：写入时显式标记 row_type='aggregate'。on_conflict 时
-        # 强制 row_type='aggregate'（即使旧行为 'daily'，aggregate 写入升级行类型）。
+        # Phase 14 §14-6：写入时显式标记 row_type='aggregate'。
+        # alembic 0025 起 row_type 进唯一键 → 只可能命中同为 'aggregate' 的行；
+        # 旧的「aggregate 写入把 daily 行升级为 aggregate」路径已不存在（该路径
+        # 与其反向路径共同造成了 156 行污染）。set_ 里的 row_type 因而是恒等赋值，
+        # 保留仅为与 values 显式对齐。
         values = [
             {
                 "strategy": r.strategy,
@@ -184,7 +188,7 @@ class FactorICRepository:
         ]
         stmt = pg_insert(FactorICWindowState).values(values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["strategy", "factor", "state", "trade_date"],
+            index_elements=["strategy", "factor", "state", "trade_date", "row_type"],
             set_={
                 "ic_mean_state": stmt.excluded.ic_mean_state,
                 "ic_std_state": stmt.excluded.ic_std_state,
@@ -392,7 +396,7 @@ class FactorICRepository:
         ]
         stmt = pg_insert(FactorICWindowState).values(values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["strategy", "factor", "state", "trade_date"],
+            index_elements=["strategy", "factor", "state", "trade_date", "row_type"],
             set_={
                 "ic_value": stmt.excluded.ic_value,
                 "ic_mean_state": stmt.excluded.ic_mean_state,

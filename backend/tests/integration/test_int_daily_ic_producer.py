@@ -3,9 +3,10 @@
 依据 docs/design/phases/phase14_account_integrity.md §11.3.4 / §11.4。
 
 覆盖：
-- INT-P14-9-02：daily / aggregate 同 (strategy,factor,state,trade_date) 4-tuple 碰撞
-  （P2-2）——先 upsert_ic_daily 再 upsert_ic_aggregate 把该行升级为 row_type='aggregate'
-  但残留 ic_value；get_ic_daily_window 增 row_type='daily' 谓词后不再取到该行。
+- INT-P14-9-02：daily / aggregate 同 (strategy,factor,state,trade_date) 4-tuple
+  ——V1.5-C C0-7（alembic 0025）把 `row_type` 补进唯一键后二者共存，日级观测不再
+  被 aggregate 写入吞掉；`get_ic_daily_window` 的 `row_type='daily'` 谓词仍须
+  把纯 aggregate 行挡在窗口外。
 - get_existing_daily_ic_dates：返回区间内已有 row_type='daily' 的 trade_date 集合
   （供 backfill_daily_ic 断点续传跳过已存在日）。
 """
@@ -29,10 +30,17 @@ _STATE = "UPTREND"
 # ============================================================
 # INT-P14-9-02：daily/aggregate 4-tuple 碰撞 → row_type 谓词隔离
 # ============================================================
-async def test_int_p14_9_02_collision_row_type_daily_predicate(
+async def test_int_p14_9_02_daily_survives_aggregate_at_same_key(
     db_session: AsyncSession,
 ) -> None:
-    """同 4-tuple 先 daily 后 aggregate 升级 → get_ic_daily_window 不再取到该行。"""
+    """同 4-tuple 先 daily 后 aggregate → daily 观测仍可取到；纯 aggregate 行则不取。
+
+    **语义变更（V1.5-C C0-7 / alembic 0025）**：本用例原先断言「aggregate 写入后
+    该日 daily 观测取不到了」——那是缺陷的表现，§14-9 P2-2 当时只给
+    `get_ic_daily_window` 加了 `row_type='daily'` 谓词加固读路径，没治根。
+    唯一键补上 `row_type` 后两行共存，日级观测不再丢失。
+    `row_type='daily'` 谓词本身仍必须生效（下半段用纯 aggregate 行钉死）。
+    """
     repo = FactorICRepository()
     d = date(2024, 6, 28)
 
@@ -59,13 +67,29 @@ async def test_int_p14_9_02_collision_row_type_daily_predicate(
     )
     await db_session.flush()
 
-    # 3. 该行已升级 row_type='aggregate'，残留 ic_value；
-    #    get_ic_daily_window 增 row_type='daily' 谓词后不应再取到（P2-2）
+    # 3. 两行共存 → daily 观测仍在窗口内（0025 前这里会是空列表）
     rows_after = await repo.get_ic_daily_window(
         db_session, strategy=_S, factor=_F, state=_STATE,
         start_date=d, end_date=d,
     )
-    assert rows_after == []
+    assert len(rows_after) == 1, "月末日级观测不得被 aggregate 行吞掉"
+    assert float(rows_after[0].ic_value) == 0.07
+
+    # 4. row_type='daily' 谓词仍须生效：另一日只写 aggregate → 不进窗口
+    d_agg_only = date(2024, 5, 31)
+    await repo.upsert_ic_aggregate(
+        db_session,
+        [ICAggregateRow(strategy=_S, factor=_F, state=_STATE, trade_date=d_agg_only,
+                        ic_mean_state=0.05, ic_std_state=0.02, icir=2.5,
+                        sample_size=60, ic_ci_low=0.01, ic_ci_high=0.09,
+                        t_stat=3.1, half_life=None)],
+    )
+    await db_session.flush()
+    agg_only = await repo.get_ic_daily_window(
+        db_session, strategy=_S, factor=_F, state=_STATE,
+        start_date=d_agg_only, end_date=d_agg_only,
+    )
+    assert agg_only == [], "纯 aggregate 行不得混进日级 IC 窗口"
 
 
 # ============================================================

@@ -94,12 +94,18 @@ async def test_int_p14_6_01b_aggregate_upsert_writes_row_type_aggregate(
     assert await _count_rows(db_session, row_type="daily") == 0
 
 
-async def test_int_p14_6_01c_aggregate_upgrades_existing_daily(
+async def test_int_p14_6_01c_aggregate_does_not_swallow_existing_daily(
     db_session: AsyncSession,
 ) -> None:
-    """同 4-tuple 先写 daily 后写 aggregate → 单行升级到 row_type='aggregate'。
+    """同 4-tuple 先写 daily 后写 aggregate → **两行共存**，各自字段互不污染。
 
-    这是月末 batch 路径的典型行为：当天先写 daily IC 值，再批量回算 aggregate。
+    这是月末 batch 路径：当天先写 daily IC 值，再批量回算 aggregate。
+
+    **语义变更（V1.5-C C0-7 / alembic 0025）**：本用例原先断言「单行升级到
+    row_type='aggregate'」——那正是缺陷本身。全表唯一键不含 row_type 时，
+    aggregate 写入会吞掉同键 daily 行，该日观测对 `get_ic_daily_window`
+    （按 row_type='daily' 过滤）永久消失；生产实测 156 行 / 39 个月末因此丢失。
+    唯一键补上 row_type 后两类行各自独立，故断言反转。
     """
     repo = FactorICRepository()
     t = date(2025, 7, 15)
@@ -112,7 +118,7 @@ async def test_int_p14_6_01c_aggregate_upgrades_existing_daily(
     assert await _count_rows(db_session, row_type="daily") == 1
     assert await _count_rows(db_session, row_type="aggregate") == 0
 
-    # 2. 再写 aggregate 行（同 4-tuple）→ on_conflict_do_update 升级 row_type
+    # 2. 再写 aggregate 行（同 4-tuple）→ 新增独立行，不改动 daily 行
     await repo.upsert_ic_aggregate(db_session, [ICAggregateRow(
         strategy=_STRATEGY, factor=_FACTOR, state=_STATE,
         trade_date=t, ic_mean_state=0.05, ic_std_state=0.02, icir=2.5,
@@ -120,11 +126,25 @@ async def test_int_p14_6_01c_aggregate_upgrades_existing_daily(
         t_stat=22.3, half_life=10,
     )])
     await db_session.flush()
-    # 总行数仍为 1（同 4-tuple 受 UNIQUE 约束）
-    assert await _count_rows(db_session) == 1
-    # row_type 已升级为 aggregate
+    assert await _count_rows(db_session) == 2
     assert await _count_rows(db_session, row_type="aggregate") == 1
-    assert await _count_rows(db_session, row_type="daily") == 0
+    assert await _count_rows(db_session, row_type="daily") == 1
+
+    # daily 行的日级字段原样保留；aggregate 行不携带日级 ic_value
+    rows = (await db_session.execute(
+        select(FactorICWindowState)
+        .where(
+            FactorICWindowState.strategy == _STRATEGY,
+            FactorICWindowState.factor == _FACTOR,
+            FactorICWindowState.trade_date == t,
+        )
+        .order_by(FactorICWindowState.row_type)
+    )).scalars().all()
+    agg, daily = rows[0], rows[1]
+    assert float(daily.ic_value) == 0.06
+    assert int(daily.sample_size) == 200
+    assert agg.ic_value is None
+    assert int(agg.sample_size) == 80
 
 
 # ============================================================
