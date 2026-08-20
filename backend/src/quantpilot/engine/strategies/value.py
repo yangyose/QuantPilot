@@ -6,7 +6,7 @@ import logging
 import pandas as pd
 
 from quantpilot.core.config_defaults import DEFAULT_VALUE_STRATEGY, ValueStrategyConfig
-from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot, StrategyScore
+from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -64,43 +64,47 @@ class ValueStrategy(BaseStrategy):
         }, index=universe)
         return df
 
-    def score(
+    def apply_constraints(
         self,
+        raw: pd.DataFrame,
         universe: pd.Index,
         market_data: MarketSnapshot,
-    ) -> list[StrategyScore]:
-        """覆盖 BaseStrategy.score()，在末尾施加价值陷阱截断。"""
-        financials = market_data["financials"].reindex(universe)
-        result = super().score(universe, market_data)
+    ) -> pd.DataFrame:
+        """SDD §7.2.4 价值陷阱规避：ROE < 行业中位数 → 各因子列截断至该列中位数。
 
-        # 价值陷阱规避：ROE < 行业中位数 ROE 时，得分截断至 50
+        V1.5-C C1-1：改造前写在 ``score()`` 里做「得分截断至 50」，而五步管线走
+        ``compute_strategy_factors`` 从不调用 score() → **生产从未生效**。value 策略
+        当前占 composite 权重 0.57(OSCILLATION)~0.87(UPTREND)，即用户看到的买入信号
+        主要由它驱动，护栏失效的代价是低 PE/PB + 低 ROE 的价值陷阱未被压制。
+
+        用「分位截断」而非「置 NaN」：§7.2.4 的语义是**上限为中位水平**（仍可参与
+        排序，只是不许排在前面），不是把标的排除。分位截断在后续 rank / Z-score
+        下不变形，而 0-100 分域的「截断到 50」在中性化 + Z-score 后已无意义。
+        """
+        out = raw.copy()
+        financials = market_data["financials"].reindex(universe)
+
         if "roe" not in financials.columns or "sw_industry_l1" not in financials.columns:
             logger.warning("value_roe_placeholder: 缺少 roe 或 sw_industry_l1，跳过价值陷阱规避")
-            return result
+            return out
 
         roe = financials["roe"].astype(float)
         if roe.isna().all():
             logger.warning("value_roe_placeholder: roe 全为 NULL，跳过价值陷阱规避")
-            return result
+            return out
 
-        industry_col = financials["sw_industry_l1"]
-        industry_median_roe = roe.groupby(industry_col).transform("median")
+        industry_median_roe = roe.groupby(financials["sw_industry_l1"]).transform("median")
+        hit = (roe < industry_median_roe).reindex(out.index).fillna(False)
+        if not hit.any():
+            return out
 
-        result = [
-            StrategyScore(
-                s.ts_code,
-                s.raw_factors,
-                score=min(s.score, 50.0),
-                reason=s.reason + "（ROE 低于行业中值，得分已限制在50）",
-            )
-            if (s.ts_code in roe.index
-                and not pd.isna(roe.get(s.ts_code))
-                and not pd.isna(industry_median_roe.get(s.ts_code))
-                and float(roe.get(s.ts_code)) < float(industry_median_roe.get(s.ts_code)))
-            else s
-            for s in result
-        ]
-        return result
+        for col in out.columns:
+            # 中位数取自**截断前**的该列（逐列独立，不受其他列改动影响）
+            median = out[col].quantile(0.5)
+            if pd.isna(median):
+                continue
+            out.loc[hit.to_numpy(), col] = out.loc[hit.to_numpy(), col].clip(upper=median)
+        return out
 
     def _build_reason(self, ts_code: str, raw_row: pd.Series, final_score: float) -> str:
         pe_pct = raw_row.get("pe_percentile", float("nan"))

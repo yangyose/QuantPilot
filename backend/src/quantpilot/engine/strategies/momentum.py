@@ -9,9 +9,13 @@ from quantpilot.core.config_defaults import (
     DEFAULT_MOMENTUM_STRATEGY,
     MomentumStrategyConfig,
 )
-from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot, StrategyScore
+from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot
 
 logger = logging.getLogger(__name__)
+
+# 追高剔除的观察窗口（交易日）。SDD §7.2.3 注以「近 1 月涨幅」表述，未参数化——
+# reversal_exclude_pct（剔除比例）才是 L2 可配项。
+_REVERSAL_WINDOW = 20
 
 
 class MomentumStrategy(BaseStrategy):
@@ -92,43 +96,47 @@ class MomentumStrategy(BaseStrategy):
 
         return df
 
-    def score(
+    def apply_constraints(
         self,
+        raw: pd.DataFrame,
         universe: pd.Index,
         market_data: MarketSnapshot,
-    ) -> list[StrategyScore]:
-        """覆盖 BaseStrategy.score()，在末尾施加追高剔除约束。"""
+    ) -> pd.DataFrame:
+        """V1.5-C C1-1：数据不足 guard + 追高剔除，两者均为「剔除」类 → 置 NaN。
+
+        改造前二者写在 ``score()`` 里，五步管线走 ``compute_strategy_factors``
+        取不到 → 生产从未生效（SDD §7.2.3 注的短期反转剔除形同虚设）。
+        """
+        out = raw.copy()
         adj_prices = market_data["adj_prices"].reindex(universe).astype(float)
 
-        # 数据不足以计算 return_3m（需 61+ 日）时返回空列表。
-        # 原因：return_3m/rs_6m 均返回 NaN 时，industry_rs 的 50.0 占位值会成为
-        # 唯一有效因子，rank(pct=True) 产生 ~0.5 的均匀分数（6 只股票 → 58.3），
-        # 污染 Scorer 的综合评分。返回 [] 让 Scorer 重新分配该策略权重。
-        if adj_prices.shape[1] <= 60:
-            return []
+        # ── 数据不足 guard ────────────────────────────────────────────────────
+        # return_3m / rs_6m 均为 NaN 时，industry_rs 的 50.0 占位值会成为唯一有效
+        # 因子，rank(pct=True) 产生 ~0.5 的均匀分数（6 只股票 → 58.3）污染
+        # composite。整表置 NaN 让 Scorer 把本策略权重分给其余策略。
+        if adj_prices.shape[1] <= self._cfg.lookback_short:
+            out.loc[:, :] = float("nan")
+            return out
 
-        return_1m = _period_return(adj_prices, 20)
-
-        result = super().score(universe, market_data)
-
-        # 追高剔除：近1M涨幅前5%的股票得分置0
+        # ── 追高剔除：近 1M 涨幅处于前 reversal_exclude_pct 的标的不参与本策略 ──
+        return_1m = _period_return(adj_prices, _REVERSAL_WINDOW)
         valid_1m = return_1m.dropna()
-        if valid_1m.empty:
-            return result
-        top5pct_threshold = float(valid_1m.quantile(0.95))
+        # 无离散度时不存在「相对追高」：全体收益率相同就没有谁"追"了谁。少了这道
+        # 判定，下面按名次取前 N 名会任意挑 N 只出来剔除。停牌 / 极端一致行情下
+        # 这种退化真实存在。
+        if valid_1m.empty or valid_1m.nunique() <= 1:
+            return out
 
-        result = [
-            StrategyScore(
-                s.ts_code, s.raw_factors,
-                score=0.0,
-                reason="近1月涨幅前5%，追高剔除。",
-            )
-            if float(return_1m.get(s.ts_code, float("nan"))) >= top5pct_threshold
-            and not pd.isna(return_1m.get(s.ts_code, float("nan")))
-            else s
-            for s in result
-        ]
-        return result
+        # 按**名次**取前 floor(n × pct) 名，不用分位数当阈值：
+        # `quantile(1-pct)` + `>=` 在小样本上被线性插值支配——21 只时阈值恰落在第
+        # 20 个值上而剔除 2 只（9.5%），2 只时剔除 1 只（50%），都与「前 5%」不符。
+        # floor 让「不足 1 只」时不剔除任何标的，这也正是"前 5%"该有的语义。
+        n_exclude = int(len(valid_1m) * self._cfg.reversal_exclude_pct)
+        if n_exclude <= 0:
+            return out
+        hit_codes = valid_1m.nlargest(n_exclude).index
+        out.loc[out.index.isin(hit_codes), :] = float("nan")
+        return out
 
     def _build_reason(self, ts_code: str, raw_row: pd.Series, final_score: float) -> str:
         r3m = raw_row.get("return_3m", float("nan"))

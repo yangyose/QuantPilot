@@ -97,14 +97,23 @@ def test_value_compute_raw_factors_missing_roe_column() -> None:
 
 
 def test_value_score_missing_industry_skips_value_trap() -> None:
-    """缺 sw_industry_l1 → 跳过价值陷阱规避（返回原始 score，无截断）。"""
+    """缺 sw_industry_l1 → 跳过价值陷阱规避（因子矩阵原样返回，无截断）。
+
+    **语义变更（V1.5-C C1-1）**：原断言检查 reason 里不含「得分已限制在50」。
+    约束落点统一到 `apply_constraints` 后，截断在 raw 因子域做、不再改写
+    reason，那个字符串已不存在 → 原断言恒真，测不到任何东西。改为直接比对
+    `apply_constraints` 的输出与 `compute_raw_factors` 逐值相等。
+    """
     universe = pd.Index(["A.SZ", "B.SZ"], name="ts_code")
-    scores = ValueStrategy().score(
-        universe, _value_snapshot(with_roe=True, with_industry=False)
-    )
+    snapshot = _value_snapshot(with_roe=True, with_industry=False)
+    strategy = ValueStrategy()
+
+    scores = strategy.score(universe, snapshot)
     assert len(scores) == 2
-    # 未触发「得分已限制在50」reason
-    assert all("限制在50" not in s.reason for s in scores)
+
+    raw = strategy.compute_raw_factors(universe, snapshot)
+    constrained = strategy.compute_strategy_factors(universe, snapshot)
+    pd.testing.assert_frame_equal(constrained, raw)
 
 
 def test_value_build_reason_fair_label() -> None:

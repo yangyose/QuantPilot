@@ -62,6 +62,33 @@ class BaseStrategy(ABC):
         - 无法计算的标的返回 NaN（横截面 rank 时自动排除）
         """
 
+    def apply_constraints(
+        self,
+        raw: pd.DataFrame,
+        universe: pd.Index,
+        market_data: MarketSnapshot,
+    ) -> pd.DataFrame:
+        """V1.5-C C1-1：策略硬约束的**唯一**落点，默认恒等返回。
+
+        Phase 4 把追高剔除 / 价值陷阱截断等硬约束写在各策略的 ``score()`` 末尾，
+        而 Phase 11 五步管线走 ``compute_strategy_factors`` **从不调用 score()**
+        → 这些约束在生产全部失效（价值陷阱一条尤其严重：value 策略占 composite
+        权重 0.57~0.87）。本钩子被两条路径共同调用，约束只写一处即处处生效，
+        也是 C2 F-Score 门控的接入点。
+
+        **约束必须在 raw 因子域表达**，不要用 0-100 分域的老写法——五步管线里
+        因子随后要 Winsorize → 中性化 → Z-score，「置分 0 / 截断到 50」已无意义：
+
+        - 「剔除」类 → 命中行该策略**所有因子列置 NaN**。语义 = 该股票不参与本
+          策略，``Scorer`` 见 NaN 会把权重分给其余策略。**禁止置 0**——Z-score
+          后 0 是横截面均值，置 0 等于发了张中性分而不是把它排除。
+        - 「截断」类 → 命中行逐列 ``min(raw, raw.quantile(0.5))``，保持「上限为
+          中位水平」的原始语义，且在 rank / Z-score 下不变形。
+
+        实现须为纯函数：不得修改入参 ``raw`` 与 ``market_data``（返回副本）。
+        """
+        return raw
+
     def compute_strategy_factors(
         self,
         universe: pd.Index,
@@ -69,13 +96,16 @@ class BaseStrategy(ABC):
     ) -> pd.DataFrame:
         """Phase 11 §3.0.1 P0-4：5 步管线 raw 因子矩阵入口。
 
-        默认实现透传 ``compute_raw_factors``——子类无需覆写。V1.5+ 策略可能在
-        ``compute_raw_factors`` 之上做降维 / 多周期合成 / PCA 等中间产物（如 MA
-        系列合成主成分、PE/PB 合成 value_composite 等）作为 5 步管线入口，此时
-        重写本方法不影响 ``compute_raw_factors``（后者继续用于 ``_build_reason``
-        L1 文本生成 / 冷启动 score() 路径）。
+        默认实现 = ``compute_raw_factors`` + ``apply_constraints``——子类无需覆写。
+        V1.5+ 策略可能在 ``compute_raw_factors`` 之上做降维 / 多周期合成 / PCA 等
+        中间产物（如 MA 系列合成主成分、PE/PB 合成 value_composite 等）作为 5 步
+        管线入口，此时重写本方法不影响 ``compute_raw_factors``（后者继续用于
+        ``_build_reason`` L1 文本生成 / 冷启动 score() 路径）——但**重写时必须自行
+        调用 ``apply_constraints``**，否则该策略的硬约束会再次失效。
         """
-        return self.compute_raw_factors(universe, market_data)
+        return self.apply_constraints(
+            self.compute_raw_factors(universe, market_data), universe, market_data,
+        )
 
     def score(
         self,
@@ -84,13 +114,19 @@ class BaseStrategy(ABC):
     ) -> list[StrategyScore]:
         """
         完整评分流程（由 ScoringService 通过 asyncio.to_thread 并发调用）：
-        1. compute_raw_factors() → raw（DataFrame）
+        1. compute_raw_factors() → apply_constraints() → raw（DataFrame）
         2. 横截面 Rank 百分位归一化：raw.rank(pct=True) * 100，∈[0,100]
         3. 策略内加权：(normalized * pd.Series(self.weights)).sum(axis=1)
         4. 逐行构建 StrategyScore（含 reason 文本）
-        子类可在此方法末尾施加额外约束（追高剔除、价值陷阱截断等）。
+
+        V1.5-C C1-1 起硬约束统一由 ``apply_constraints`` 施加，与五步管线
+        **同源**；子类不再覆写本方法追加约束。被「剔除」类约束命中的标的因子
+        全为 NaN → composite 为 NaN → 不出现在返回列表中（改造前是 score=0.0
+        仍留在列表里，属有意的语义收敛，见 apply_constraints docstring）。
         """
-        raw = self.compute_raw_factors(universe, market_data)
+        raw = self.apply_constraints(
+            self.compute_raw_factors(universe, market_data), universe, market_data,
+        )
         raw = raw.reindex(universe)                        # 对齐宇宙
         raw = raw.astype(float)                            # Decimal → float
 

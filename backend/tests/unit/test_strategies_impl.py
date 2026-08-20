@@ -291,8 +291,16 @@ class TestMomentumStrategy:
         )
 
     # MOM-02：追高剔除
-    def test_mom_02_anti_chasing_top5pct_score_zero(self, strategy) -> None:
-        """近 1M（20 交易日）涨幅排名全市场前 5% 的股票，momentum_score 强制为 0。"""
+    def test_mom_02_anti_chasing_top5pct_excluded(self, strategy) -> None:
+        """近 1M（20 交易日）涨幅排名前 5% 的股票**不参与本策略评分**。
+
+        **语义变更（V1.5-C C1-1）**：本用例原名 ..._score_zero，断言该股
+        `score == 0.0` 且仍留在结果列表里。约束落点统一到
+        `BaseStrategy.apply_constraints` 后，「剔除」类约束在 raw 因子域表达为
+        命中行全列 NaN → composite 为 NaN → 该股不出现在结果中。
+        0-100 分域里的 0 是「最差」，比「不参与」更强的惩罚，且经 Winsorize →
+        中性化 → Z-score 之后不再有「0 分」这个语义（0 会变成横截面均值）。
+        """
         # 构造 21 只股票，前 20 只涨幅普通（1%~20%），第 21 只近1M暴涨 95%
         codes = [f"S{i:02d}" for i in range(21)]
         price_series = {}
@@ -312,12 +320,12 @@ class TestMomentumStrategy:
         results = strategy.score(pd.Index(codes), snapshot)
         scores = {r.ts_code: r.score for r in results}
 
-        assert scores[chaser] == 0.0, (
-            f"近1M涨幅前5%的股票 {chaser} 得分应为0，实际 {scores[chaser]}"
+        assert chaser not in scores, (
+            f"近1M涨幅前5%的股票 {chaser} 不应参与评分，实际得分 {scores.get(chaser)}"
         )
-        # 其他股票不应全部为0
-        other_scores = [scores[c] for c in codes[:-1] if c in scores]
-        assert any(s > 0 for s in other_scores), "普通股票也被置0，追高剔除逻辑有误"
+        # 21 只 × 5% = 1.05 → floor → 恰好剔除 1 只，其余全部保留
+        assert set(scores) == set(codes[:-1]), "除追高股外不应有标的缺席"
+        assert all(v > 0 for v in scores.values()), "不应再出现 score=0 的占位行"
 
     # MOM-03：TD-3 未修复时行业相对强度降级
     def test_mom_03_td3_placeholder_industry_rs(self, strategy) -> None:
@@ -396,8 +404,15 @@ class TestValueStrategy:
         )
 
     # VAL-02：价值陷阱截断
-    def test_val_02_value_trap_capped_at_50(self, strategy) -> None:
-        """ROE < 行业中位数 ROE 时，最终得分 ≤ 50。"""
+    def test_val_02_value_trap_ranked_below_healthy_peer(self, strategy) -> None:
+        """ROE < 行业中位数 ROE 时，各因子截断至中位数 → 排序低于健康同业。
+
+        **语义变更（V1.5-C C1-1）**：本用例原名 ..._capped_at_50，断言最终得分
+        `<= 50.0`。约束落点统一后，截断改在 raw 因子域做（`min(raw, 中位数)`），
+        最终分由截断后的横截面 rank 决定，不再有「50」这个固定上界——0-100 分域
+        的上界在五步管线的中性化 + Z-score 之后已无意义。可断言的不变量是
+        **陷阱股不得排在健康同业之前**，这正是 SDD §7.2.4 要的效果。
+        """
         codes = ["TRAP", "OK"]
         # TRAP：PE 低（高分）但 ROE 低于行业中值 → 截断到 ≤ 50
         # OK：PE 低且 ROE 高于行业中值 → 不截断
@@ -434,11 +449,9 @@ class TestValueStrategy:
         results = strategy.score(pd.Index(codes), snapshot)
         scores = {r.ts_code: r.score for r in results}
 
-        assert scores["TRAP"] <= 50.0, (
-            f"价值陷阱 TRAP 得分应≤50，实际 {scores['TRAP']}"
-        )
         assert scores["OK"] > scores["TRAP"], (
-            f"OK({scores['OK']:.1f}) 应高于 TRAP({scores['TRAP']:.1f})"
+            f"价值陷阱 TRAP({scores['TRAP']:.1f}) 不应排在健康同业 "
+            f"OK({scores['OK']:.1f}) 之前"
         )
 
     # VAL-03：TD-1 未修复时 ROE 权重降级
