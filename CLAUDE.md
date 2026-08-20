@@ -155,8 +155,12 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d  # 生产�
 
 ### 4.4 Engine 层
 
-- 严格无 IO（数据库 / 文件 / 网络），只做纯函数计算；需要 IO 由 Service 层组装数据传入
+- 严格无 IO（数据库 / 文件 / 网络），只做纯函数计算；需要 IO 由 Service 层组装数据传入。**也不许在实例上缓存中间结果**（`self._xxx_cache = ...`）：策略实例会被 `ScoringService` 跨调用复用，并发跑两次评分就串数据。需要把中间量带给同一次调用的下游（如理由文本要用 σ），走返回值——见下条
 - PostgreSQL `NUMERIC` 列传 pandas_ta 前必须 `.astype(float)`（避免 `isnan` TypeError）
+- **pandas_ta 传错参数名不报错**：0.4.x 把 `bbands(std=)` 拆成了 `lower_std=` / `upper_std=`，旧名落进 `**kwargs` 被**静默忽略**——列名与数值完全不变，无告警。本仓 `mean_reversion.py` 的 `std=2.0` 因此长期无效（只因默认值恰好也是 2.0 才没出事）。判据不是"读文档确认签名"，而是**写一条「改参数 → 结果必须变」的测试**：接了配置却毫无作用的代码能跑过任何只验证"不抛异常"的测试
+- **策略因子矩阵禁止夹带非因子列**：`Scorer.aggregate` 是 `for col in df.columns` 逐列 Winsorize→中性化→Z-score 后**列向取均值**，**不读 `strategy.weights`**（后者只对旧的 `score()` 路径有效）。多出来的辅助列（σ、中间量、调试列）会被当成一个因子参与合成，方向还可能相反。要带辅助列就在 `compute_strategy_factors` 覆写里 `drop` 掉再返回
+- **策略硬约束只能写在 `BaseStrategy.apply_constraints`**（V1.5-C C1-1 引入）：`compute_strategy_factors` 与 `score()` 同源调用它。写在 `score()` 末尾的约束在五步管线里**完全不生效**——生产曾因此让 SDD §7.2.4 的价值陷阱护栏长期失效，而 value 策略占 composite 权重 0.57~0.87。约束须在 **raw 因子域**表达：剔除类 = 命中行全列 NaN（**禁止置 0**，Z-score 后 0 是横截面均值 = 中性分而非排除）；截断类 = 逐列 `min(raw, raw.quantile(0.5))`
+- **「取前 X%」不要用 `quantile(1-X)` 当阈值**：小样本上被线性插值支配——21 只剔 2 只（9.5%）、2 只剔 1 只（50%）。用 `nlargest(int(n * pct))` 按名次取，`floor` 让"不足 1 只"时不剔除任何标的。另需挡住无离散度退化（全体值相同 → 阈值等于该值 → `>=` 命中全体 → 整个策略被清空）
 - 交易日数 → 日历天：`calendar_days = int(history_days * 1.5)`，禁止直接 `timedelta(days=history_days)`
 - APScheduler job 无法访问 `app.state`，Engine 单例须通过 `create_scheduler()` 显式 `args=[...]` 传入
 
