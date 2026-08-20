@@ -93,6 +93,14 @@ export const GLOSSARY: Record<string, TermDef> = {
     title: '布林带（Bollinger Bands）',
     description: 'MA ± N 倍标准差。价格触及下轨视为超卖，可用于均值回归。',
   },
+  historical_volatility: {
+    title: '历史波动率',
+    description: '近 60 个交易日收益率的标准差，衡量股价波动幅度。数值越大股价越颠簸。展示为年化值。',
+  },
+  risk_adjusted_momentum: {
+    title: '风险调整动量',
+    description: '3 月涨幅 ÷ 波动率。同样的涨幅，走势越平稳得分越高，避免只盯涨幅而追进大起大落的标的。',
+  },
 
   // ─── 估值/财务 ───────────────────────────────────────────
   pe_ttm: {
