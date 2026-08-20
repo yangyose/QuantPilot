@@ -1,7 +1,7 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.6（C0 收尾期修订，2026-08-18）
-> 状态：**C0 代码交付完成**（25 UT + 13 INT + alembic 0024/0025）；断档追平已跑完，待收尾导入生产；C1-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
+> 版本：v0.7（C0 收尾完成 + C1-1 实施期修订，2026-08-20）
+> 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1-1 已交付**（约束落点统一，commit ac069e5，未部署）；C1-2 待做；C2-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
 > 估算：roadmap §6 登记 **9-13 pd** → 启动核查重估 **~12.5-20 pd** → 本次详细设计展开后 **~14.5-22 pd**（分项见 §1.2；增量来自 C0 前置闭环 + C1 策略约束落点统一，二者均为设计展开期实证发现的既有缺口，非范围扩张）
 > 实施顺序（沿用 V1.5-A「先轻后重」先例）：**C0 → C1 → C2 → C3 → C4 → C5**
 > 依据文档：
@@ -23,6 +23,7 @@
 | v0.4 | 2026-08-17 | **C0 实施期修订**，全部由生产实证驱动：① **C0-3 追平路径改写**——在生产容器跑回填脚本仅一个交易日即被 OOM killer 杀掉（RSS 1.58 GB），站点 530 共 43 分钟；单日耗时实测约 20 分钟（48 天 ≈ 16 小时）→ 改走本地算力中心（5434 全量副本）批量回填后导入生产，并写入**「先导入、后部署」硬顺序约束**（先部署会让 Job 在 19:30 对 48 天积压逐日全 universe 评分，即打挂生产的同一条路径）；② **`_CATCHUP_MAX_DAYS` 3 → 1**——单次运行绝不连做多次全 universe 评分，大断档不由 Job 承担；③ 新增 **C0-5 评分路径财务查询优化（alembic 0024）**——追平标定挖出 universe 过滤单次 9 分钟，卡在 `financial_data` 658 万行的两条查询（其中 `DISTINCT ON` 段 external merge 落盘 261 MB），该表日频行不可删故修在索引侧，两个覆盖索引经本地全量副本 A/B 实测分别 31.3s→2.3s、69.7s→25.9s 且排序节点全消。断档区间据前向窗口据实收敛为 **48 个交易日**（2026-05-12 → 2026-07-17，非原估 60）|
 | v0.5 | 2026-08-18 | **C0 追平期修订**：新增 **C0-6 零权重策略的 IC 可观测性**——本地追平实测发现 2026-06-09 起 `trend`/`momentum` 完全不产日级 IC 行，查证为 R1 判 offline → 权重 0 → `Scorer.aggregate` Step 5 的 `valid_weights` 过滤把二者挡在 `score_breakdown_raw` 之外 → `extract_strategy_z` 抽不到。R1 的判定本身正确（momentum ICIR 稳定 −0.66~−0.94、样本 144~188），坏掉的是**复活路径**：无新 IC 则永远评估不出「已恢复」，且已实证 UPTREND 窗口冻结（连续两月 sample_size=60、ICIR 数值完全相同）。处置为解耦 IC 观测与 composite 加权：新增仅内存字段 `CompositeScore.strategy_z_all`，`extract_strategy_z` 优先消费、缺失回退旧字段——无迁移、`score_breakdown_raw` 语义不变、下游消费方零改动。同批**提前实施 §8.3 陷阱 1 的处置**（原定 C3）——该条并非「新增策略才触发的风险」而是当前生产正在犯的缺陷：trend/momentum 权重已为 0 却仍进 Gram-Schmidt，`valid_mask` 使其 NaN 行残差全 NaN → `fillna(0.0)` → `composite_z=0` → `Φ(0)×100=50` 假中位分且不被 `any_valid` 剔除，真实高分股正被压平到中位；与 C0-6 同处 Step 4/5，同批修复同批回归（UT-C0-08a/b）|
 | v0.6 | 2026-08-18 | **C0 收尾期修订**：新增 **C0-7 daily/aggregate 行唯一约束撞车**（alembic 0025）——`factor_ic_window_state` 的全表唯一键不含 `row_type`，月末当日状态等于某 aggregate 行 state 时两行合并，日级观测对 ICIR 窗口消失、aggregate 的 `sample_size` 被覆盖；生产实测 156 行 / 39 个月末，且**本次追平终态 47 天 / 188 行而非 48 / 192 正是它的指纹**。Phase 14（0014）注释显示这是当时「冗余但向后兼容」的有意取舍，判定为错误取舍并纠正。同步记录部署期新增风险：0025 生效后旧代码三处 upsert 立即失效（4 列 `index_elements` 推断不到唯一索引），收尾须避开月末批 |
+| v0.7 | 2026-08-20 | **C0 收尾完成 + C1-1 实施期修订**。① C0 六步生产收尾全部实证完成（备份 → alembic 0025 → 拆分 156 行 → 导入 48 天 → ICIR 重算 51 月 → 部署），**首日两次全 universe 评分内存峰值 1.364 GiB（17:30 管线）/ 1.371 GiB（19:30 Job）仅差 7 MiB**，证实 19:30 不抬高峰值只是把同一峰值再走一遍；`trend` 在 UPTREND 下权重由 0 → 0.0037，C0-6 的复活路径在生产验证成立（2026-07-20 的 4 条 IC 行含权重为 0 的 momentum）。收尾期另修 `backfill_icir_rebalance` 日历缓冲缺陷（仅留 30 天 < ICIR 回看 272 交易日 → 任何 `--start` 的开头约一年月份注定失败，且是"部分成功 + exit 1"极易误判为跑完）。② **§3.2 C1-1 措辞订正**：原文「旧路径行为等价，不产生回归」与同节「剔除类置 NaN、禁止置 0」不可兼得——约束表达迁到 raw 因子域后旧路径数值必然改变（追高股由 `score=0` 变为不出现在结果中，陷阱股不再有 50 的固定上界）。真正要守的契约是「约束仍生效且两路径同源」，§3.3 相应 DoD 判定标准同步调整。③ **§3.2 回写 C1-1 实施期实证三项**：追高剔除在无离散度时会清空整个策略、「前 5%」用分位数阈值在小样本上实为 9.5%~50%（改按名次取前 `floor(n×pct)` 名）、既有测试 helper 数据退化导致的假 RED 及其前置判据防护 |
 
 ---
 
@@ -214,7 +215,13 @@ Phase 11 五步管线经 `ScoringService.score_universe` → `strategy.compute_s
 
 - 在 `BaseStrategy` 引入受保护钩子 `apply_constraints(raw: pd.DataFrame, universe, market_data) -> pd.DataFrame`，默认恒等返回。
 - `BaseStrategy.compute_strategy_factors` 改为 `return self.apply_constraints(self.compute_raw_factors(universe, market_data), universe, market_data)`。
-- `BaseStrategy.score()` 在 `compute_raw_factors` 之后同样调用 `apply_constraints`，保证**两条路径同源**（旧路径行为等价，不产生回归）。
+- `BaseStrategy.score()` 在 `compute_raw_factors` 之后同样调用 `apply_constraints`，保证**两条路径同源**。
+
+  ⚠️ **同源 ≠ 数值等价**（v0.7 订正，原文误写作「旧路径行为等价，不产生回归」）：约束表达从 0-100 分域迁到 raw 因子域后，旧路径的数值表现必然改变，二者不可兼得——
+  - 追高股：改造前 `score=0.0` 且带「追高剔除」reason **留在结果列表里**；改造后全因子 NaN → composite 为 NaN → **不出现在结果中**。0-100 分域里的 0 是「最差」，比「不参与」更强的惩罚；语义收敛为后者是有意的。
+  - 价值陷阱股：改造前 `min(score, 50)` + reason 后缀；改造后由截断后的横截面 rank 决定，不再有「50」这个固定上界。
+
+  真正要守的契约是「**约束仍然生效、且两条路径生效方式一致**」，不是「分数不变」。
 - 各策略把原写在 `score()` 里的约束迁入 `apply_constraints`：
   - Momentum：追高剔除 + 数据不足 guard
   - Value：价值陷阱截断
@@ -222,6 +229,14 @@ Phase 11 五步管线经 `ScoringService.score_universe` → `strategy.compute_s
   - 「剔除」类（追高剔除、数据不足、C2 的 F-Score 门控）→ 命中行该策略**所有因子列置 NaN**。语义 = 该股票不参与本策略，`Scorer` 的 `strategy_z` 对该行为 NaN，权重由其余策略分担。**禁止置 0**——Z-score 后 0 是横截面均值（中位水平），置 0 等于给了个中性分而非排除。
   - 「截断」类（价值陷阱）→ 对命中行的因子值做**分位截断**：`raw[命中行] = min(raw[命中行], raw.quantile(0.5))`，逐因子列施加，保持「上限为中位水平」的原始语义且在 rank/Z-score 下不变形。
 - ⚠️ 迁移必须逐条对照 SDD 原文语义写测试（RED 先行），并在 `aggregate_legacy` 路径跑回归，确认 Phase 4 单测契约不破。
+
+**C1-1 实施期实证（v0.7 回写）**——迁移过程中暴露出三个既有缺陷，均已随 C1-1 修复：
+
+1. **追高剔除会清空整个动量策略**：全体近 1M 收益率相同时（停牌 / 极端一致行情），`quantile(1-pct)` 等于那个唯一值，`>=` 命中**全体** → 因子全 NaN。改造前表现为全体置 0 分，同属静默失效。处置：加无离散度判定（`nunique() <= 1` → 不剔除任何标的）。
+2. **「前 5%」的实现不是 5%**：用分位数当阈值在小样本上被线性插值支配——21 只剔 2 只（9.5%）、**2 只剔 1 只（50%）**。处置：改为按名次取前 `floor(n × pct)` 名，`floor` 让「不足 1 只」时不剔除任何标的，这正是「前 X%」应有的语义。生产 ~3000 只上两种算法结果接近，但定义从此精确。该缺陷此前不可见，正是因为被剔除的标的以 `score=0` 留在列表里；语义收敛为「不参与」后立即暴露（两个 2 只股票的 Phase 4 用例随即失败）。
+3. **测试数据退化导致的假 RED**：价值陷阱用例初版复用既有 helper，而该 helper 的 pb 历史逐股恒定、pe 历史用了全局 enumerate 下标 → 历史分位全挤成同一值，陷阱股恰等于中位数，截与不截都满足 `<= median`。处置：自建有区分度的历史，并在用例内加**前置判据**（先断言陷阱股严格高于中位数），数据再退化即直接失败而非真空通过。
+
+**同批兑现**（momentum.py【降级说明】恢复条件的一部分）：`lookback_short` 与 `reversal_exclude_pct` 真正传入计算。`lookback_long` 与 RSI/BBands 参数化留在 C1-2。
 
 **C1-2 风险调整动量**
 
@@ -243,11 +258,13 @@ Phase 11 五步管线经 `ScoringService.score_universe` → `strategy.compute_s
 
 ### 3.3 C1 DoD
 
-- [ ] RED：`apply_constraints` 钩子存在性 + 两路径同源单测先失败
-- [ ] 单测：追高剔除在 `compute_strategy_factors` 生效（命中行全列 NaN）；数据不足 guard 生效；价值陷阱截断在 raw 域生效（命中行 ≤ 该列中位数）
-- [ ] 单测：`aggregate_legacy` 路径行为与改造前等价（Phase 4 契约回归）
+- [x] RED：`apply_constraints` 钩子存在性 + 两路径同源单测先失败
+- [x] 单测：追高剔除在 `compute_strategy_factors` 生效（命中行全列 NaN）；数据不足 guard 生效；价值陷阱截断在 raw 域生效（命中行 ≤ 该列中位数）
+- [x] 单测：旧路径（`score()` / `aggregate_legacy`）**约束仍然生效且与五步管线同源**——注意不是「数值等价」，见 §3.2 的 v0.7 订正。Phase 4 契约回归的判定标准随之调整为：MOM-02 断言追高股不参与评分（原断言 `score == 0.0`）、VAL-02 断言陷阱股不得排在健康同业之前（原断言 `score <= 50.0`）
+- [x] 单测：无离散度时不剔除任何标的；剔除条数 = `floor(n × reversal_exclude_pct)`（§3.2 实施期实证 1/2）
 - [ ] 单测：`risk_adj_return_3m` = return_3m/σ60；σ 有效样本不足 → NaN；`risk_adjusted=False` 回退原因子
-- [ ] 单测：`lookback_short/long`、`reversal_exclude_pct`、RSI/BBands 参数真正被计算消费（改参数 → 结果变）
+- [x] 单测：`lookback_short`、`reversal_exclude_pct` 真正被计算消费（改参数 → 结果变）——C1-1 已交付
+- [ ] 单测：`lookback_long`、RSI/BBands 参数真正被计算消费（改参数 → 结果变）
 - [ ] 本地 5y 面板对比：改造前后 momentum 日级 IC / ICIR（OSCILLATION + UPTREND）。**要求记录真实结果，不设"必须转正"的硬门槛**——若仍为负则如实记录并在 §3.3 结论中写明（负 IC 本身是有效信息，ICIR 机制会继续给 0 权重；禁止为达标调参硬凑）
 - [ ] 理由模板更新 + 前端术语表（`glossary.ts`）补「风险调整动量」「历史波动率」
 - [ ] SDD §7.2.3 / §7.2.4 回写（约束落点 + 风险调整默认行为）
