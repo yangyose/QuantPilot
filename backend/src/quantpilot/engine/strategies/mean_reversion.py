@@ -15,9 +15,10 @@ class MeanReversionStrategy(BaseStrategy):
     """SDD §7.2.2：RSI + 乖离率 + 布林带。
 
     Phase 10：`config` 由 ConfigService 注入。
-    【降级说明】V1.0 RSI period=14 / BBands period=20 / std=2.0 仍硬编码在
-    `compute_raw_factors` 内部；dataclass 仅作为 Pipeline 快照登记。
-    恢复条件：V1.5 将 rsi_period / bbands_period / bbands_std 传入 pandas_ta 调用。
+    V1.5-C C1-2：rsi_period / bbands_period / bbands_std 已全部传入 pandas_ta，
+    原【降级说明】（"V1.0 仍硬编码，dataclass 仅作 Pipeline 快照登记"）的恢复条件
+    已兑现，故移除。注：乖离率的均线窗口复用 bbands_period（二者同为"中枢均线"
+    口径，SDD 未给独立参数）。
     """
 
     name = "mean_reversion"
@@ -49,7 +50,7 @@ class MeanReversionStrategy(BaseStrategy):
 
             # ── RSI（越低越超卖，直接用原始值；rank 时低 RSI → 低 rank → 低百分位
             #    均值回归策略希望超卖（低RSI）得高分，所以取 100-RSI 让低RSI→高值）─────
-            rsi_series = ta.rsi(close, length=14)
+            rsi_series = ta.rsi(close, length=self._cfg.rsi_period)
             if rsi_series is None or rsi_series.dropna().empty:
                 rsi_oversold = float("nan")
             else:
@@ -57,14 +58,22 @@ class MeanReversionStrategy(BaseStrategy):
                 rsi_oversold = 100.0 - raw_rsi   # 超卖（低 RSI）→ 高值 → rank 高分
 
             # ── 乖离率（MA20-close）/ MA20，越大（价格低于均线越多）得分越高 ─────────
-            ma20 = float(close.rolling(20).mean().iloc[-1])
+            ma20 = float(close.rolling(self._cfg.bbands_period).mean().iloc[-1])
             if pd.isna(ma20) or ma20 == 0:
                 price_deviation = float("nan")
             else:
                 price_deviation = (ma20 - last_close) / ma20   # 价格低于均线 → 正值 → 高分
 
             # ── 布林带位置（越接近下轨得分越高）───────────────────────────────────
-            bb_df = ta.bbands(close, length=20, std=2.0)
+            # pandas_ta 0.4.x 把 `std` 拆成 `lower_std` / `upper_std`，旧的 `std=`
+            # 会被 **kwargs 静默吞掉。原代码写的 `std=2.0` 因此一直是**无效参数**
+            # ——只因默认值恰好也是 2.0 才没出事。传错名字不报错，必须按新签名传。
+            bb_df = ta.bbands(
+                close,
+                length=self._cfg.bbands_period,
+                lower_std=self._cfg.bbands_std,
+                upper_std=self._cfg.bbands_std,
+            )
             if bb_df is None or bb_df.empty:
                 bb_position = float("nan")
             else:

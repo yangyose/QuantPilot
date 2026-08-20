@@ -266,11 +266,23 @@ class TestMomentumStrategy:
         from quantpilot.engine.strategies.momentum import MomentumStrategy
         return MomentumStrategy()
 
-    # MOM-01：3 月涨幅排名
-    def test_mom_01_return_3m_highest_wins(self, strategy) -> None:
-        """近 60 交易日涨幅最高的标的得分最高。
-        注：涨幅集中在 3M 窗口前段（近 1M 涨幅为零），避免触发追高剔除逻辑。
+    # MOM-01：3 月涨幅排名（risk_adjusted=False 回退路径）
+    def test_mom_01_return_3m_highest_wins(self) -> None:
+        """近 60 交易日涨幅最高的标的得分最高——**仅在关闭风险调整时成立**。
+
+        **语义变更（V1.5-C C1-2 / SDD-EXT-08）**：默认 `risk_adjusted=True` 后，
+        因子是 `return_3m / σ60` 而非 `return_3m`，「涨幅最高者胜」不再是策略的
+        定义。本用例的数据恰是反例：HIGH_MOM 用 40 天暴涨 120% 后走平（高波动），
+        LOW_MOM 平缓涨 6%（极低波动），风险调整后低波动者略胜——这正是
+        SDD-EXT-08 想要的效果，不是缺陷。
+
+        故本用例改为显式关闭风险调整，继续守护回退路径的原始契约；默认配置下的
+        排序由 tests/unit/test_risk_adjusted_momentum.py::UT-C1-04c 覆盖。
         """
+        from quantpilot.core.config_defaults import MomentumStrategyConfig
+        from quantpilot.engine.strategies.momentum import MomentumStrategy
+
+        strategy = MomentumStrategy(MomentumStrategyConfig(risk_adjusted=False))
         # HIGH_MOM：3M内涨幅大，但涨幅发生在近60日的前40天，近20日持平
         high_mom = [100.0] * 70 + [100.0 + i * 3.0 for i in range(1, 41)] + [220.0] * 20
         # LOW_MOM：3M内小涨，近20日也小涨

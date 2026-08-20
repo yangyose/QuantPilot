@@ -127,6 +127,10 @@ class MomentumStrategyConfig:
     lookback_short: int = 60
     lookback_long: int = 120
     reversal_exclude_pct: float = 0.05
+    # V1.5-C C1-2（SDD-EXT-08）：风险调整动量。True = 因子取 return_3m / σ，
+    # 减少对高波动标的的偏向；False 一键回退原始涨幅，供对照实验。
+    risk_adjusted: bool = True
+    volatility_window: int = 60      # σ 的回看交易日数（对数收益标准差，不年化）
 
 
 DEFAULT_MOMENTUM_STRATEGY = MomentumStrategyConfig()

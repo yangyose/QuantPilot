@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import math
 
+import numpy as np
 import pandas as pd
 
 from quantpilot.core.config_defaults import (
@@ -17,19 +19,33 @@ logger = logging.getLogger(__name__)
 # reversal_exclude_pct（剔除比例）才是 L2 可配项。
 _REVERSAL_WINDOW = 20
 
+# σ 辅助列名。只在 compute_raw_factors 的输出里存在，五步管线入口会摘掉。
+_SIGMA_COL = "volatility_60d"
+
+# σ 的最低有效样本比例：有效收益数 < volatility_window × 该比例 → σ 记 NaN。
+_SIGMA_MIN_VALID_RATIO = 0.7
+
+# 年化系数（仅用于理由文本展示；计算全程不年化——横截面 rank 与 Z-score 对
+# 正的常数缩放不变，年化只增计算不增信息）。
+_TRADING_DAYS_PER_YEAR = 252
+
 
 class MomentumStrategy(BaseStrategy):
     """SDD §7.2.3：3M/6M 涨幅 + 行业相对强度 + 追高剔除。
 
     Phase 10：`config` 由 ConfigService 注入。
-    【降级说明】V1.0 回看期（3M≈60、6M≈120）与 reversal_exclude_pct 在
-    `compute_raw_factors` 内部仍硬编码；dataclass 仅作为 Pipeline 快照登记。
-    恢复条件：V1.5 完成 lookback/reversal 窗口全参数化。
+    V1.5-C C1-2：lookback_short / lookback_long / reversal_exclude_pct 已全部传入
+    计算，原【降级说明】（"窗口仍硬编码，dataclass 仅作 Pipeline 快照登记"）的
+    恢复条件已兑现，故移除。同批按 SDD-EXT-08 把 3M 涨幅改为**风险调整涨幅**
+    （涨幅 / σ），`risk_adjusted=False` 可一键回退作对照。
     """
 
     name = "momentum"
     display_name = "动量"
-    weights = {"return_3m": 0.40, "rs_6m": 0.35, "industry_rs": 0.25}
+    # 实例化时按 risk_adjusted 覆写（见 __init__）：因子列名随配置切换，weights 的
+    # 键必须与产出列名一致，否则 BaseStrategy.score 的 available_cols 会把该因子
+    # 静默丢掉，只剩 rs_6m + industry_rs 参与加权。
+    weights = {"risk_adj_return_3m": 0.40, "rs_6m": 0.35, "industry_rs": 0.25}
 
     # 申万 2021 标准一级行业名称（Tushare stock_industry(src='SW2021') industry_name 值域）
     # 不在此集合的 sw_industry_l1 视为占位值，industry_rs 置中性分 50
@@ -43,6 +59,10 @@ class MomentumStrategy(BaseStrategy):
 
     def __init__(self, config: MomentumStrategyConfig | None = None) -> None:
         self._cfg = config or DEFAULT_MOMENTUM_STRATEGY
+        self._return_col = (
+            "risk_adj_return_3m" if self._cfg.risk_adjusted else "return_3m"
+        )
+        self.weights = {self._return_col: 0.40, "rs_6m": 0.35, "industry_rs": 0.25}
 
     def compute_raw_factors(
         self,
@@ -53,15 +73,17 @@ class MomentumStrategy(BaseStrategy):
         financials = market_data["financials"].reindex(universe)
         index_prices = market_data["index_adj_prices"].astype(float)
 
-        # ── return_3m：近 60 交易日收益率 ─────────────────────────────────────
-        return_3m = _period_return(adj_prices, 60)
+        # ── return_3m：近 lookback_short 交易日收益率 ─────────────────────────
+        return_3m = _period_return(adj_prices, self._cfg.lookback_short)
 
-        # ── rs_6m：近 120 交易日收益率 vs 沪深300 ────────────────────────────
-        return_6m = _period_return(adj_prices, 120)
-        if not index_prices.empty and len(index_prices.columns) >= 121:
+        # ── rs_6m：近 lookback_long 交易日收益率 vs 沪深300 ───────────────────
+        n_long = self._cfg.lookback_long
+        return_6m = _period_return(adj_prices, n_long)
+        if not index_prices.empty and len(index_prices.columns) >= n_long + 1:
             cols = sorted(index_prices.columns)
             idx_return_6m = (
-                float(index_prices[cols[-1]].mean()) / float(index_prices[cols[-121]].mean()) - 1.0
+                float(index_prices[cols[-1]].mean())
+                / float(index_prices[cols[-(n_long + 1)]].mean()) - 1.0
             )
         else:
             idx_return_6m = 0.0
@@ -88,13 +110,42 @@ class MomentumStrategy(BaseStrategy):
             )
             industry_rs = pd.Series(50.0, index=universe, dtype=float)
 
-        df = pd.DataFrame({
-            "return_3m": return_3m,
-            "rs_6m": rs_6m,
-            "industry_rs": industry_rs,
-        }, index=universe)
+        # ── C1-2 风险调整（SDD-EXT-08）：涨幅 / 波动率 ─────────────────────────
+        cols: dict[str, pd.Series] = {}
+        if self._cfg.risk_adjusted:
+            sigma = _rolling_sigma(adj_prices, self._cfg.volatility_window)
+            # clip(1e-6) 防除零；σ 为 NaN（有效样本不足）时结果自然为 NaN，该标的
+            # 不参与本策略——不足样本算出的 σ 会放大噪声，给个"看似正常的数"比
+            # 不给更糟。
+            cols[self._return_col] = return_3m / sigma.clip(lower=1e-6)
+            # σ 仅供 _build_reason 展示与数据血缘，**不进五步管线**（见
+            # compute_strategy_factors 覆写处的说明）。
+            cols[_SIGMA_COL] = sigma
+        else:
+            cols[self._return_col] = return_3m
 
-        return df
+        cols["rs_6m"] = rs_6m
+        cols["industry_rs"] = industry_rs
+        return pd.DataFrame(cols, index=universe)
+
+    def compute_strategy_factors(
+        self,
+        universe: pd.Index,
+        market_data: MarketSnapshot,
+    ) -> pd.DataFrame:
+        """五步管线入口：施加约束后**摘掉 σ 辅助列**。
+
+        `Scorer.aggregate` 对策略因子矩阵是 ``for col in df.columns`` 逐列
+        Winsorize→中性化→Z-score 后**列向取均值**，并不读 ``strategy.weights``。
+        因此任何多余列都会被当成一个因子参与合成——σ 留在矩阵里会直接污染
+        composite（且方向相反：高波动反而加分）。
+
+        σ 仍保留在 ``compute_raw_factors`` 的输出里，供 ``score()`` 路径的
+        ``_build_reason`` 展示年化波动率、以及 ``raw_factors`` 数据血缘。
+        """
+        return super().compute_strategy_factors(universe, market_data).drop(
+            columns=[_SIGMA_COL], errors="ignore",
+        )
 
     def apply_constraints(
         self,
@@ -139,19 +190,54 @@ class MomentumStrategy(BaseStrategy):
         return out
 
     def _build_reason(self, ts_code: str, raw_row: pd.Series, final_score: float) -> str:
-        r3m = raw_row.get("return_3m", float("nan"))
         r6m_diff = raw_row.get("rs_6m", float("nan"))
         rs_ind = raw_row.get("industry_rs", float("nan"))
-
-        r3m_pct = r3m * 100 if not pd.isna(r3m) else float("nan")
         r6m_label = "超额" if (not pd.isna(r6m_diff) and r6m_diff > 0) else "落后"
         r6m_abs = abs(r6m_diff * 100) if not pd.isna(r6m_diff) else float("nan")
-
-        return (
-            f"3月涨幅={r3m_pct:.1f}%，"
+        tail = (
             f"相对指数{r6m_label}{r6m_abs:.1f}%，"
             f"行业相对强度={rs_ind:.1f}%。"
         )
+
+        if not self._cfg.risk_adjusted:
+            r3m = raw_row.get("return_3m", float("nan"))
+            r3m_pct = r3m * 100 if not pd.isna(r3m) else float("nan")
+            return f"3月涨幅={r3m_pct:.1f}%，{tail}"
+
+        # σ 在计算中不年化，展示时乘 √252 —— 用户对「年化波动率」有直觉，
+        # 对「日对数收益标准差」没有。
+        ratio = raw_row.get(self._return_col, float("nan"))
+        sigma = raw_row.get(_SIGMA_COL, float("nan"))
+        sigma_pct = (
+            sigma * math.sqrt(_TRADING_DAYS_PER_YEAR) * 100
+            if not pd.isna(sigma) else float("nan")
+        )
+        return (
+            f"3月风险调整涨幅（涨幅/波动率）={ratio:.2f}，"
+            f"年化波动率={sigma_pct:.1f}%，{tail}"
+        )
+
+
+def _rolling_sigma(adj_prices: pd.DataFrame, window: int) -> pd.Series:
+    """近 ``window`` 个交易日**对数收益率**的标准差，不年化。
+
+    不年化的理由：横截面 rank 与 Z-score 对正的常数缩放不变，年化只增计算不增
+    信息。理由文本里才乘 √252 展示，便于用户理解。
+
+    有效收益数 < ``window × _SIGMA_MIN_VALID_RATIO`` 的标的记 NaN——样本不足时
+    σ 不可靠，而它在分母上，会把噪声放大成一个很大的"高分"。
+    """
+    if adj_prices.shape[1] < 2:
+        return pd.Series(float("nan"), index=adj_prices.index)
+
+    prices = adj_prices.astype(float)
+    # 非正价格取对数会得到 -inf/NaN；先置 NaN，由下面的有效样本数判定兜底
+    prices = prices.where(prices > 0)
+    log_ret = np.log(prices).diff(axis=1).iloc[:, -window:]
+
+    sigma = log_ret.std(axis=1, skipna=True)
+    min_valid = window * _SIGMA_MIN_VALID_RATIO
+    return sigma.where(log_ret.notna().sum(axis=1) >= min_valid)
 
 
 def _period_return(adj_prices: pd.DataFrame, n: int) -> pd.Series:

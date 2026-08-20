@@ -150,7 +150,12 @@ def test_ut_c1_02b_anti_chasing_not_applied_to_normal_stocks() -> None:
     constrained = strategy.compute_strategy_factors(pd.Index(codes), snapshot)
 
     keep = [c for c in codes if c != chaser]   # 除追高股外全部逐值不变
-    pd.testing.assert_frame_equal(constrained.loc[keep], raw.loc[keep])
+    # C1-2 起 compute_raw_factors 多产一列 σ 供理由文本用，五步管线入口会摘掉
+    # （见 MomentumStrategy.compute_strategy_factors）。按管线实际拿到的列比对，
+    # 仍是逐值精确。
+    pd.testing.assert_frame_equal(
+        constrained.loc[keep], raw.loc[keep, constrained.columns],
+    )
 
 
 def test_ut_c1_02e_reversal_exclude_pct_is_consumed() -> None:
