@@ -14,7 +14,11 @@ from quantpilot.data.repository import MarketDataRepository
 from quantpilot.engine.market_state import MarketStateEnum
 from quantpilot.engine.pool import CandidatePoolManager
 from quantpilot.engine.scorer import CompositeScore, Scorer
-from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot
+from quantpilot.engine.strategies.base import (
+    DEFAULT_REQUIRED_HISTORY_DAYS,
+    BaseStrategy,
+    MarketSnapshot,
+)
 from quantpilot.engine.universe import UniverseFilter
 
 if TYPE_CHECKING:
@@ -24,10 +28,57 @@ logger = logging.getLogger(__name__)
 
 # 沪深300 作为基准指数
 _BENCHMARK_INDEX = "000300.SH"
-# 后复权价格窗口：近 180 日历天 ≈ 120 交易日（覆盖 MomentumStrategy 6M 窗口）
-_PRICE_WINDOW_DAYS = 180
+# 后复权价格窗口的深度由各策略自报（BaseStrategy.required_history_days，单位交易日），
+# 起点用 TradingCalendar 精确回退。
+#
+# V1.5-C C1-3 修复：此处原为 `_PRICE_WINDOW_DAYS = 180` 日历天，注释写「≈ 120 交易日
+# （覆盖 MomentumStrategy 6M 窗口）」。实测 2026-07-17 往前 180 日历天只有 **119 个
+# 交易日**，而 `_period_return(adj_prices, 120)` 要 ≥ 121 列 → momentum 权重 0.35 的
+# `rs_6m` 自 Initial commit 起恒为全 NaN，且 index_adj_prices 同样不足导致
+# `idx_return_6m` 回落 0.0（rs_6m 退化成绝对收益）。两处都无告警。
+# CLAUDE.md §4.4 的 `×1.5` 经验式在这里恰好不够：120×1.5=180，而 A 股真实系数
+# 365/250 ≈ 1.46 再叠假期聚集就会越过。修法是按交易日精确回退，不是调大系数。
+#
+# 停牌 / 单日行情缺失导致列数少于交易日数时的余量（adj_prices 是全 universe 宽表，
+# 某只股票停牌只让它自己那一格 NaN，不减少列；真正减列的是整日数据缺失）。
+PRICE_WINDOW_SLACK_DAYS = 2
+# 日历深度不足以回退所需交易日数时的兜底：按日历天近似。
+# 1.6 比 §4.4 的 1.5 更保守，仅用于早期历史 / 回填脚本等日历不全的场景，且必告警。
+_PRICE_WINDOW_FALLBACK_RATIO = 1.6
 # PE/PB 历史窗口：近 5 年
 _PE_PB_HISTORY_YEARS = 5
+
+
+def resolve_price_window_start(
+    trade_date: date,
+    required_days: int,
+    calendar: TradingCalendar,
+) -> date:
+    """按**交易日**回退出价格窗口起点，保证 [start, trade_date] 内 ≥ required_days 个交易日。
+
+    Args:
+        trade_date: 评分日（窗口右端，含）。
+        required_days: 所需交易日数（含右端），取自各策略 ``required_history_days``。
+        calendar: 交易日历。
+
+    Returns:
+        窗口起点日期。日历深度不足时降级为日历天近似，并 WARNING 出声。
+    """
+    # get_prev_trade_date(d, n) 返回 d **之前**第 n 个交易日 → [该日, d] 含两端共
+    # n + 1 个交易日。要拿到 required_days + slack 个，n 取 required_days + slack - 1。
+    back_steps = required_days + PRICE_WINDOW_SLACK_DAYS - 1
+    try:
+        return calendar.get_prev_trade_date(trade_date, back_steps)
+    except ValueError:
+        fallback = trade_date - timedelta(days=int(required_days * _PRICE_WINDOW_FALLBACK_RATIO))
+        logger.warning(
+            "price_window_calendar_too_shallow: 无法从 %s 回退 %d 个交易日"
+            "（日历深度不足），降级为日历天近似起点 %s。"
+            "受影响策略的深窗口因子可能全 NaN——若此日志出现在生产每日管线，"
+            "说明 trade_cal 回填不完整，须补齐而非放宽窗口。",
+            trade_date, back_steps, fallback,
+        )
+        return fallback
 
 # Phase 11 §3.4 默认正交化顺序：按 default_matrix 当前 state 权重降序动态生成
 # （评审 R12-P2-6 修订：原 _DEFAULT_ORDER 硬编码 ["trend", "momentum",
@@ -224,6 +275,18 @@ class ScoringService:
         )
         return snapshot_quotes, financials, financials_history, avg_amount
 
+    def _required_history_days(self) -> int:
+        """价格窗口深度 = 全体策略自报所需交易日数的最大值。
+
+        走 max 而非硬编码：任一策略把窗口调深（如 lookback_long 从 120 改 250），
+        窗口自动跟随，不会重演 C1-3 那种「配置改了、取数窗口没改 → 因子静默全
+        NaN」的失效。
+        """
+        return max(
+            (s.required_history_days for s in self._strategies),
+            default=DEFAULT_REQUIRED_HISTORY_DAYS,
+        )
+
     async def _build_market_snapshot(
         self,
         trade_date: date,
@@ -235,7 +298,9 @@ class ScoringService:
         （ts_code → sw_industry_l1）+ ``market_cap`` Series（ts_code →
         float_mkt_cap，单位元；neutralize 阶段取 log）。``beta`` V1.0 永远 None。
         """
-        start_prices = trade_date - timedelta(days=_PRICE_WINDOW_DAYS)
+        start_prices = resolve_price_window_start(
+            trade_date, self._required_history_days(), self._calendar,
+        )
         # V1.0 整改 Batch 2 — B2-3：用 timedelta 替代 date(yr-N, m, d)。
         # 闰年 2-29 在 date(yr-N, 2, 29) 非闰年时抛 ValueError → 5 年一次评分流水线降级。
         # 365 日近似覆盖 publish_date 历史窗口（每年 ≈ 365.25 日）。

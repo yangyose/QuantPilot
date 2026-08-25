@@ -66,6 +66,13 @@ from quantpilot.services.strategy_service import ScoringService
 
 logger = logging.getLogger(__name__)
 
+# 日历回看缓冲（自然日）。必须覆盖 ScoringService 价格窗口所需的交易日深度
+# （MomentumStrategy.required_history_days = 121 交易日 + slack），否则
+# resolve_price_window_start 每天都走「日历深度不足」降级分支 → 深窗口因子全 NaN。
+# 300 自然日 ≈ 205 交易日，同时覆盖 UniverseFilter 的 60 交易日回看。
+# 原值 120 自然日（≈ 80 交易日）从来就不够——与 backfill_icir_rebalance 的
+# _CALENDAR_LOOKBACK_DAYS 是同一类坑。
+_CALENDAR_LOOKBACK_DAYS = 300
 _PROGRESS_CHANNEL = "quantpilot:backfill:progress"
 _PROGRESS_INTERVAL = 50  # 每 N trade_date 打印 + 推 Redis 一次
 
@@ -273,14 +280,10 @@ async def _main() -> int:
         f"mode: {'force-overwrite' if args.force else 'skip-existing'} ==="
     )
 
-    # 拉日历（前 120 / 后 30 天 buffer 保护边界查询）：
-    # UniverseFilter 需要 calendar.get_prev_trade_date(today, 60 交易日) → 约 90 日历日；
-    # _PRICE_WINDOW_DAYS=90 + ADX 14 期 warm-up → 取 120 日历日 buffer 保险（覆盖
-    # ~80 交易日，可应对所有依赖前置历史的 engine 路径）。
     adapter = TushareAdapter(token=settings.tushare_token)
     calendar = await TradingCalendar.from_adapter(
         adapter,
-        args.start - timedelta(days=120),
+        args.start - timedelta(days=_CALENDAR_LOOKBACK_DAYS),
         args.end + timedelta(days=30),
     )
 

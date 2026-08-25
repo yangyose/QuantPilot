@@ -161,7 +161,13 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d  # 生产�
 - **策略因子矩阵禁止夹带非因子列**：`Scorer.aggregate` 是 `for col in df.columns` 逐列 Winsorize→中性化→Z-score 后**列向取均值**，**不读 `strategy.weights`**（后者只对旧的 `score()` 路径有效）。多出来的辅助列（σ、中间量、调试列）会被当成一个因子参与合成，方向还可能相反。要带辅助列就在 `compute_strategy_factors` 覆写里 `drop` 掉再返回
 - **策略硬约束只能写在 `BaseStrategy.apply_constraints`**（V1.5-C C1-1 引入）：`compute_strategy_factors` 与 `score()` 同源调用它。写在 `score()` 末尾的约束在五步管线里**完全不生效**——生产曾因此让 SDD §7.2.4 的价值陷阱护栏长期失效，而 value 策略占 composite 权重 0.57~0.87。约束须在 **raw 因子域**表达：剔除类 = 命中行全列 NaN（**禁止置 0**，Z-score 后 0 是横截面均值 = 中性分而非排除）；截断类 = 逐列 `min(raw, raw.quantile(0.5))`
 - **「取前 X%」不要用 `quantile(1-X)` 当阈值**：小样本上被线性插值支配——21 只剔 2 只（9.5%）、2 只剔 1 只（50%）。用 `nlargest(int(n * pct))` 按名次取，`floor` 让"不足 1 只"时不剔除任何标的。另需挡住无离散度退化（全体值相同 → 阈值等于该值 → `>=` 命中全体 → 整个策略被清空）
-- 交易日数 → 日历天：`calendar_days = int(history_days * 1.5)`，禁止直接 `timedelta(days=history_days)`
+- **交易日窗口禁止用日历天近似**（V1.5-C C1-3，代价最大的一条：自 Initial commit 起生产每一次评分都残缺）。`ScoringService` 曾用 `_PRICE_WINDOW_DAYS = 180` 日历天取价格窗口、注释写「≈ 120 交易日」，真机实测 2026-07-01 往前 180 日历天只有 **117 个交易日**，而算 120 日收益要 ≥ 121 列 → momentum 权重 0.35 的 `rs_6m` **有效率 0/2274**（修复后 2246/2274）。同根还静默降级了第二处：`index_adj_prices` 同样不足 → `idx_return_6m` 回落 0.0 → `rs_6m` 从「相对沪深300」退化成绝对收益。两处都无告警
+  - `×1.5` 经验式恰好在 120 交易日这个量级失效：A 股真实系数 365/250 ≈ 1.46，再叠春节/国庆假期聚集就越过 180。**调大系数不是修法**（下次窗口变深再撞一次）
+  - 正确做法：窗口深度由**各策略自报交易日数**（`BaseStrategy.required_history_days`），Service 取全体最大值，起点用 `TradingCalendar` **精确回退 N 个交易日**（`resolve_price_window_start`）；日历深度不足才降级为日历天近似，且**必发 WARNING**
+  - 计数口径：`_period_return(prices, n)` 要 **n + 1** 列（首尾各占一列），自报值记得 +1
+  - **测试要钉临界点两侧**：只断言「给足列数 → 有效」时，把 required 写大 10 倍照样绿；必须同时断言「少一列 → 全 NaN」
+  - 同类缺陷会成群出现在**脚本的日历回看缓冲**上（`backfill_daily_ic` / `backfill_candidate_pool` / `pipeline_multi_date` / `backfill_icir_rebalance`）：这些脚本走完整评分或 ICIR 路径，缓冲不足只表现为「跑通了但因子是残缺的」，不报错。改任一窗口参数时一并扫这几处
+- 其余交易日数 → 日历天的粗略换算（非窗口深度，容错高的场景）：`calendar_days = int(history_days * 1.5)`，禁止直接 `timedelta(days=history_days)`
 - APScheduler job 无法访问 `app.state`，Engine 单例须通过 `create_scheduler()` 显式 `args=[...]` 传入
 
 ### 4.5 FastAPI 项目特有

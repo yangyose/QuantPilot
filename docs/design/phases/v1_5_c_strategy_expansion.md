@@ -1,7 +1,7 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.7（C0 收尾完成 + C1-1 实施期修订，2026-08-20）
-> 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1-1 已交付**（约束落点统一，commit ac069e5，未部署）；C1-2 待做；C2-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
+> 版本：v0.8（C1-3 价格窗口缺陷，2026-08-24）
+> 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1-1 已交付**（约束落点统一，commit ac069e5，未部署）；**C1-2 已交付**（风险调整动量，commit 85df015，未部署）；**C1-3 已交付**（价格窗口按交易日推导，未提交）；C1 面板对比进行中；C2-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
 > 估算：roadmap §6 登记 **9-13 pd** → 启动核查重估 **~12.5-20 pd** → 本次详细设计展开后 **~14.5-22 pd**（分项见 §1.2；增量来自 C0 前置闭环 + C1 策略约束落点统一，二者均为设计展开期实证发现的既有缺口，非范围扩张）
 > 实施顺序（沿用 V1.5-A「先轻后重」先例）：**C0 → C1 → C2 → C3 → C4 → C5**
 > 依据文档：
@@ -24,6 +24,7 @@
 | v0.5 | 2026-08-18 | **C0 追平期修订**：新增 **C0-6 零权重策略的 IC 可观测性**——本地追平实测发现 2026-06-09 起 `trend`/`momentum` 完全不产日级 IC 行，查证为 R1 判 offline → 权重 0 → `Scorer.aggregate` Step 5 的 `valid_weights` 过滤把二者挡在 `score_breakdown_raw` 之外 → `extract_strategy_z` 抽不到。R1 的判定本身正确（momentum ICIR 稳定 −0.66~−0.94、样本 144~188），坏掉的是**复活路径**：无新 IC 则永远评估不出「已恢复」，且已实证 UPTREND 窗口冻结（连续两月 sample_size=60、ICIR 数值完全相同）。处置为解耦 IC 观测与 composite 加权：新增仅内存字段 `CompositeScore.strategy_z_all`，`extract_strategy_z` 优先消费、缺失回退旧字段——无迁移、`score_breakdown_raw` 语义不变、下游消费方零改动。同批**提前实施 §8.3 陷阱 1 的处置**（原定 C3）——该条并非「新增策略才触发的风险」而是当前生产正在犯的缺陷：trend/momentum 权重已为 0 却仍进 Gram-Schmidt，`valid_mask` 使其 NaN 行残差全 NaN → `fillna(0.0)` → `composite_z=0` → `Φ(0)×100=50` 假中位分且不被 `any_valid` 剔除，真实高分股正被压平到中位；与 C0-6 同处 Step 4/5，同批修复同批回归（UT-C0-08a/b）|
 | v0.6 | 2026-08-18 | **C0 收尾期修订**：新增 **C0-7 daily/aggregate 行唯一约束撞车**（alembic 0025）——`factor_ic_window_state` 的全表唯一键不含 `row_type`，月末当日状态等于某 aggregate 行 state 时两行合并，日级观测对 ICIR 窗口消失、aggregate 的 `sample_size` 被覆盖；生产实测 156 行 / 39 个月末，且**本次追平终态 47 天 / 188 行而非 48 / 192 正是它的指纹**。Phase 14（0014）注释显示这是当时「冗余但向后兼容」的有意取舍，判定为错误取舍并纠正。同步记录部署期新增风险：0025 生效后旧代码三处 upsert 立即失效（4 列 `index_elements` 推断不到唯一索引），收尾须避开月末批 |
 | v0.7 | 2026-08-20 | **C0 收尾完成 + C1-1 实施期修订**。① C0 六步生产收尾全部实证完成（备份 → alembic 0025 → 拆分 156 行 → 导入 48 天 → ICIR 重算 51 月 → 部署），**首日两次全 universe 评分内存峰值 1.364 GiB（17:30 管线）/ 1.371 GiB（19:30 Job）仅差 7 MiB**，证实 19:30 不抬高峰值只是把同一峰值再走一遍；`trend` 在 UPTREND 下权重由 0 → 0.0037，C0-6 的复活路径在生产验证成立（2026-07-20 的 4 条 IC 行含权重为 0 的 momentum）。收尾期另修 `backfill_icir_rebalance` 日历缓冲缺陷（仅留 30 天 < ICIR 回看 272 交易日 → 任何 `--start` 的开头约一年月份注定失败，且是"部分成功 + exit 1"极易误判为跑完）。② **§3.2 C1-1 措辞订正**：原文「旧路径行为等价，不产生回归」与同节「剔除类置 NaN、禁止置 0」不可兼得——约束表达迁到 raw 因子域后旧路径数值必然改变（追高股由 `score=0` 变为不出现在结果中，陷阱股不再有 50 的固定上界）。真正要守的契约是「约束仍生效且两路径同源」，§3.3 相应 DoD 判定标准同步调整。③ **§3.2 回写 C1-1 实施期实证三项**：追高剔除在无离散度时会清空整个策略、「前 5%」用分位数阈值在小样本上实为 9.5%~50%（改按名次取前 `floor(n×pct)` 名）、既有测试 helper 数据退化导致的假 RED 及其前置判据防护 |
+| v0.8 | 2026-08-24 | **C1-3 价格窗口按交易日推导**（§3.2 新增子节 + §3.3 DoD 两条）。准备 C1 面板对比时抓到**自 Initial commit 起**的生产缺陷：`ScoringService` 用 180 **日历天**取价格窗口、注释写「≈ 120 交易日」，本地全量副本实测 2026-07-01 往前 180 日历天只有 **117 个交易日** → `rs_6m`（momentum 权重 0.35）有效率 **0/2274**，修复后 **2246/2274（98.8%）**；同根第二处静默降级是 `index_adj_prices` 不足使 `idx_return_6m` 回落 0.0、`rs_6m` 退化为绝对收益。两处均无告警。修法是消除整类缺陷而非调大系数：策略自报 `required_history_days`（交易日）+ Service 取全体最大值 + `TradingCalendar` 精确回退 + 日历不足必发 WARNING；同批修掉三个脚本不足的日历回看缓冲。**该缺陷同时污染面板对比两侧** → C1-2 的 before/after 基准改为「C1-3 修复后的 `off` 组」，不再用 `ic_baseline_pre_c1` 快照；配套把「一键回退对照」从手改 `config_defaults.py` 改为 `build_default_strategies(momentum_risk_adjusted=...)` + CLI 开关，使产出配置可从命令行与日志追溯 |
 
 ---
 
@@ -256,6 +257,20 @@ Phase 11 五步管线经 `ScoringService.score_universe` → `strategy.compute_s
 - 理由模板更新：`"3月风险调整涨幅（涨幅/波动率）排名前{X}%，年化波动率={σ}%，相对指数{超额/落后}{Y}%，行业相对强度={Z}%。"`（理由文本里 σ 年化展示，便于用户理解；计算不年化）。
 - 同步更新 `mean_reversion.py` 的 RSI/BBands 参数化（同一【降级说明】的恢复条件，改动量小，一并兑现）。
 
+**C1-3 价格窗口按交易日推导（实施期新增，2026-08-24）**
+
+准备 C1 面板对比时抓到的**自 Initial commit 起就存在**的生产缺陷，且它同时污染面板对比的两侧，故必须先修再测。
+
+- **缺陷**：`ScoringService` 用 `_PRICE_WINDOW_DAYS = 180` **日历天**取后复权价格窗口，注释写「≈ 120 交易日（覆盖 MomentumStrategy 6M 窗口）」。实测 2026-07-17 往前 180 日历天只有 **119 个交易日**，而 `_period_return(adj_prices, 120)` 要求 `shape[1] > 120`（≥ 121 列）→ **`rs_6m` 恒为全 NaN**。即 momentum 三因子中权重 0.35 的那个，在生产每一次评分中都没参与过。
+- **同根第二处静默降级**：`index_adj_prices` 列数同样不足 → `idx_return_6m` 回落 `0.0` → 即便 `rs_6m` 算得出来也已退化成**绝对收益**，不再是「相对沪深300」。两处都无任何告警（违反 C-4）。
+- **为何 CLAUDE.md §4.4 的 `×1.5` 经验式在此不够**：120 × 1.5 = 180，而 A 股真实系数 365/250 ≈ 1.46，再叠春节/国庆假期聚集就会越过 180。**修法不是调大系数**（下一次窗口变深还会再撞），而是消除整类缺陷：
+  - `BaseStrategy.required_history_days`（单位**交易日**）由各策略自报，默认 `DEFAULT_REQUIRED_HISTORY_DAYS = 65`（覆盖 TrendStrategy 的 MA60 warm-up 与 MeanReversion 的 25 日下限）；`MomentumStrategy` 覆写为 `max(lookback_long, lookback_short, volatility_window, _REVERSAL_WINDOW) + 1 = 121`（`+1` 是 `_period_return` 的口径：算 n 日收益要 n+1 列）。
+  - `ScoringService` 取**全体策略的最大值**决定窗口深度 → 任一策略把窗口调深，取数窗口自动跟随，不会重演「配置改了、取数没改 → 因子静默全 NaN」。
+  - 起点由 `resolve_price_window_start(trade_date, required_days, calendar)` 经 `TradingCalendar` **精确回退交易日**得出（含 `PRICE_WINDOW_SLACK_DAYS = 2` 的整日行情缺失余量）；日历深度不足时降级为日历天近似并**必发 WARNING**（C-4：降级可以，静默不行）。生产 app 日历为 6 年，不会走该分支。
+- **同类缺陷一并修在源头**（三个脚本的日历回看缓冲不足以支撑价格窗口，此前只会表现为「跑通了但 momentum 是残缺的」）：`backfill_daily_ic.py` 120 → 300 自然日、`backfill_candidate_pool.py` 120 → 300、`pipeline_multi_date.py` 180 → 300。
+- **对面板对比的影响（重要）**：`ic_baseline_pre_c1` 快照与 2026-07-17 的存量日级 IC 行**均产出于修复之前**，其中的 momentum IC 是「`rs_6m` 全 NaN」版本的。故 C1-2 的 before/after 对照**不得**以该快照为基准，须在修复后的同一份代码上以 `--momentum-risk-adjusted off|on` 跑两组，只差这一个变量。
+- **对照跑的可复现性**：`build_default_strategies(momentum_risk_adjusted=...)` + `backfill_daily_ic.py --momentum-risk-adjusted {on,off}`，用 `dataclasses.replace` 生成副本、不改模块级单例。设计文档 §3.2 原写「`risk_adjusted=False` 保证可一键回退对照」，此前唯一的实现路径是手改 `config_defaults.py`——改完忘改回来会把对照组配置带进生产，且事后无从判断某批 IC 行出自哪个配置。命令行开关本身即出处记录，脚本横幅打印实际生效值。
+
 ### 3.3 C1 DoD
 
 - [x] RED：`apply_constraints` 钩子存在性 + 两路径同源单测先失败
@@ -265,7 +280,9 @@ Phase 11 五步管线经 `ScoringService.score_universe` → `strategy.compute_s
 - [ ] 单测：`risk_adj_return_3m` = return_3m/σ60；σ 有效样本不足 → NaN；`risk_adjusted=False` 回退原因子
 - [x] 单测：`lookback_short`、`reversal_exclude_pct` 真正被计算消费（改参数 → 结果变）——C1-1 已交付
 - [ ] 单测：`lookback_long`、RSI/BBands 参数真正被计算消费（改参数 → 结果变）
-- [ ] 本地 5y 面板对比：改造前后 momentum 日级 IC / ICIR（OSCILLATION + UPTREND）。**要求记录真实结果，不设"必须转正"的硬门槛**——若仍为负则如实记录并在 §3.3 结论中写明（负 IC 本身是有效信息，ICIR 机制会继续给 0 权重；禁止为达标调参硬凑）
+- [x] C1-3 单测：`required_history_days` 契约（随配置变、四策略均自报、momentum 最深）；恰好给足列数 → `rs_6m` 全有效、少一列 → 全 NaN（钉住临界点本身）；给足列数时 `rs_6m` 真的减掉了指数收益而非回落 `idx=0.0`；解析器按交易日精确回退（`==` 而非上界）；日历不足 → 降级且 WARNING 出声。回归钉子：180 日历天在真实日历下 < 121 交易日
+- [x] C1-3 单测：`build_default_strategies(momentum_risk_adjusted=...)` 覆写真正落到策略实例、不污染模块级单例、`None` 为不覆写
+- [ ] 本地 5y 面板对比：改造前后 momentum 日级 IC / ICIR（OSCILLATION + UPTREND）。**要求记录真实结果，不设"必须转正"的硬门槛**——若仍为负则如实记录并在 §3.3 结论中写明（负 IC 本身是有效信息，ICIR 机制会继续给 0 权重；禁止为达标调参硬凑）。**对照基准须为 C1-3 修复后的 `off` 组**，不得用 `ic_baseline_pre_c1` 快照（该快照产出于窗口修复之前，momentum 的 `rs_6m` 是全 NaN 的，见 §3.2 C1-3）
 - [ ] 理由模板更新 + 前端术语表（`glossary.ts`）补「风险调整动量」「历史波动率」
 - [ ] SDD §7.2.3 / §7.2.4 回写（约束落点 + 风险调整默认行为）
 

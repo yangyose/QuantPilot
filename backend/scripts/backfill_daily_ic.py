@@ -43,7 +43,11 @@ from quantpilot.engine.diagnostics.ic_aggregator import (
     compute_forward_returns,
     extract_strategy_z,
 )
-from quantpilot.services.scoring_factory import build_default_scoring_service
+from quantpilot.engine.strategies.momentum import MomentumStrategy
+from quantpilot.services.scoring_factory import (
+    build_default_scoring_service,
+    build_default_strategies,
+)
 
 # 复用 candidate_pool 回填脚本的 graceful 中断（DRY）
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
@@ -52,6 +56,12 @@ from backfill_candidate_pool import _GracefulInterrupt  # noqa: E402, I001
 logger = logging.getLogger(__name__)
 
 _FORWARD_WINDOW = 20  # SDD §7.4：前向收益窗口 = 20 交易日（lag）
+# 日历回看缓冲（自然日）。必须覆盖 ScoringService 价格窗口所需的交易日深度
+# （MomentumStrategy.required_history_days = 121 交易日 + slack）——本脚本经
+# produce_daily_ic → score_universe_for_date 走完整评分路径。深度不足会让
+# resolve_price_window_start 每日降级 → rs_6m 全 NaN，产出的 IC 是残缺 momentum 的。
+# 300 自然日 ≈ 205 交易日。原值 120（≈ 80 交易日）从来就不够。
+_CALENDAR_LOOKBACK_DAYS = 300
 _PROGRESS_INTERVAL = 50
 
 
@@ -113,11 +123,12 @@ _build_scoring_service = build_default_scoring_service
 
 async def _run_one_trade_date(
     td: date, calendar: TradingCalendar, min_xs: int,
+    strategies: list | None = None,
 ) -> tuple[bool, int]:
     """对因子值日 td 算全策略日级 IC，独立 session + commit。返回 (success, n_rows)。"""
     async with AsyncSessionLocal() as session:
         try:
-            scoring_service = _build_scoring_service(session, calendar)
+            scoring_service = _build_scoring_service(session, calendar, strategies)
             composites = await scoring_service.score_universe_for_date(td)
             if not composites:
                 return True, 0  # 空 universe，无 IC 可算（视为成功跳过）
@@ -175,6 +186,13 @@ async def _main() -> int:
     parser.add_argument("--dry-run-plan", action="store_true", help="预检：仅打印计划")
     parser.add_argument("--force", action="store_true", help="强制重算已存在日（upsert 覆盖）")
     parser.add_argument("--skip-confirm", action="store_true", help="跳过交互确认")
+    parser.add_argument(
+        "--momentum-risk-adjusted", choices=("on", "off"), default=None,
+        help="V1.5-C C1-2 面板对照：覆写 MomentumStrategyConfig.risk_adjusted。"
+             "省略 = 用 config_defaults 默认（on）。两组对照跑只应差这一个开关，"
+             "且**必须**在两次跑之间把上一组的 summary CSV 另存——"
+             "本脚本 --force 会原地覆盖 factor_ic_window_state 的 daily 行。",
+    )
     parser.add_argument("--min-xs", type=int, default=_DAILY_IC_MIN_XS,
                         help=f"每日最小横截面样本（默认 {_DAILY_IC_MIN_XS}）")
     args = parser.parse_args()
@@ -186,15 +204,27 @@ async def _main() -> int:
         print("ERROR: TUSHARE_TOKEN 未配置（仅用于拉日历）", file=sys.stderr)
         return 2
 
+    # None = 不覆写（生产默认）。横幅显式打出实际生效值：产出的 IC 行本身不带配置
+    # 标记，日志是事后判断「这批出自哪个配置」的唯一凭据。
+    risk_adj = None if args.momentum_risk_adjusted is None else (
+        args.momentum_risk_adjusted == "on"
+    )
+    strategies = build_default_strategies(momentum_risk_adjusted=risk_adj)
+    effective_risk_adj = next(
+        s._cfg.risk_adjusted for s in strategies if isinstance(s, MomentumStrategy)
+    )
     print(
         f"=== Backfill daily IC: {args.start} → {args.end} | "
         f"mode: {'force-overwrite' if args.force else 'skip-existing'} | "
-        f"min_xs={args.min_xs} ==="
+        f"min_xs={args.min_xs} | "
+        f"momentum.risk_adjusted={effective_risk_adj}"
+        f"{'' if args.momentum_risk_adjusted else ' (default)'} ==="
     )
 
     adapter = TushareAdapter(token=settings.tushare_token)
     calendar = await TradingCalendar.from_adapter(
-        adapter, args.start - timedelta(days=120), args.end + timedelta(days=60),
+        adapter, args.start - timedelta(days=_CALENDAR_LOOKBACK_DAYS),
+        args.end + timedelta(days=60),
     )
     trade_dates = calendar.get_trade_dates(args.start, args.end)
 
@@ -243,7 +273,7 @@ async def _main() -> int:
         if interrupt.stop:
             print(f"      interrupted at {i}/{total} (trade_date={td})")
             break
-        ok, n = await _run_one_trade_date(td, calendar, args.min_xs)
+        ok, n = await _run_one_trade_date(td, calendar, args.min_xs, strategies)
         if ok:
             success += 1
             total_rows += n

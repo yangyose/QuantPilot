@@ -64,6 +64,21 @@ class MomentumStrategy(BaseStrategy):
         )
         self.weights = {self._return_col: 0.40, "rs_6m": 0.35, "industry_rs": 0.25}
 
+    @property
+    def required_history_days(self) -> int:
+        """本策略是四个策略里窗口最深的，决定 ScoringService 的价格窗口深度。
+
+        取四个窗口的最大值 +1：``lookback_long``（rs_6m）/ ``lookback_short``
+        （return_3m）/ ``volatility_window``（σ）/ ``_REVERSAL_WINDOW``（追高剔除）。
+        +1 是 ``_period_return`` 的口径——算 n 日收益要 n+1 列。
+        """
+        return max(
+            self._cfg.lookback_long,
+            self._cfg.lookback_short,
+            self._cfg.volatility_window,
+            _REVERSAL_WINDOW,
+        ) + 1
+
     def compute_raw_factors(
         self,
         universe: pd.Index,

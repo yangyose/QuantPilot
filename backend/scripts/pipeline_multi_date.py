@@ -168,8 +168,11 @@ async def _main() -> int:
     min_d = min(target_dates)
     max_d = max(target_dates)
     from datetime import timedelta  # noqa: PLC0415
+    # 回看 300 自然日（≈ 205 交易日）：须覆盖 ScoringService 价格窗口的
+    # MomentumStrategy.required_history_days = 121 交易日 + slack。原值 180 自然日
+    # （≈ 119 交易日）不够——正是 C1-3 修掉的那个缺口。
     calendar = await TradingCalendar.from_adapter(
-        adapter, min_d - timedelta(days=180), max_d + timedelta(days=30)
+        adapter, min_d - timedelta(days=300), max_d + timedelta(days=30)
     )
 
     all_ok = True

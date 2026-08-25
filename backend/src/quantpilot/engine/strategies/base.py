@@ -42,12 +42,32 @@ class StrategyScore:
     reason: str                    # 可读解释（面向用户）
 
 
+# 默认所需交易日数：覆盖 TrendStrategy 的 MA60 warm-up（其 compute_raw_factors 对
+# ``len(close) < 65`` 直接返回 NaN）与 MeanReversionStrategy 的 25 日下限。
+# **窗口比这更深的策略必须覆写 required_history_days**——ScoringService 取全体
+# 策略的最大值来决定价格窗口深度，漏报即静默全 NaN。
+DEFAULT_REQUIRED_HISTORY_DAYS = 65
+
+
 class BaseStrategy(ABC):
     """所有策略的抽象基类。子类须定义 name / display_name / weights。"""
 
     name: str
     display_name: str
     weights: dict[str, float]      # 策略内因子权重，须 sum(weights.values()) == 1.0
+
+    @property
+    def required_history_days(self) -> int:
+        """本策略需要的 ``adj_prices`` 列数下限，单位是**交易日**（不是日历天）。
+
+        V1.5-C C1-3 引入。此前 ScoringService 用 180 日历天 + 「≈ 120 交易日」的
+        注释近似，实测只有 119 个交易日 → MomentumStrategy 的 ``rs_6m``（权重
+        0.35）自 Initial commit 起在生产每一次评分中都是全 NaN，无任何告警。
+
+        计数口径与 ``_period_return`` 一致：算 n 个交易日的收益要 **n + 1** 列
+        （首尾两端各占一列）。覆写时记得 +1。
+        """
+        return DEFAULT_REQUIRED_HISTORY_DAYS
 
     @abstractmethod
     def compute_raw_factors(
