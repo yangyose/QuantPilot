@@ -75,6 +75,7 @@
 | Phase N 设计 | `docs/design/phases/phaseN_*.md` | 当前 phase 详细设计（开始任务前必读） |
 | 开发指南 | `docs/guides/dev_setup.md` | 环境配置 + 命令 |
 | 部署指南 | `docs/guides/deployment.md` | HTTPS / 备份 / 故障树 |
+| 第二台机迁移 | `docs/guides/machine_migration.md` | 双活纪律（谁是权威方）+ 新机分步 runbook + 验收清单；**§5 记录记忆快照里已被推翻的结论**，与 memory 冲突时以该节为准 |
 | 个人全局规则 | `~/.claude/CLAUDE.md` | 跨项目通用**工作原则**（权限 / 最小改动 / 验证 / 汇报）；不含技术细节，勿往里加项目知识 |
 | 全局规则历史快照 | `docs/reference/global-claude-md/` | 上条文件不在任何仓库里 → 此处按 `NNNN_` 序号归档历史版本；**换版前**先快照并按 README 规程判定被删内容的去向 |
 
@@ -336,18 +337,19 @@ DEBUG=false
 **已完成**：Phase 1~15 ✓（V1.0 RC 验收收口）| **V1.5-G 多用户** ✓ 代码 + 生产部署（2026-07-23）
 | **V1.5-A 回测与监控** ✓ 全上线，A5b/F-4 功能级激活已实证 PASS
 
-**进行中：V1.5-C 策略扩展**（设计文档 `docs/design/phases/v1_5_c_strategy_expansion.md` v0.5，
+**进行中：V1.5-C 策略扩展**（设计文档 `docs/design/phases/v1_5_c_strategy_expansion.md` v0.9，
 C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
 
-- **C0 日级 IC 产出闭环**：代码已交付（25 UT + 5 INT + alembic 0024 财务覆盖索引 ×2）。
-  2026-08-18 补 C0-6（零权重策略仍产出 z_raw 供日级 IC）+ 提前实施 §8.3 陷阱 1
-  （零权重策略退出 Gram-Schmidt）。48 交易日断档（2026-05-12 → 2026-07-17）**正在本地
-  算力中心回填**；跑法 / 停止 / 续跑 / 收尾顺序见 memory `c0_daily_ic_catchup_runbook`
-- **收尾硬顺序**：回填产出 → 导入生产 → **再**部署代码。反序会让 `daily_ic_producer`
-  Job 在 19:30 对积压逐日全 universe 评分，正是打挂生产的那条路径
-- C1~C5 待启动
+- **C0 日级 IC 产出闭环** ✓ 全量上线（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，
+  `daily_ic_producer` 19:30 Job 已激活）。收尾 runbook 见 memory `c0_daily_ic_catchup_runbook`
+- **收尾硬顺序**（后续任何 IC 回填仍适用）：回填产出 → 导入生产 → **再**部署代码。
+  反序会让 `daily_ic_producer` Job 在 19:30 对积压逐日全 universe 评分，正是打挂生产的那条路径
+- **C1 策略约束与风险调整动量**：C1-1（约束落点统一，`ac069e5`）/ C1-2（风险调整动量，
+  `85df015`）/ C1-3（价格窗口按交易日推导，`be6d6d6`）**均已交付但未部署**——三者都会改变
+  选股结果，按设计文档要求在 C1 收口时单独上线并观察。**面板对比待在第二台 24h 算力机起跑**
+- C2~C5 待启动
 
-> **运维红线（RC 验收期实证）**：① 生产 2GB 机**禁止一切「全 universe 评分」作业**——判据是代码路径是否调用 `score_universe_for_date` / `ScoringService.score_universe`，**不是功能叫什么名字**。已实证会打挂生产的两例：回测（单个 6 日任务拖垮 11 分钟 → `POST /backtest/run` 已 `backtest_enabled=false` 返 503）、日级 IC 回填（`scripts/backfill_daily_ic.py` **仅跑一个交易日** 即 RSS 1.58G 触发 OOM killer，2026-08-17 致站点 530 共 43 分钟）。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
+> **运维红线（RC 验收期实证）**：① 生产 2GB 机**禁止一切「全 universe 评分」作业**——判据是代码路径是否调用 `score_universe_for_date` / `ScoringService.score_universe`，**不是功能叫什么名字**。已实证会打挂生产的两例：回测（单个 6 日任务拖垮 11 分钟 → `POST /backtest/run` 已 `backtest_enabled=false` 返 503）、日级 IC 回填（`scripts/backfill_daily_ic.py` **仅跑一个交易日** 即 RSS 1.58G 触发 OOM killer，2026-08-17 致站点 530 共 43 分钟）。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。**自 2026-08-26 起「本地算力中心」= 第二台 24h 常开机**（双活纪律与新机 runbook 见 `docs/guides/machine_migration.md`）：长任务须在该机 detached 起，产出唯一权威；另一台的 5434 降级为可随时丢弃的 scratch，两台各跑一半会产生「谁都不完整、且无法判断某行出自哪台机/哪个配置」的状态。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
 
 详细 phase 表 + 历史里程碑（V1.0 整改 3 批次 / V1.0 真机验收 15 bug / Phase 11~15 实施细节）
 → `docs/design/system_design.md §9`。

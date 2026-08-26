@@ -102,8 +102,9 @@ cd QuantPilot
 |---|---|
 | `<repo>/.env`、`<repo>/.env.prod`、`<repo>/backend/.env` | 同路径 |
 | `<repo>/.claude/settings.local.json` | 同路径（36 KB 权限白名单，省掉大量确认弹窗）|
-| `~/.ssh/qp_tencent`（+ `~/.ssh/config` 里的 `qp-tencent` 段）| 同路径 |
-| **`~/.ssh/known_hosts`**（或至少 `43.134.63.13` 那几行）| 同路径。**漏了这个整条链会静默断掉**——见下方警告 |
+| `~/.ssh/qp_tencent`（私钥，必需）+ `qp_tencent.pub`（可选）| 同路径，见下方「§2.4.1 `.ssh` 四样」 |
+| `~/.ssh/known_hosts` 里 `43.134.63.13` 的 3 行 | **追加**，不可整文件覆盖 |
+| `~/.ssh/config` 里的 `qp-tencent` 段 | **追加**（新机通常还没有这个文件）|
 | `~/.claude/CLAUDE.md` | 同路径（跨项目全局规则）|
 | `~/.claude/projects/D--MyWork-10Project-RD-QuantPilot/memory/`（整个目录）| 同路径 |
 | `<repo>/backups/local-5434/`（整个目录，含 `ic_baseline_pre_c1_full.sql`）| 同路径。**`backups/` 被 gitignore，git 不会带它走** |
@@ -119,11 +120,57 @@ cd QuantPilot
 这两个标记文件会让新机的钩子当天以为「已经拉过」而跳过，或让 sync 脚本以为「已经恢复过」
 而直接退出。
 
-拷完检查 SSH 私钥权限（Windows 下 OpenSSH 会拒绝过宽的 ACL）：
+#### 2.4.1 `.ssh` 四样（2026-08-26 实操补全）
+
+**`known_hosts` 与 `config` 必须逐段追加，不能整文件拷。** 新机有自己的 GitHub 条目，
+整文件覆盖会把它们冲掉。在**旧机**提取腾讯那 3 行：
 
 ```bash
-ssh qp-tencent 'echo ok'    # 通了才算好；这一步同时验证 known_hosts
+grep "43.134.63.13" ~/.ssh/known_hosts > /d/_qp_migrate/known_hosts_qp_tencent.txt
+ssh-keygen -lf /d/_qp_migrate/known_hosts_qp_tencent.txt   # 核对指纹
 ```
+
+ED25519 一行必须是 `SHA256:uDrxmYGmEiG906ddWMsCNXlRI9N5DrUZCg26KeTxd/0`
+（与 `pull_remote_backup.ps1` 里钉死的一致）。**对不上就别往下走。**
+三行分别是 ed25519 / rsa / ecdsa，严格说只有 ed25519 必需（OpenSSH 默认优先协商它），
+三行一起拷更稳。在**新机**追加：
+
+```bash
+mkdir -p ~/.ssh && cat /d/_qp_migrate/known_hosts_qp_tencent.txt >> ~/.ssh/known_hosts
+cat >> ~/.ssh/config <<'EOF'
+Host qp-tencent
+  HostName 43.134.63.13
+  User ubuntu
+  IdentityFile ~/.ssh/qp_tencent
+  IdentitiesOnly yes
+EOF
+```
+
+三个容易踩的点：
+
+- **`IdentitiesOnly yes` 不能省。** 没有它，ssh 会把 agent 与默认路径下的所有钥匙挨个
+  递过去，新机的 GitHub `id_ed25519` 会先被试；服务端 `MaxAuthTries` 默认 6，钥匙一多就
+  可能在轮到 `qp_tencent` 之前被踢掉，报 `Too many authentication failures`。**这个错看
+  起来像"密钥不对"，实为"试错了顺序"。**
+- **别用记事本建 `config`。** 它会存成 `config.txt`，而资源管理器默认隐藏扩展名 → 你看到
+  的还是 `config`，现象是"配置明明写了却完全不生效"。用上面的 heredoc。
+- **私钥权限通常不用管。** ACL 不随文件跨机传递，由目标目录的继承决定；而
+  `%USERPROFILE%\.ssh\` 默认只有 你 + SYSTEM + Administrators，Windows OpenSSH 接受这组。
+  **先直接试，报 `UNPROTECTED PRIVATE KEY FILE` 再收紧**：
+  `icacls "$env:USERPROFILE\.ssh\qp_tencent" /inheritance:r` +
+  `/grant:r "${env:USERNAME}:(R)"`。注意 Git Bash 里 `ls -la` 显示的 `-rw-r--r--` 是 MSYS
+  模拟值，**不反映真实 ACL**，别拿它当判据，要用 `icacls`。
+- 若经 `D:\_qp_migrate\` 中转，**拷完删掉那份私钥副本**（该目录未做权限收紧）。
+  `known_hosts_qp_tencent.txt` 是公钥指纹，留着无妨。
+
+四样齐了验：
+
+```bash
+ssh qp-tencent 'echo ok'    # 出 ok 才算好；这一步同时验证私钥、known_hosts、config
+```
+
+ℹ️ 钩子 `pull_remote_backup.ps1` 走 `ubuntu@43.134.63.13` 直连 + 显式 `-i`，**不读 config**，
+所以 config 缺失不影响拉备份；它只服务于 `ssh qp-tencent` 简写与手工操作生产。
 
 ### 2.5 建 Python 环境
 
