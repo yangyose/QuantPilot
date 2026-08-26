@@ -57,20 +57,25 @@ D:\MyWork\10Project\RD\QuantPilot
 ### 2.2 装工具链
 
 - **Docker Desktop**（WSL2 后端）
-- **Python 3.12** + **uv**
+- **uv**（`irm https://astral.sh/uv/install.ps1 | iex`）——**不必单独装 Python**：
+  `uv sync` 见 `requires-python = ">=3.12"` 会自动下载并托管一份 3.12
 - **Git for Windows**（本仓大量脚本是 bash，`Bash` 工具走的就是 Git Bash）
 - Claude Code
+- 开工前设好 `git config user.name/user.email` 与 `core.autocrlf`（本仓 `.gitattributes`
+  已对 `*.sh` 钉 `eol=lf`）——漏设会让整个仓库显示成「全部已修改」或提交作者错乱
 
-⚠️ **建好 `%USERPROFILE%\.wslconfig`**：
+**`%USERPROFILE%\.wslconfig` 按宿主内存决定，不要照抄**：
 
-```ini
-[wsl2]
-memory=5GB
-```
+| 宿主物理内存 | 做法 |
+|---|---|
+| **≥ 32 GB** | **不设**。WSL2 默认给 50%（实测 15 GB + 4 GB swap），4.6 GB 算力库 + 覆盖索引能全进 page cache，宿主还剩 17 GB |
+| 8 GB（本机） | 必须显式压到 `memory=5GB` + `swap=12GB`，否则 WSL2 吃光宿主内存并 swap 抖动——曾让回填某些日慢 **30~70 倍**，且症状伪装成业务层问题（memory `backfill-wsl-memory-thrash`）|
 
-不设的话 WSL2 会吃光宿主内存并 swap 抖动——曾让回填某些日慢 **30~70 倍**，且
-症状伪装成业务层问题（详见 memory `backfill-wsl-memory-thrash`）。24h 机跑长任务，
-这条比在本机更要紧。
+改过 `.wslconfig` 必须 `wsl --shutdown` 才生效；用 `wsl -- free -h` 实证。
+注意宿主侧的 Python 评分进程（峰值约 1.4 GB）**不受 `.wslconfig` 管辖**。
+
+**故障指纹**：若某些交易日突然比 111s/日 的基线慢 30~70 倍，先查宿主内存，
+不要去查业务逻辑。
 
 ### 2.3 拉代码
 
@@ -110,8 +115,8 @@ uv run pytest tests/unit/ tests/e2e/ -q     # 建真实基线，不信任何"应
 uv run ruff check src/ tests/
 ```
 
-预期：**837 passed**（2026-08-25 本机基线），ruff **0 error**。数字对不上先查环境，
-别改代码。
+预期：**841 passed**（2026-08-25 本机 `be6d6d6` 实测基线），ruff **0 error**。
+数字对不上先查环境，别改代码。
 
 ### 2.6 建算力库（5434）
 
@@ -182,12 +187,13 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 
 - [ ] 路径是 `D:\MyWork\10Project\RD\QuantPilot`
 - [ ] `git log --oneline -1` 与本机一致；`git status` 干净
-- [ ] `uv run pytest tests/unit/ tests/e2e/ -q` → 837 passed
+- [ ] `git config user.name` / `user.email` / `core.autocrlf` 已设
+- [ ] `uv run pytest tests/unit/ tests/e2e/ -q` → 841 passed
 - [ ] `uv run ruff check src/ tests/` → 0 error
 - [ ] `ssh qp-tencent 'echo ok'` 通
 - [ ] 5434 起来了，`alembic_version` 与生产一致
 - [ ] `SELECT COUNT(*) FROM ic_baseline_pre_c1` = 4940
-- [ ] `%USERPROFILE%\.wslconfig` 有 `memory=5GB`
+- [ ] `wsl -- free -h` 看到的配额与宿主内存相称（32 GB 机用默认即可，勿照抄 5GB）
 - [ ] 休眠已关（`powercfg /query` 确认）
 - [ ] Claude Code 起会话后能读到历史 memory（问它「C1 面板对比现在什么状态」，
       答得出 5434/off-on 两组那套细节才算通）
