@@ -50,9 +50,14 @@ C1-3 期间刚踩过的坑（IC 行本身不带配置标记）。
 D:\MyWork\10Project\RD\QuantPilot
 ```
 
-**不是洁癖，是硬约束**：Claude Code 的跨会话记忆存在
-`~/.claude/projects/D--MyWork-10Project-RD-QuantPilot/memory/`，目录名由项目
-路径派生。路径不同 = 全部历史记忆（事故档案、runbook、用户反馈）在新机上认不出来。
+**不是洁癖，是硬约束**，两个独立理由：
+
+1. **钩子会直接跑不起来**：`.claude/settings.json`（**已入 git**）的 SessionStart 钩子命令是
+   硬编码绝对路径 `D:\MyWork\10Project\RD\QuantPilot\.claude\hooks\pull_remote_backup.ps1`，
+   且该脚本内部 `$root` 也写死同一路径。路径不同 → 远端备份永远拉不下来（见 §2.6）。
+2. **历史记忆认不出来**：Claude Code 的跨会话记忆存在
+   `~/.claude/projects/D--MyWork-10Project-RD-QuantPilot/memory/`，目录名由项目路径派生。
+   路径不同 = 事故档案 / runbook / 用户反馈全部失联。
 
 ### 2.2 装工具链
 
@@ -60,6 +65,8 @@ D:\MyWork\10Project\RD\QuantPilot
 - **uv**（`irm https://astral.sh/uv/install.ps1 | iex`）——**不必单独装 Python**：
   `uv sync` 见 `requires-python = ">=3.12"` 会自动下载并托管一份 3.12
 - **Git for Windows**（本仓大量脚本是 bash，`Bash` 工具走的就是 Git Bash）
+- **Node.js 20**（本机 v20.12.2）——`frontend/` 是 Vue3 + Vite，「双活：两边都能开发」
+  就得两边都能起 `npm run dev` / `vue-tsc` / `vitest`。**只跑算力任务可以先不装**
 - Claude Code
 - 开工前设好 `git config user.name/user.email` 与 `core.autocrlf`（本仓 `.gitattributes`
   已对 `*.sh` 钉 `eol=lf`）——漏设会让整个仓库显示成「全部已修改」或提交作者错乱
@@ -96,14 +103,26 @@ cd QuantPilot
 | `<repo>/.env`、`<repo>/.env.prod`、`<repo>/backend/.env` | 同路径 |
 | `<repo>/.claude/settings.local.json` | 同路径（36 KB 权限白名单，省掉大量确认弹窗）|
 | `~/.ssh/qp_tencent`（+ `~/.ssh/config` 里的 `qp-tencent` 段）| 同路径 |
+| **`~/.ssh/known_hosts`**（或至少 `43.134.63.13` 那几行）| 同路径。**漏了这个整条链会静默断掉**——见下方警告 |
 | `~/.claude/CLAUDE.md` | 同路径（跨项目全局规则）|
 | `~/.claude/projects/D--MyWork-10Project-RD-QuantPilot/memory/`（整个目录）| 同路径 |
 | `<repo>/backups/local-5434/`（整个目录，含 `ic_baseline_pre_c1_full.sql`）| 同路径。**`backups/` 被 gitignore，git 不会带它走** |
 
+⚠️ **`known_hosts` 是最容易漏、且失败得最安静的一项。** SessionStart 钩子
+`pull_remote_backup.ps1` 用 `StrictHostKeyChecking=yes` + `BatchMode=yes` +
+显式 `UserKnownHostsFile=%USERPROFILE%\.ssh\known_hosts`（指纹
+`SHA256:uDrxmYGmEiG906ddWMsCNXlRI9N5DrUZCg26KeTxd/0`）。新机若无该条目，ssh 直接拒连、
+钩子只往 `backups/remote/pull.log` 写一行就退出，**终端上没有任何提示**。故障链：
+备份拉不下来 → `sync_local_backtest_db.sh` 报 `No backup found ... Abort` → 5434 建不起来。
+
+⚠️ **`backups/remote/` 只拷 `qp_*.sql.gz`，不要拷 `.last_pull_date` / `.last_restore`。**
+这两个标记文件会让新机的钩子当天以为「已经拉过」而跳过，或让 sync 脚本以为「已经恢复过」
+而直接退出。
+
 拷完检查 SSH 私钥权限（Windows 下 OpenSSH 会拒绝过宽的 ACL）：
 
 ```bash
-ssh qp-tencent 'echo ok'    # 通了才算好
+ssh qp-tencent 'echo ok'    # 通了才算好；这一步同时验证 known_hosts
 ```
 
 ### 2.5 建 Python 环境
@@ -120,26 +139,52 @@ uv run ruff check src/ tests/
 
 ### 2.6 建算力库（5434）
 
+**前置：`backups/remote/` 里必须先有一个 `qp_*.sql.gz`**，否则 sync 脚本第一步就
+`No backup found ... Abort`。两条路：
+
+- **方式 A（推荐，省一次 535 MB 公网下载）**：局域网直接拷本机
+  `backups/remote/qp_YYYYMMDD_020001.sql.gz` 到新机同目录（**只拷 `.sql.gz`**，见 §2.4）。
+- **方式 B（新机自己拉）**：靠 SessionStart 钩子 `pull_remote_backup.ps1`——每个本地日历日
+  **最多拉一次**、只拉远端最新那一个文件、self-detach 成隐藏 worker 传约 **15 分钟**、
+  传完比对远端字节数一致才落 marker。它**不是同步的**，所以必须等：
+
+  ```bash
+  tail -3 backups/remote/pull.log      # 等到出现 "worker: pull OK <文件名> (<字节数>)"
+  ```
+
+  看到 `pull OK` 之前不要跑 sync 脚本。需要 `qp_tencent` **和** `known_hosts`（§2.4）。
+
 ```bash
 cd /d/MyWork/10Project/RD/QuantPilot
-# 方式 A：直接从局域网拷一份已下载的备份，省一次 538 MB 公网下载
-#   把本机 backups/remote/qp_YYYYMMDD_020001.sql.gz 拷到新机同目录
-# 方式 B：让新机自己从腾讯拉（需 qp_tencent 密钥）
-
 bash scripts/sync_local_backtest_db.sh
 ```
 
-⚠️ 该脚本会 **`DROP DATABASE`** 重建 5434。**只在全新机器上、或明确要重灌时跑**。
-5434 上一旦有了不可重建的产出（如下一步导入的基线快照、面板结果），再跑它就是数据
-丢失——本机现在就处于「绝不能再跑」的状态。
+脚本自己会 `docker compose -f docker-compose.backtest-local.yml up -d` 并等健康，
+不必手动起容器。
 
-恢复完确认：
+⚠️ 该脚本会 **`DROP DATABASE ... WITH (FORCE)`** 重建 5434。**只在全新机器上、或明确要
+重灌时跑**。5434 上一旦有了不可重建的产出（如下一步导入的基线快照、面板结果），再跑它就是
+数据丢失——本机现在就处于「绝不能再跑」的状态。
+
+恢复完确认（期望 `alembic_version` = **0025**）：
 
 ```bash
 docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
   -c "SELECT version_num FROM alembic_version;" \
   -c "SELECT COUNT(*) FROM daily_quote;"
 ```
+
+**连接串的密码是 `quantpilot`**：`.env` 里**没有** `POSTGRES_PASSWORD`（只有 `.env.prod` 有），
+compose 走 `${POSTGRES_PASSWORD:-quantpilot}` 的默认值。5434 只绑 `127.0.0.1`，是可丢弃的
+算力临时库，故用默认口令：
+
+```
+DATABASE_URL=postgresql+asyncpg://quantpilot:quantpilot@localhost:5434/quantpilot
+```
+
+ℹ️ compose 里的 `shared_buffers=512MB` / `effective_cache_size=2GB` 是按 8GB 宿主定的。
+32GB 机可以调大，但 **111s/交易日的基线就是在这个配置下测出来的**——先按原样把对照基线
+跑出来，调优另说，否则失去可比性。
 
 ### 2.7 导入本地独有的基线快照
 
@@ -168,7 +213,8 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 
 - **关闭休眠与硬盘休眠**：`powercfg /change standby-timeout-ac 0`、
   `powercfg /change hibernate-timeout-ac 0`
-- **Docker Desktop 设为开机自启**，且勾选启动后不弹窗
+- **Docker Desktop 设为开机自启**，且勾选启动后不弹窗。5434 的 compose 已是
+  `restart: unless-stopped`，Docker 一起来容器就自动跟上，不需要手动 `up -d`
 - 长任务**必须 detached 起**，否则随终端/会话退出而死（2026-08-24 面板跑就这么
   死在第 3 天）：
 
@@ -190,8 +236,9 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 - [ ] `git config user.name` / `user.email` / `core.autocrlf` 已设
 - [ ] `uv run pytest tests/unit/ tests/e2e/ -q` → 841 passed
 - [ ] `uv run ruff check src/ tests/` → 0 error
-- [ ] `ssh qp-tencent 'echo ok'` 通
-- [ ] 5434 起来了，`alembic_version` 与生产一致
+- [ ] `ssh qp-tencent 'echo ok'` 通（同时验证 `known_hosts` 已拷）
+- [ ] `backups/remote/pull.log` 有 `worker: pull OK`（或已用方式 A 拷入 `.sql.gz`）
+- [ ] 5434 起来了，`SELECT version_num FROM alembic_version` = **0025**
 - [ ] `SELECT COUNT(*) FROM ic_baseline_pre_c1` = 4940
 - [ ] `wsl -- free -h` 看到的配额与宿主内存相称（32 GB 机用默认即可，勿照抄 5GB）
 - [ ] 休眠已关（`powercfg /query` 确认）
@@ -208,3 +255,44 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
   `-A` 会把它们连同可能的 `.env` 一起带走。按文件名 add。
 - **Bash 工具的 cwd 会漂移**：`uv run` 一律前置 `cd .../backend &&`（venv 在 backend/）。
 - 其余技术陷阱见 `CLAUDE.md §4`，事故档案见 memory 索引。
+
+---
+
+## 5. 记忆快照里已知的过期结论（**看到就以本节为准**）
+
+新机的 `memory/` 是 **2026-08-25 的一次性快照**，之后不再重新打包。以下条目在快照之后
+被推翻或修正过，**记忆与本节冲突时以本节为准**，并请顺手把新机本地的 memory 文件改对
+（改本地文件即可，不必回传本机）。
+
+### 5.1 `c1-panel-comparison-runbook`：`total_equity` 的成因判断是错的
+
+快照里写的是「**该副本的历史 `total_equity` 未回填（生产已于 2026-08 补齐）**」。
+**这个解释已被实测否定**（2026-08-26，直接查 5434）：
+
+| `report_period` | 总行数 | `total_equity` 非空 |
+|---|---|---|
+| 2023 全年 | 1268692 | 225（0.02%）|
+| 2024 全年 | 1297621 | 16067（1.2%）|
+| 2025-06-30 | 358549 | 5515 |
+| 2025-09-30 | 326876 | 5500 |
+| 2025-12-31 | 311065 | 5523 |
+| 2026-03-31 | 330974 | 5503 |
+
+近期每期恰好 ≈ 5500 行 ≈ **每股一行**（全库 `count(DISTINCT ts_code) = 5507`）。2026-08 那次
+回填只覆盖 **2025-06-30 起的 5 个报告期，没有回补历史**。
+
+**这意味着三件事**：
+
+1. 它是**生产数据本身的属性**，不是副本陈旧。新机从任何一份新备份重建 5434，**结果完全一样**，
+   不要把它当成"重灌就能解决"的问题去折腾。
+2. 面板窗口 2024-07 → 2026-07 **中段有一次 universe 口径切换**（F-4 由跳过转为生效），
+   不是均匀的 caveat。解读绝对 IC 的时间序列必须标出该断点，否则会把口径切换误读成因子
+   行为变化。
+3. off/on 两组跑同一份数据，**差值仍然可比**——对照的内部有效性不受影响。
+
+权威表述见 `docs/design/phases/v1_5_c_strategy_expansion.md` §3.2「面板口径」小节（v0.9）。
+
+### 5.2 若发现更多冲突
+
+判据一律是：**代码 / DB 实测 > 设计文档 > memory**。记忆写的是「当时以为的」，
+不是「现在为真的」。发现第三条冲突时，往本节追加一小节，别只在会话里说一句。
