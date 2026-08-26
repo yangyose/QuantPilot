@@ -262,6 +262,8 @@ DEBUG=false
 - **`MSYS_NO_PATHCONV=1` 会连 `--env-file` 一起停止转换**：该参数因此必须传 **Windows 路径**（`C:\...`），否则 docker 报 "cannot find the path"。同一条命令里 `-v` 用 Windows 路径、其余参数也得跟着走
 - **`git rev-parse --short HEAD origin/main`（双参数）在本仓 fatal**：改用 `git rev-parse --short HEAD` + `git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/origin/main`
 - **`docker exec` 喂 stdin（heredoc / 管道）必须带 `-i`**：不带 `-i` 时容器内进程拿不到 stdin → SQL 完全没执行，而 psql 退出码仍是 0（`set -e` 抓不到），极易误判"已生效"。多语句 SQL 用 `psql -c "stmt1; stmt2; ..."`（单 `-c` 多语句 = 一个隐式事务，配 `-v ON_ERROR_STOP=1`）或 `docker exec -i`
+- **系统 Python 是红线守卫的隐藏依赖,缺了 fail-open 且不吭声**：`.claude/hooks/guard.sh` 按 `python`→`py`→`python3` 探测解释器,三个全落空就 `exit 0` 放行一切(`git add -A`、生产 DROP 都不再拦),**无任何提示**。uv 托管的解释器**不进 PATH**,所以"只装 uv 不装 Python"会静默拆掉守卫(2026-08-26 配第二台机时发现)。同理 `~/.claude/settings.json` 的 `statusLine` 也调裸 `python`。判据不是"装了没",而是跑 `echo '{"tool_name":"Bash","tool_input":{"command":"git add -A"}}' | python .claude/hooks/guard.py` 看是否输出 `permissionDecision=deny`
+- **项目解释器由 `backend/.python-version`(=3.12)钉死**,不靠"记得装对版本"：`pyproject` 的 `requires-python = ">=3.12"` 上界开放,系统若装了 3.13/3.14,`uv sync` 可能拿它建 venv → 要么 pandas/asyncpg 无 wheel 现场编译失败,要么**跑起来了但运行时与生产不一致**(算力机上尤其危险:面板 IC 要用于策略决策,数值差异无从归因)
 - **破坏性 DB 操作前先做针对性备份**：`pg_dump --data-only -t <表>...` 导出受影响表作精确回滚点（比全库备份快、可定点还原），再在单事务内执行；执行后**必须查行数/状态实证生效**，不信命令退出码
 
 ### 4.13 调试范式：SUCCESS 但产出为零

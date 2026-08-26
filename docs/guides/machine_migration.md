@@ -62,8 +62,30 @@ D:\MyWork\10Project\RD\QuantPilot
 ### 2.2 装工具链
 
 - **Docker Desktop**（WSL2 后端）
-- **uv**（`irm https://astral.sh/uv/install.ps1 | iex`）——**不必单独装 Python**：
-  `uv sync` 见 `requires-python = ">=3.12"` 会自动下载并托管一份 3.12
+- **uv**（`irm https://astral.sh/uv/install.ps1 | iex`）——**项目环境**由它托管，
+  `backend/.python-version` 钉死 3.12，系统装了什么版本都不影响项目
+- **系统 Python 3.12**（python.org，安装器勾 **"Add python.exe to PATH"`**）——
+  ⚠️ **仍然必须装,不能只靠 uv 托管**。uv 托管的解释器不进 PATH，而以下两处依赖裸
+  `python` 命令：
+
+  | 依赖方 | 后果（缺失时）|
+  |---|---|
+  | `.claude/hooks/guard.sh` → `guard.py`（PreToolUse 红线守卫）| 按 `python`→`py`→`python3` 探测，全落空则 **`exit 0` fail-open**——守卫静默失效，`git add -A` / 生产 DROP 全部放行，**没有任何提示** |
+  | `~/.claude/settings.json` 的 `statusLine`（`python .../statusline.py`）| 状态条不显示，同样无报错 |
+
+  装完必须验守卫真的活着（期望第一条含 `permissionDecision=deny`、第二条无输出）：
+
+  ```bash
+  echo '{"tool_name":"Bash","tool_input":{"command":"git add -A"}}' | python .claude/hooks/guard.py
+  echo '{"tool_name":"Bash","tool_input":{"command":"uv run pytest tests/integration/"}}' | python .claude/hooks/guard.py
+  ```
+
+  ⚠️ **这两条必须由人在普通终端里跑，Claude 用 Bash 工具跑不了**：钩子扫描的是整条命令
+  文本，第一条里的 `git add -A` 字面量会被它自己拦住（守卫活着时报 `C-1 防误传凭证`）。
+  被拦 = 守卫正常；真正要警惕的是**两条都毫无输出**，那才是 fail-open。
+
+  版本建议就装 3.12（与项目、生产一致）。装了更高版本也能用——项目侧有
+  `.python-version` 挡着——但 `guard.py` 须按上面两条重验一遍。
 - **Git for Windows**（本仓大量脚本是 bash，`Bash` 工具走的就是 Git Bash）
 - **Node.js 20**（本机 v20.12.2）——`frontend/` 是 Vue3 + Vite，「双活：两边都能开发」
   就得两边都能起 `npm run dev` / `vue-tsc` / `vitest`。**只跑算力任务可以先不装**
@@ -281,6 +303,9 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 - [ ] 路径是 `D:\MyWork\10Project\RD\QuantPilot`
 - [ ] `git log --oneline -1` 与本机一致；`git status` 干净
 - [ ] `git config user.name` / `user.email` / `core.autocrlf` 已设
+- [ ] 系统 `python` 在 PATH 上，且 `guard.py` 两条用例输出符合预期（§2.2）——
+      **这条不验就等于没有红线守卫，且失效时毫无提示**
+- [ ] `cd backend && uv run python -V` → 3.12.x（`.python-version` 生效）
 - [ ] `uv run pytest tests/unit/ tests/e2e/ -q` → 841 passed
 - [ ] `uv run ruff check src/ tests/` → 0 error
 - [ ] `ssh qp-tencent 'echo ok'` 通（同时验证 `known_hosts` 已拷）
