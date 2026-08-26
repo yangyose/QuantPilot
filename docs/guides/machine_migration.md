@@ -73,16 +73,21 @@ D:\MyWork\10Project\RD\QuantPilot
   | `.claude/hooks/guard.sh` → `guard.py`（PreToolUse 红线守卫）| 按 `python`→`py`→`python3` 探测，全落空则 **`exit 0` fail-open**——守卫静默失效，`git add -A` / 生产 DROP 全部放行，**没有任何提示** |
   | `~/.claude/settings.json` 的 `statusLine`（`python .../statusline.py`）| 状态条不显示，同样无报错 |
 
-  装完必须验守卫真的活着（期望第一条含 `permissionDecision=deny`、第二条无输出）：
+  装完**必须**验守卫真的活着，跑仓库自带的回归夹具（26 条用例，含正反两面）：
 
   ```bash
-  echo '{"tool_name":"Bash","tool_input":{"command":"git add -A"}}' | python .claude/hooks/guard.py
-  echo '{"tool_name":"Bash","tool_input":{"command":"uv run pytest tests/integration/"}}' | python .claude/hooks/guard.py
+  cd /d/MyWork/10Project/RD/QuantPilot
+  python .claude/hooks/test_guard.py
   ```
 
-  ⚠️ **这两条必须由人在普通终端里跑，Claude 用 Bash 工具跑不了**：钩子扫描的是整条命令
-  文本，第一条里的 `git add -A` 字面量会被它自己拦住（守卫活着时报 `C-1 防误传凭证`）。
-  被拦 = 守卫正常；真正要警惕的是**两条都毫无输出**，那才是 fail-open。
+  期望 `26/26 passed, 0 failed`、退出码 0。任何 FAIL 或整体报错都说明守卫在本机不可用，
+  **停下来查，别往下走**。
+
+  ⚠️ **为什么必须用这个脚本，而不是手敲 `echo '{...}' | python guard.py`**：`guard.py`
+  在找不到解释器时 fail-open，在 **JSON 解析失败时同样静默 `sys.exit(0)`**，两者都表现为
+  「零输出」。而 `echo '{...}'` 是 Bash 语法，在 cmd.exe 里单引号不是定界符 → guard.py
+  收到非法 JSON → 静默放行 → **看起来和「守卫已死」一模一样**。2026-08-26 配第二台机时
+  真踩到过，误判了一轮。夹具用 `subprocess` 直接喂 stdin，不经 shell 引号，从根上避开。
 
   版本建议就装 3.12（与项目、生产一致）。装了更高版本也能用——项目侧有
   `.python-version` 挡着——但 `guard.py` 须按上面两条重验一遍。
@@ -123,7 +128,7 @@ cd QuantPilot
 | 源（本机） | 目标（新机） |
 |---|---|
 | `<repo>/.env`、`<repo>/.env.prod`、`<repo>/backend/.env` | 同路径 |
-| `<repo>/.claude/settings.local.json` | 同路径（36 KB 权限白名单，省掉大量确认弹窗）|
+| `<repo>/.claude/settings.local.json` | 同路径。**整个拷、不要清洗**：390 条里只有 22 条（5%）含旧机用户名/绝对路径/会话级 scratchpad UUID，其余 **368 条（94%）换机即用**；失配的条目只是不生效，不报错也不误放行。被 `.gitignore:10` 忽略，`git pull` 不会带它 |
 | `~/.ssh/qp_tencent`（私钥，必需）+ `qp_tencent.pub`（可选）| 同路径，见下方「§2.4.1 `.ssh` 四样」 |
 | `~/.ssh/known_hosts` 里 `43.134.63.13` 的 3 行 | **追加**，不可整文件覆盖 |
 | `~/.ssh/config` 里的 `qp-tencent` 段 | **追加**（新机通常还没有这个文件）|

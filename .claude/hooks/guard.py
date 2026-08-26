@@ -1,9 +1,15 @@
 """PreToolUse 红线守卫逻辑（被 guard.sh 调用，JSON 从 stdin 读）。
 
-三条规则（fail-open：解析失败/不匹配一律放行）：
-  1. [C-1] 生产环境破坏性动作 → permissionDecision=ask（破坏性 AND 命中生产栈信号）
+四条规则（fail-open：解析失败/不匹配一律放行）：
+  1. [C-1] 受保护 DB 上的破坏性动作 → ask（破坏性 AND 命中生产栈/5434 信号）
+  1b.[C-1] 无条件确认的破坏性动作 → ask（不依赖 DB 信号：reset --hard / push --force /
+     宽泛目标的 rm -rf / sync_local_backtest_db.sh）
   2. [防泄密] git add -A / . / --all → deny
   3. [防 regression] 测试文件写入 @pytest.mark.anyio → deny
+
+⚠️ fail-open 有两个入口：找不到解释器（guard.sh）与 **JSON 解析失败**（本文件）。
+   两者都表现为「零输出」，自检时务必用文件重定向而非 echo 管道，见
+   docs/guides/machine_migration.md §2.2。
 """
 import json
 import re
@@ -38,9 +44,36 @@ def main() -> None:
                  "C-1 防误传凭证：禁止 git add -A / . / --all，"
                  "请按文件名逐个 add（防 .env/密钥/大二进制误入仓库）。")
 
-        # 规则 1：生产环境破坏性动作 = 破坏性 AND prod 信号
+        # 规则 1b：无条件确认（不依赖 DB 信号）——C-1 列了六类破坏性动作，
+        # 原实现只覆盖到「DB 相关」那几类，以下三类此前完全没有拦截。
+        always = None
+        if re.search(r"sync_local_backtest_db\.sh", low):
+            always = ("sync_local_backtest_db.sh（DROP DATABASE 重建 5434）。"
+                      "库里若已有 ic_baseline_pre_c1 / 面板 IC 行，重灌即永久丢失"
+                      "（重造数十小时）。脚本自身也有拒绝保护，此处二次确认。")
+        elif re.search(r"\bgit\s+reset\s+--hard\b", low):
+            always = "git reset --hard（丢弃未提交改动——用户资产，且不可撤销）"
+        elif re.search(r"\bgit\s+push\b", low) and re.search(
+                r"(--force(?!-with-lease)\b|\s-f\b)", low):
+            always = "git push --force（改写远端历史，可能覆盖他机已推送的提交）"
+        elif re.search(r"\brm\s+-[a-z]*r", low) and re.search(
+                # 全局规则：禁止以 根 / 家目录 / 盘符根 / 未解析变量 / 宽泛通配 为递归删除目标
+                r"\s(/|~|~/|\$HOME\b|\$\{HOME\}|[a-z]:[\\/])(\s|$)"
+                r"|\s\$\{?\w+\}?[/\\]"
+                r"|[/\\]\*(\s|$)",
+                cmd, re.I):
+            always = ("rm -r 的目标是 根/家目录/盘符根/未解析变量/宽泛通配 之一"
+                      "（个人全局规则明令禁止）")
+
+        if always:
+            emit("ask", f"C-1 破坏性动作：{always}。确认确为本次有意操作后再放行。")
+
+        # 规则 1：受保护 DB 上的破坏性动作 = 破坏性 AND 受保护 DB 信号
+        # 5434 是本地算力库：装着生产库里没有的产出（ic_baseline_pre_c1、面板 IC 行），
+        # 与生产 5432 同等对待。测试库 5433 故意不在此列（那本就是给 pytest 拆的）。
         prod = re.search(
-            r"docker-compose\.prod\.yml|\.env\.prod|quantpilot-(db|backend|redis|nginx)-1",
+            r"docker-compose\.prod\.yml|\.env\.prod|quantpilot-(db|backend|redis|nginx)-1"
+            r"|docker-compose\.backtest-local\.yml|qp-backtest-db-5434|:5434\b",
             cmd,
         ) is not None
 

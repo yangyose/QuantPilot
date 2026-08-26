@@ -291,12 +291,12 @@ uv run alembic upgrade head
 #### 验证 hooks 可用（人工在终端跑——hook 只拦 Claude 的工具调用，不拦你手敲的命令）
 
 ```bash
-# guard.py：三条规则各验一例
-echo '{"tool_name":"Bash","tool_input":{"command":"docker exec quantpilot-db-1 psql -c \"DROP TABLE x\""}}' | python .claude/hooks/guard.py   # 期望输出 permissionDecision=ask
-echo '{"tool_name":"Bash","tool_input":{"command":"uv run pytest tests/integration/"}}'                    | python .claude/hooks/guard.py   # 期望无输出（放行：本地/测试库不拦）
-echo '{"tool_name":"Bash","tool_input":{"command":"git add -A"}}'                                          | python .claude/hooks/guard.py   # 期望 permissionDecision=deny
+# guard.py：跑回归夹具，26 条用例（含"不该拦的别拦"反面用例）
+python .claude/hooks/test_guard.py          # 期望 26/26 passed, exit=0
 
-# auto_test.sh：解析能力（输出 PARSED: 路径 即正常；输出空/报错说明 python 不可用）
+# auto_test.sh：解析能力（输出 PARSED: 路径 即正常）
+# ⚠️ 只能在 Git Bash 里跑：cmd.exe 的单引号不是定界符，JSON 会被弄脏 → 同样输出空，
+#    与"python 不可用"无法区分（guard.py 那边的同款陷阱，已改用 test_guard.py 规避）
 echo '{"tool_input":{"file_path":"backend/src/x.py"}}' | python -c "import sys,json;print('PARSED:',json.load(sys.stdin).get('tool_input',{}).get('file_path',''))"
 ```
 
