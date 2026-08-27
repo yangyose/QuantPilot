@@ -1008,6 +1008,7 @@ Phase 11 实施完成后，重跑 `scripts/pipeline_multi_date.py`（已存在�
 - [x] E2E 测试通过（test_factor_quality_api / test_signals_api / test_scoring_api 在 unit+e2e 套件中已覆盖）
 - [x] `uv run ruff check src/ tests/` 输出 0 error
 - [ ] `uv run pytest tests/ --cov=quantpilot` Engine 层覆盖率 ≥ 90%（**已知偏差**：覆盖率门槛留 Phase 15 RC 验收阶段做覆盖率全量统计；当前 P11 引擎层均有 unit + integration 覆盖）
+  - **2026-08-27 订正**：**Phase 15 并未执行该统计**，本项就此悬空至今——「推给下一个 phase」而下一个 phase 没接，正是 `CLAUDE.md` C-3 要防的推迟失效。本日首次实测（841 unit+e2e，`--cov=quantpilot.engine`）：**总计 87%**，26 个模块中仅 3 个低于 90%——`backtest/engine.py` **61%**（191 条未覆盖，占全部缺口 **71%**）、`forecast_override.py` 86%、`strategies/mean_reversion.py` 88%。缺口集中在回测引擎单文件，补到 ~85% 即可整体过线。**已登记 roadmap §6 V1.5-J（J-COV）**，不再依赖"下一个 phase 会做"
 - [x] 跨制度回归（§10.4）4 trade_date × 3 state PASS（**修订**：原"3 state × 10 trade_date = 30 日"完整版拆分到 Phase 15 RC，理由：生产 5y 数据上每日 pipeline 130~1600s，30 日全跑 ~10 小时不适合做单次回归门槛；4 日抽样已充分验证 5 步管线 + 分位阈值 + PIT 权重链路）
 - [x] 5y 真机重跑（4 日抽样，v1.4 修复后）：顶分 composite_z **3.2~4.6**（≥ 2.33 基线，落 N(0,1) top 0.05% 合理）/ 顶分 composite_score ≥ 99.94（≥ 99 基线）/ top_pct=0.0004~0.0005（top 0.05%，≤ 1% 基线）/ **pool_count=50** / BUY signals **43~50** 每 trade_date / candidate_pool.market_state 与 MSH 100% 一致（PIT 修复生效）。**已知偏差**：STRONG count 18~23 vs 设计 §10.4 "≥ 30 只"——当前 V1.0 universe 过滤后 ~2400 只，top 1% ≈ 24，设计绝对数 30 假设全市场 3200，§10.4 基线本身需 Phase 15 RC 调整为相对百分比
 
