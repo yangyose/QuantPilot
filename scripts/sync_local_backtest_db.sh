@@ -99,10 +99,34 @@ docker exec "$CONTAINER" psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 \
     -c "CREATE DATABASE ${PG_DB} OWNER ${PG_USER};"
 
 # 5. Restore
+# `-v ON_ERROR_STOP=1` 不可省：不设它时 psql 即使报几百条 ERROR，**退出码仍是 0**，
+# `set -e` / pipefail 都抓不到 → 半灌的库被当成恢复成功（2026-08-27 加固前的真实缺陷）。
 echo "==> Restoring ${BASE} (this can take a couple minutes)"
-gunzip -c "$LATEST" | docker exec -i "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -q
+gunzip -c "$LATEST" | docker exec -i "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" \
+    -q -v ON_ERROR_STOP=1
 
-# 6. Mark done + report baseline
+# 5.5 恢复后自验（**先验证，后写标记**）
+# 顺序是关键：原实现无论恢复对错都先写 `.last_restore`，于是下次跑会被「已恢复过」
+# 短路跳过，一个半灌的库就此固化下来、且再也不会自动重灌。
+echo "==> Verifying restore"
+_q() { docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc "$1" 2>/dev/null | tr -d '[:space:]'; }
+N_TABLES="$(_q "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")"
+ALEMBIC="$(_q "SELECT count(*) FROM alembic_version;")"
+N_QUOTES="$(_q "SELECT count(*) FROM daily_quote;")"
+VERIFY_FAIL=""
+[ "${N_TABLES:-0}" -ge 20 ] 2>/dev/null || VERIFY_FAIL="${VERIFY_FAIL}  public 表数=${N_TABLES:-?}（期望 >= 20）\n"
+[ "${ALEMBIC:-0}" = "1" ]        2>/dev/null || VERIFY_FAIL="${VERIFY_FAIL}  alembic_version 行数=${ALEMBIC:-?}（期望 1）\n"
+[ "${N_QUOTES:-0}" -gt 0 ] 2>/dev/null      || VERIFY_FAIL="${VERIFY_FAIL}  daily_quote 行数=${N_QUOTES:-?}（期望 > 0）\n"
+if [ -n "$VERIFY_FAIL" ]; then
+    echo "" >&2
+    echo "恢复自验失败——**不写 ${MARKER}**，以便下次重跑时重灌而不是被「已恢复过」短路：" >&2
+    printf "%b" "$VERIFY_FAIL" >&2
+    echo "  库当前处于半灌状态，勿直接使用。查完原因后重跑本脚本。" >&2
+    exit 1
+fi
+echo "    OK: public 表数=${N_TABLES} / alembic_version=$(_q "SELECT version_num FROM alembic_version;") / daily_quote=${N_QUOTES}"
+
+# 6. Mark done + report baseline（自验通过后才落标记）
 echo "$BASE" > "$MARKER"
 BASELINE="$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT max(trade_date) FROM daily_quote;" 2>/dev/null || echo "?")"

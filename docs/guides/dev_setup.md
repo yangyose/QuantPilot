@@ -264,12 +264,48 @@ uv run alembic upgrade head
 
 测试分四层，各层依赖与运行时间不同：
 
-| 类型 | 目录 | 数量 | 依赖 | 平均耗时 |
+| 类型 | 目录 | 数量 | 依赖 | 实测耗时 |
 |------|------|------|------|---------|
-| 单元测试 | `backend/tests/unit/` | ~270 | 无 DB | < 5 s |
-| E2E 测试 | `backend/tests/e2e/` | ~140 | ASGITransport，无 DB | ~10 s |
-| 集成测试 | `backend/tests/integration/` | ~85 | PostgreSQL | ~30 s |
-| 冒烟测试 | `backend/tests/smoke/` | ~125 | 服务运行中 + `API_PASSWORD` | ~20 s |
+| 单元测试 | `backend/tests/unit/` | **644** | 无 DB | unit + e2e 合跑 **≈146 s** |
+| E2E 测试 | `backend/tests/e2e/` | **197** | ASGITransport，无 DB | 同上（**841 passed**）|
+| 集成测试 | `backend/tests/integration/` | **227** | PostgreSQL **:5433**（见 §6.0）| **≈595 s（约 10 分钟）** |
+| 冒烟测试 | `backend/tests/smoke/` | **156** | 服务运行中 + `API_PASSWORD` | ~20 s |
+
+> 数量与耗时为 2026-08-27 实测（32 GB / NVMe 机，集成测试跑期另有算力任务并发）。
+> 原表登记的「~85 个 / ~30 s」严重低估集成测试——**实际是 227 个 / 约 10 分钟，耗时差 20 倍**，
+> 按旧数字排期会误判。改动测试规模后请一并更新本表。
+
+#### 6.0 起测试库（:5433）——集成测试的前置
+
+**仓库里没有任何 compose 定义 5433**（`docker-compose.dev.yml` 是 5432 开发库、
+`docker-compose.backtest-local.yml` 是 5434 算力库），测试库一直是临时起的。
+用完即弃的起法（`--rm` + 匿名卷，不产生任何持久化数据，不碰其他库的卷）：
+
+```bash
+docker run -d --rm --name qp-test-db-5433 \
+  -e POSTGRES_DB=quantpilot -e POSTGRES_USER=quantpilot -e POSTGRES_PASSWORD=quantpilot \
+  -p 127.0.0.1:5433:5432 postgres:15-alpine
+
+# 等就绪
+until docker exec qp-test-db-5433 pg_isready -U quantpilot >/dev/null 2>&1; do sleep 1; done
+
+cd backend
+DATABASE_URL=postgresql+asyncpg://quantpilot:quantpilot@localhost:5433/quantpilot \
+  uv run pytest tests/integration/ -q          # 预期 227 passed
+
+docker stop qp-test-db-5433                    # --rm，停即销毁
+```
+
+不必手动跑 alembic：`tests/conftest.py` 的 session 级 `_ensure_schema` 会在**子进程**里
+`alembic upgrade head` 建表，收尾再 `alembic downgrade base`。
+
+⚠️ **正因为收尾会 `downgrade base` DROP 掉所有表**，`conftest.py` 有一道硬护栏：
+`DATABASE_URL` 不含 `:5433`（且未显式设 `QUANTPILOT_ALLOW_PROD_TEST_DB=1`）时，
+**在任何 alembic 动作之前中止整个 session**。别把这道护栏当麻烦——它挡的是
+「误把集成测试打到 5432 生产 fallback 或 5434 算力库上」，那是一次不可逆的灭库。
+
+ℹ️ 集成测试**不需要 Redis**：唯一用到 Redis 的 `test_int_config_service.py` 用的是
+进程内假对象（`_FakeRedis`），不连真实服务。
 
 ### 6.1 Claude Code 工程化资产（hooks / skills）
 

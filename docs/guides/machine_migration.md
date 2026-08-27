@@ -365,6 +365,12 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 - [ ] `cd backend && uv run python -V` → 3.12.x（`.python-version` 生效）
 - [ ] `uv run pytest tests/unit/ tests/e2e/ -q` → 841 passed
 - [ ] `uv run ruff check src/ tests/` → 0 error
+- [ ] **集成测试基线** → **227 passed**（`CLAUDE.md C-2` 要求换机后跑 unit + e2e + integration
+      **三样**建真实基线；本清单原先只有前两样，2026-08-27 补）。需先起 :5433 测试库——
+      **仓库里没有任何 compose 定义它**，起法见 `dev_setup.md §6.0`（`docker run --rm` 一次性容器）。
+      实测约 **10 分钟**（不是 `dev_setup` 旧表写的 30 秒）。⚠️ 集成测试收尾会
+      `alembic downgrade base` **DROP 所有表**，conftest 有「URL 不含 `:5433` 即中止 session」的
+      硬护栏——别绕过它
 - [ ] （装了 Node 才验）`node -v` → **v20.x**；`cd frontend && npm ci` → exit 0；
       `npx vitest run` → **21 passed**；`npx vue-tsc --noEmit` → 0 error
 - [ ] `ssh qp-tencent 'echo ok'` 通（同时验证 `known_hosts` 已拷）
@@ -375,6 +381,28 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 - [ ] 休眠已关（`powercfg /query` 确认）
 - [ ] Claude Code 起会话后能读到历史 memory（问它「C1 面板对比现在什么状态」，
       答得出 5434/off-on 两组那套细节才算通）
+
+> 上面的复选框是**给下一台机用的模板，故保持未勾选**。本次（第一台 → 第二台）的实测值记在下面，
+> 供对表；数字对不上先查环境，别改代码。
+
+### 3.1 第二台机实测结果（2026-08-27，`DESKTOP-7L9T01A` / 32 GB / NVMe / 区域 ja-JP）
+
+| 项 | 实测 |
+|---|---|
+| 守卫夹具 | **28/28 passed** |
+| `uv run python -V` | 3.12.14（uv 自动下载；系统 python 是 3.14.7，不参与项目）|
+| unit + e2e | **841 passed**，146 s |
+| **integration（:5433）** | **227 passed**，595 s |
+| ruff | 0 error |
+| Node / 前端 | v20.20.2；`npm ci` exit 0、`vitest` 21 passed、`vue-tsc` 0 error |
+| `ssh qp-tencent` | 通 |
+| **5434 恢复** | **107 秒**（1.67 GB SQL + 建索引；PostgreSQL 15.19）|
+| 5434 校验 | `alembic_version` = **0025**（**未做也不需要 `stamp`**）；`daily_quote` 6,628,829（2021-05-13 .. 2026-08-25）；索引 83 个、`indisvalid=f` 的 0 个；库体积 3831 MB |
+| `ic_baseline_pre_c1` | **4940** 行导入成功 |
+| WSL | 无 `.wslconfig`，默认 15 Gi + 4 Gi swap（32 GB 机的正确做法）|
+| 电源 | 画面/睡眠/休眠/硬盘 四项全为「なし」|
+
+**与本文预期不符、已在正文订正的三处**：① 旧机 5434 那套 `alembic stamp 0025` 与 835 MB 冗余索引是**旧机局部产物**，从当期备份全新重建不会出现；② 非中文 Windows 的 cp932 管道崩溃（§2.2 + `CLAUDE.md §4.12`）；③ Node 的 PATH 需「改注册表保类型 + 补广播」两步（§2.2）。
 
 ---
 
