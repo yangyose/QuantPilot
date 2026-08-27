@@ -35,8 +35,12 @@ CASES = [
     # (说明, tool, tool_input, 期望 decision；None = 应放行)
     # ---- 规则 1b：无条件确认（不依赖 DB 信号）----
     ("sync 脚本", B, {"command": "bash scripts/sync_local_backtest_db.sh"}, "ask"),
-    ("sync 脚本 --force-wipe", B,
-     {"command": "bash scripts/sync_local_backtest_db.sh --force-wipe"}, "ask"),
+    # --force-wipe 是 deny 不是 ask：ask 在「Bash 自动放行」模式下不弹确认（实测），
+    # 而它销毁的算力产出无处恢复。相邻的 --force / 裸调用仍是 ask——写宽了会在下面露馅。
+    ("sync 脚本 --force-wipe（不可逆）", B,
+     {"command": "bash scripts/sync_local_backtest_db.sh --force-wipe"}, "deny"),
+    ("sync 脚本 --force（仍是 ask）", B,
+     {"command": "bash scripts/sync_local_backtest_db.sh --force"}, "ask"),
     ("reset --hard", B, {"command": "git reset --hard origin/main"}, "ask"),
     ("push --force", B, {"command": "git push --force origin main"}, "ask"),
     ("push -f", B, {"command": "git push -f origin main"}, "ask"),

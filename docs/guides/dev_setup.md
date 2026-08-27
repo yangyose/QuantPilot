@@ -281,7 +281,7 @@ uv run alembic upgrade head
 
 **已配置的 hooks**：
 - `auto_test.sh`（PostToolUse: Edit|Write）：编辑 `backend/**/*.py` 后自动跑 `unit/`+`e2e/`；编辑 `alembic/` 或 `tests/integration/` 且 PG 容器在线时加跑 `integration/`；失败回传 Claude 自动调试。
-- `guard.sh` + `guard.py`（PreToolUse: Bash|Edit|Write）：强制宪法红线——生产破坏性动作(prod 信号 AND 破坏性)弹确认、`git add -A/./--all` 拒绝、测试文件写入 `@pytest.mark.anyio` 拒绝。
+- `guard.sh` + `guard.py`（PreToolUse: Bash|Edit|Write）：强制宪法红线——生产破坏性动作(prod 信号 AND 破坏性)弹确认、无条件确认类（`git reset --hard` / `push --force` / 宽泛 `rm -rf` / 裸 `sync_local_backtest_db.sh`）弹确认、`sync_local_backtest_db.sh --force-wipe` **直接拒绝**（不可逆且无处恢复，且 `ask` 在自动放行模式下不弹确认——见 `CLAUDE.md §4.12`）、`git add -A/./--all` 拒绝、测试文件写入 `@pytest.mark.anyio` 拒绝。
 
 **已配置的 skills**（对话中按 description 自动触发，也可 `/<name>` 显式调）：
 - `prod-healthcheck`：生产体检/补跑/回填 OOM 恢复运行手册（含「换机适配」段）。
@@ -300,8 +300,8 @@ uv run alembic upgrade head
 #### 验证 hooks 可用（人工在终端跑——hook 只拦 Claude 的工具调用，不拦你手敲的命令）
 
 ```bash
-# guard.py：跑回归夹具，27 条用例（含"不该拦的别拦"反面用例 + 输出编码不变量）
-python .claude/hooks/test_guard.py          # 期望 27/27 passed, exit=0
+# guard.py：跑回归夹具，28 条用例（含"不该拦的别拦"反面用例 + 输出编码不变量）
+python .claude/hooks/test_guard.py          # 期望 28/28 passed, exit=0
 
 # auto_test.sh：解析能力（输出 PARSED: 路径 即正常）
 # ⚠️ 只能在 Git Bash 里跑：cmd.exe 的单引号不是定界符，JSON 会被弄脏 → 同样输出空，

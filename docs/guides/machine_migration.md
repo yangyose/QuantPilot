@@ -73,14 +73,14 @@ D:\MyWork\10Project\RD\QuantPilot
   | `.claude/hooks/guard.sh` → `guard.py`（PreToolUse 红线守卫）| 按 `python`→`py`→`python3` 探测，全落空则 **`exit 0` fail-open**——守卫静默失效，`git add -A` / 生产 DROP 全部放行，**没有任何提示** |
   | `~/.claude/settings.json` 的 `statusLine`（`python .../statusline.py`）| 状态条不显示，同样无报错 |
 
-  装完**必须**验守卫真的活着，跑仓库自带的回归夹具（27 条用例，含正反两面）：
+  装完**必须**验守卫真的活着，跑仓库自带的回归夹具（28 条用例，含正反两面）：
 
   ```bash
   cd /d/MyWork/10Project/RD/QuantPilot
   python .claude/hooks/test_guard.py
   ```
 
-  期望 `27/27 passed, 0 failed`、退出码 0。任何 FAIL 或整体报错都说明守卫在本机不可用，
+  期望 `28/28 passed, 0 failed`、退出码 0。任何 FAIL 或整体报错都说明守卫在本机不可用，
   **停下来查，别往下走**。
 
   ⚠️ **为什么必须用这个脚本，而不是手敲 `echo '{...}' | python guard.py`**：`guard.py`
@@ -356,7 +356,7 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 - [ ] 路径是 `D:\MyWork\10Project\RD\QuantPilot`
 - [ ] `git log --oneline -1` 与本机一致；`git status` 干净
 - [ ] `git config user.name` / `user.email` / `core.autocrlf` 已设
-- [ ] 系统 `python` 在 PATH 上，且 `python .claude/hooks/test_guard.py` → **27/27 passed**（§2.2）——
+- [ ] 系统 `python` 在 PATH 上，且 `python .claude/hooks/test_guard.py` → **28/28 passed**（§2.2）——
       **这条不验就等于没有红线守卫，且失效时毫无提示**
 - [ ] 非中文 Windows（区域不是 zh-CN）额外设 `PYTHONUTF8=1` 用户环境变量：
       `python -c "import sys;print(sys.stdout.encoding)"` **重定向到文件时**应为 `utf-8`

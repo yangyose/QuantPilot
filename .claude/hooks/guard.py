@@ -55,6 +55,20 @@ def main() -> None:
                  "C-1 防误传凭证：禁止 git add -A / . / --all，"
                  "请按文件名逐个 add（防 .env/密钥/大二进制误入仓库）。")
 
+        # 规则 1c：sync 脚本的 --force-wipe → deny（不是 ask）
+        # 它销毁的是**生产库里没有、只在 5434 上**的算力产出：ic_baseline_pre_c1
+        # 4940 行（重造约 57 小时）+ 面板 IC 行。而 5434 装上这些产出后已禁止再 sync，
+        # 所以这个动作不可逆、也无处可恢复。
+        # 为什么不用 ask：2026-08-27 实测，在「Bash 自动放行」的权限模式下钩子的 ask
+        # **不会浮出确认框**（同会话 deny 仍然生效，git add -A 被正常拦下）——那层
+        # "二次确认"在这种模式下是空的。真要执行时由人在终端手敲，自动化不该碰得到。
+        if re.search(r"sync_local_backtest_db\.sh", low) and "--force-wipe" in low:
+            emit("deny",
+                 "C-1 不可逆销毁：sync_local_backtest_db.sh --force-wipe 会毁掉 5434 上"
+                 "生产库没有的算力产出（ic_baseline_pre_c1 4940 行 ≈ 57 小时重造 + 面板 IC 行），"
+                 "且该库已禁止再 sync，无处恢复。确需执行请由人在终端手动运行；"
+                 "先按脚本提示 pg_dump 备份受影响表。")
+
         # 规则 1b：无条件确认（不依赖 DB 信号）——C-1 列了六类破坏性动作，
         # 原实现只覆盖到「DB 相关」那几类，以下三类此前完全没有拦截。
         always = None
