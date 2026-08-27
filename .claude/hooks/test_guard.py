@@ -11,9 +11,21 @@ cmd.exe 里单引号不是定界符 → guard.py 收到非法 JSON → **静默 
 「该拦的拦住」单独绿不算数，「不该拦的别拦」同样重要——否则规则写宽了没人发现。
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+# 输出流强制 UTF-8：管道/重定向时 Python 按 locale 编码写 stdout（ja-JP 机器是
+# cp932），下面用例说明里的中文编不出去 → UnicodeEncodeError 在打印途中崩掉，
+# 只跑出一半用例就带着 traceback 退出，与「守卫已死」几乎无法区分。
+# 控制台直连时 Windows 走 WriteConsoleW 不受 codepage 影响，所以这个崩溃**只在
+# 管道/重定向下出现**——而 Claude Code 跑命令恰恰是管道（2026-08-26 第二台机实测）。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):  # 非 TextIOWrapper（已被重定向包装）时跳过
+        pass
 
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
 GUARD = ROOT / ".claude" / "hooks" / "guard.py"
@@ -73,12 +85,45 @@ CASES = [
 def run(tool, ti):
     p = subprocess.run(
         [sys.executable, str(GUARD)],
-        input=json.dumps({"tool_name": tool, "tool_input": ti}),
-        capture_output=True, text=True,
+        input=json.dumps({"tool_name": tool, "tool_input": ti}).encode("utf-8"),
+        capture_output=True,
     )
-    if not p.stdout.strip():
+    # 取字节再显式解码，不用 text=True：后者按 locale 编码解（ja-JP 机器是 cp932），
+    # guard.py 一旦输出非 ASCII，解码就在 subprocess 内部炸掉、p.stdout 变 None →
+    # 夹具整体崩溃而非判 FAIL，「守卫坏了」于是伪装成「夹具坏了」。同理 json 解析
+    # 失败也要收成 None（= 判 FAIL），不能让它掀掉整轮用例。
+    out = p.stdout.decode("utf-8", errors="replace").strip()
+    if not out:
         return None, p.returncode
-    return json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"], p.returncode
+    try:
+        return json.loads(out)["hookSpecificOutput"]["permissionDecision"], p.returncode
+    except (ValueError, KeyError):
+        return None, p.returncode
+
+
+def check_ascii_output():
+    """守卫输出必须是纯 ASCII（不变量，不是风格偏好）。
+
+    guard.py 崩溃 = 非零退出 = fail-open（PreToolUse 只有 exit 2 才拦截），所以
+    「stdout 写不出去」与「守卫放行」在外部完全不可区分。这里用窄编码环境跑一次
+    deny 用例，并**直接验字节**而不是解码后的文本——把 json.dumps 改成
+    ensure_ascii=False、或在 emit 路径上新增中文 print，都会在这条露馅，
+    而不是等换到一台 locale 不同的机器上才发作。
+    """
+    payload = json.dumps({"tool_name": "Write", "tool_input": {
+        "file_path": "backend/tests/unit/test_x.py",
+        "content": "@pytest.mark.anyio\nasync def test_a(): ...",
+    }})
+    p = subprocess.run(
+        [sys.executable, str(GUARD)],
+        input=payload.encode("utf-8"), capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+    )
+    try:
+        got = json.loads(p.stdout.decode("ascii"))["hookSpecificOutput"]["permissionDecision"]
+    except (UnicodeDecodeError, ValueError, KeyError):
+        got = None
+    return got, p.returncode
 
 
 def main() -> int:
@@ -92,7 +137,16 @@ def main() -> int:
         fail += 0 if ok else 1
         print(f"{'PASS' if ok else 'FAIL'}  {desc:34s} "
               f"want={str(want):5s} got={str(got):5s} rc={rc}")
-    print(f"\n{len(CASES) - fail}/{len(CASES)} passed, {fail} failed")
+
+    # 编码不变量：不属于规则命中，单独跑一条
+    got, rc = check_ascii_output()
+    ok = got == "deny"
+    fail += 0 if ok else 1
+    print(f"{'PASS' if ok else 'FAIL'}  {'窄编码下输出仍为纯 ASCII':34s} "
+          f"want={'deny':5s} got={str(got):5s} rc={rc}")
+
+    total = len(CASES) + 1
+    print(f"\n{total - fail}/{total} passed, {fail} failed")
     return 1 if fail else 0
 
 

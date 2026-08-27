@@ -73,14 +73,14 @@ D:\MyWork\10Project\RD\QuantPilot
   | `.claude/hooks/guard.sh` → `guard.py`（PreToolUse 红线守卫）| 按 `python`→`py`→`python3` 探测，全落空则 **`exit 0` fail-open**——守卫静默失效，`git add -A` / 生产 DROP 全部放行，**没有任何提示** |
   | `~/.claude/settings.json` 的 `statusLine`（`python .../statusline.py`）| 状态条不显示，同样无报错 |
 
-  装完**必须**验守卫真的活着，跑仓库自带的回归夹具（26 条用例，含正反两面）：
+  装完**必须**验守卫真的活着，跑仓库自带的回归夹具（27 条用例，含正反两面）：
 
   ```bash
   cd /d/MyWork/10Project/RD/QuantPilot
   python .claude/hooks/test_guard.py
   ```
 
-  期望 `26/26 passed, 0 failed`、退出码 0。任何 FAIL 或整体报错都说明守卫在本机不可用，
+  期望 `27/27 passed, 0 failed`、退出码 0。任何 FAIL 或整体报错都说明守卫在本机不可用，
   **停下来查，别往下走**。
 
   ⚠️ **为什么必须用这个脚本，而不是手敲 `echo '{...}' | python guard.py`**：`guard.py`
@@ -92,8 +92,56 @@ D:\MyWork\10Project\RD\QuantPilot
   版本建议就装 3.12（与项目、生产一致）。装了更高版本也能用——项目侧有
   `.python-version` 挡着——但 `guard.py` 须按上面两条重验一遍。
 - **Git for Windows**（本仓大量脚本是 bash，`Bash` 工具走的就是 Git Bash）
-- **Node.js 20**（本机 v20.12.2）——`frontend/` 是 Vue3 + Vite，「双活：两边都能开发」
-  就得两边都能起 `npm run dev` / `vue-tsc` / `vitest`。**只跑算力任务可以先不装**
+- **Node.js 20**——`frontend/` 是 Vue3 + Vite，「双活：两边都能开发」就得两边都能起
+  `npm run dev` / `vue-tsc` / `vitest`。**只跑算力任务可以先不装**。
+
+  **必须是 20.x，不是"当前 LTS"**：`frontend/Dockerfile` 与 `Dockerfile.build` 都是
+  `node:20-alpine`，工具链也是这一代（vite 5 / vitest 1.6 / `@types/node ^20`）。
+  版本已在仓库里钉死，不靠"记得装对"：`frontend/.nvmrc`（`20.20.2`）+ `package.json`
+  的 `engines.node`（`>=20.19.0 <21`）+ `frontend/.npmrc` 的 `engine-strict=true`
+  ——**装错大版本时 `npm ci` 直接报 `EBADENGINE` 拒装**（2026-08-27 正反两面实证：
+  当前 20.20.2 通过；把范围临时改成 `>=99` 立即失败）。CI 目前没有前端 job，
+  `.nvmrc` 只是给 fnm/nvm 与将来的 `actions/setup-node` 读的，**真正的护栏是
+  `engine-strict`**。
+
+  **推荐 zip 装法（免管理员，可整目录删除回退）**——winget 走 MSI 需要提权，
+  非交互 shell 里会卡在 UAC：
+
+  ```powershell
+  # 1) 下载并核对 SHA256（务必核对，不要跳过）
+  $v='v20.20.2'; $pkg="node-$v-win-x64"
+  Invoke-WebRequest "https://nodejs.org/dist/$v/$pkg.zip" -OutFile "$env:TEMP\$pkg.zip"
+  $want=((Invoke-WebRequest "https://nodejs.org/dist/$v/SHASUMS256.txt" -UseBasicParsing).Content `
+        -split "`n" | Where-Object { $_ -match "$pkg.zip" }) -split '\s+' | Select-Object -First 1
+  $want -eq (Get-FileHash "$env:TEMP\$pkg.zip" -Algorithm SHA256).Hash.ToLower()   # 必须 True
+  # 2) 解压到用户目录
+  Expand-Archive "$env:TEMP\$pkg.zip" "$env:LOCALAPPDATA\Programs"
+  Rename-Item "$env:LOCALAPPDATA\Programs\$pkg" "$env:LOCALAPPDATA\Programs\nodejs"
+  ```
+
+  ⚠️ **加 PATH 必须「改注册表保类型 + 补广播」两步一起，缺任一步都会出现
+  「装好了、路径也对、就是不认」**（2026-08-27 真踩到）：
+
+  - 用 `[Environment]::SetEnvironmentVariable(...,'User')` 会把用户 `Path` 里的
+    `%USERPROFILE%` 这类变量**展开写死**（`REG_EXPAND_SZ` → `REG_SZ`），不可逆地破坏原值；
+  - 改用原始注册表 API（`Registry.CurrentUser.OpenSubKey('Environment',$true)` +
+    `GetValue(...,DoNotExpandEnvironmentNames)` + `SetValue(...,$kind)`）能保住类型，
+    **但会丢掉前者自带的 `WM_SETTINGCHANGE` 广播** → explorer.exe 不刷新环境块，
+    从开始菜单新开的 cmd 仍然找不到 node。补广播：
+
+    ```powershell
+    Add-Type -Namespace Win32 -Name N -MemberDefinition @'
+    [DllImport("user32.dll", CharSet=CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam,
+        string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+    '@
+    $r=[UIntPtr]::Zero
+    [Win32.N]::SendMessageTimeout([IntPtr]0xffff,0x1A,[UIntPtr]::Zero,"Environment",2,5000,[ref]$r)
+    ```
+  - **已经开着的窗口永远不会自己好**（进程环境块创建时即固定），必须新开；VS Code 要整个重启。
+    广播没吃下时重启 explorer.exe 或重启机器，注册表值是对的。
+
+  验收：`npm ci` → exit 0；`npx vitest run` → **21 passed**；`npx vue-tsc --noEmit` → 0 error。
 - Claude Code
 - 开工前设好 `git config user.name/user.email` 与 `core.autocrlf`（本仓 `.gitattributes`
   已对 `*.sh` 钉 `eol=lf`）——漏设会让整个仓库显示成「全部已修改」或提交作者错乱
@@ -308,11 +356,17 @@ docker exec qp-backtest-db-5434 psql -U quantpilot -d quantpilot \
 - [ ] 路径是 `D:\MyWork\10Project\RD\QuantPilot`
 - [ ] `git log --oneline -1` 与本机一致；`git status` 干净
 - [ ] `git config user.name` / `user.email` / `core.autocrlf` 已设
-- [ ] 系统 `python` 在 PATH 上，且 `guard.py` 两条用例输出符合预期（§2.2）——
+- [ ] 系统 `python` 在 PATH 上，且 `python .claude/hooks/test_guard.py` → **27/27 passed**（§2.2）——
       **这条不验就等于没有红线守卫，且失效时毫无提示**
+- [ ] 非中文 Windows（区域不是 zh-CN）额外设 `PYTHONUTF8=1` 用户环境变量：
+      `python -c "import sys;print(sys.stdout.encoding)"` **重定向到文件时**应为 `utf-8`
+      而非 `cp932`/其他 ANSI 代码页，否则 `backend/scripts/*.py` 的中文输出在管道里会崩
+      （`CLAUDE.md §4.12`）
 - [ ] `cd backend && uv run python -V` → 3.12.x（`.python-version` 生效）
 - [ ] `uv run pytest tests/unit/ tests/e2e/ -q` → 841 passed
 - [ ] `uv run ruff check src/ tests/` → 0 error
+- [ ] （装了 Node 才验）`node -v` → **v20.x**；`cd frontend && npm ci` → exit 0；
+      `npx vitest run` → **21 passed**；`npx vue-tsc --noEmit` → 0 error
 - [ ] `ssh qp-tencent 'echo ok'` 通（同时验证 `known_hosts` 已拷）
 - [ ] `backups/remote/pull.log` 有 `worker: pull OK`（或已用方式 A 拷入 `.sql.gz`）
 - [ ] 5434 起来了，`SELECT version_num FROM alembic_version` = **0025**

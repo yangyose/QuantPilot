@@ -15,6 +15,17 @@ import json
 import re
 import sys
 
+# 输出流不得因编码而抛异常：guard.py 崩溃 = 非零退出 = **fail-open**（PreToolUse
+# 只有 exit 2 才拦截，其余非零码一律放行），所以一个 UnicodeEncodeError 就能把
+# deny 悄悄变成放行。ja-JP 机器管道下 stdout 是 cp932，编不出中文即崩。
+# 正常路径不依赖这层兜底——下面 json.dumps 保持默认 ensure_ascii=True，输出恒为
+# 纯 ASCII（test_guard.py 有一条用例钉死这个不变量）；此处只防将来新增的打印。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def emit(decision: str, reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {

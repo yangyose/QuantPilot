@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File scripts/bootstrap_dev.ps1
 | Docker Compose v2 | 内置于 Docker Desktop | 服务编排 | 是 |
 | Python | 3.12 | 仅本地运行后端/测试时需要 | 否（有 Docker 即可） |
 | [uv](https://docs.astral.sh/uv/) | 最新 | Python 依赖管理 | 否（同上） |
-| Node.js | 20 LTS | 前端 dev server 与 lint | 仅前端开发 |
+| Node.js | 20.x（`frontend/.nvmrc` = 20.20.2）| 前端 dev server 与 lint | 仅前端开发 |
 | Git | 2.30+ | 版本控制 | 是 |
 
 **安装 uv（仅本地后端开发需要）：**
@@ -72,11 +72,20 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 **安装 Node.js（仅前端开发需要）：**
 
-推荐使用 [nvm](https://github.com/nvm-sh/nvm)（Linux/macOS）或 [nvm-windows](https://github.com/coreybutler/nvm-windows) 切换版本：
+**必须 20.x**——两个 `frontend/Dockerfile*` 都是 `node:20-alpine`，工具链是 vite 5 /
+vitest 1.6 / `@types/node ^20`。版本在仓库里钉死，不靠"记得装对"：`frontend/.nvmrc`
+（`20.20.2`）+ `package.json` 的 `engines.node`（`>=20.19.0 <21`）+ `frontend/.npmrc`
+的 `engine-strict=true` → **大版本不对时 `npm ci` 直接 `EBADENGINE` 拒装**。
+
+推荐 [nvm](https://github.com/nvm-sh/nvm)（Linux/macOS）或
+[nvm-windows](https://github.com/coreybutler/nvm-windows)：
 
 ```bash
 nvm install 20 && nvm use 20
 ```
+
+Windows 上不想装版本管理器时，可用免管理员的 zip 装法（含 SHA256 核对与 PATH 广播的
+两步坑）——见 `machine_migration.md §2.2`。
 
 ---
 
@@ -291,8 +300,8 @@ uv run alembic upgrade head
 #### 验证 hooks 可用（人工在终端跑——hook 只拦 Claude 的工具调用，不拦你手敲的命令）
 
 ```bash
-# guard.py：跑回归夹具，26 条用例（含"不该拦的别拦"反面用例）
-python .claude/hooks/test_guard.py          # 期望 26/26 passed, exit=0
+# guard.py：跑回归夹具，27 条用例（含"不该拦的别拦"反面用例 + 输出编码不变量）
+python .claude/hooks/test_guard.py          # 期望 27/27 passed, exit=0
 
 # auto_test.sh：解析能力（输出 PARSED: 路径 即正常）
 # ⚠️ 只能在 Git Bash 里跑：cmd.exe 的单引号不是定界符，JSON 会被弄脏 → 同样输出空，
