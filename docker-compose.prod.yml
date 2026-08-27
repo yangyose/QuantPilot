@@ -87,6 +87,16 @@ services:
       # 回测护栏（2026-06-15）：超此日历跨度的回测在端点层 422 拒绝（默认 0=不限制）。
       # 必须显式列在 environment 白名单，否则 .env.prod 设了也进不了容器（settings 默认 0）。
       BACKTEST_MAX_WINDOW_DAYS: ${BACKTEST_MAX_WINDOW_DAYS:-0}
+      # 回测总开关（2026-06-29 定案）：2GB 机**结构性**跑不了回测——引擎恒加载
+      # window + 130d lookback 的 daily_quotes，lookback ≈ 90 交易日是固定地板，
+      # 哪怕 1 天窗口也要装 45 万行；30 天回测实测峰值 avail 仅剩 107MB。已因此 OOM
+      # 宕机 4 次。false → POST /backtest/run 最前置返 503（连窗口/并发护栏都不到），
+      # 长回测走本地算力中心 + POST /backtest/import 回流。
+      # 默认取 false 而非 true 是**失效方向**的选择：漏配 .env.prod 时应保持关闭。
+      # 补于 2026-08-27——commit 3ffefcb 只改了 .env.prod.example 与 backend 代码，
+      # 漏了本白名单（服务器上是就地手改的，从未进 git），仓库与生产就此分叉：
+      # 谁按 git 重建一套生产，这个开关就会静默消失、回测重新打开。
+      BACKTEST_ENABLED: ${BACKTEST_ENABLED:-false}
       DEBUG: "false"
       LOG_DIR: /app/logs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

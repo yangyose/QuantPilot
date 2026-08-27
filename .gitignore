@@ -59,6 +59,9 @@ Thumbs.db
 
 # === 日志 ===
 *.log
+# 运行期 scratch：面板/回填日志、nohup 输出、诊断产出（var/diagnostics/*.csv 等）。
+# 只挡 *.log 不够——同目录还会落 .err / .nohup / .csv，会漏成未跟踪文件。
+var/
 logs/
 
 # === 备份 ===
