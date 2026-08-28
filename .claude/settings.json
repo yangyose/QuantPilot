@@ -30,6 +30,12 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto_test.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/claude_md_review.sh\"",
+            "timeout": 15,
+            "statusMessage": "CLAUDE.md 变更 → 触发第三方评审"
           }
         ]
       }

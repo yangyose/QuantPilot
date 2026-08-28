@@ -247,6 +247,40 @@ DEBUG=false
 - **只认两样东西**：落盘 log 里的 pytest summary 行 + 自写的 `pytest_exit=$?` 哨兵行。**不认** shell 管道退出码（`cmd | tail` 的退出码是 `tail` 的）
 - 通知与输出不符时，先 `tasklist` / `ps` 确认 pytest 进程真退出，再起下一轮
 
+**「接了但没生效」一族——本项目最高发的缺陷类型**
+
+共同形态：参数 / 规则 / 机制**写好了**，但从未被真实数据走过 → 静默失效、不报错、
+**且常规测试全绿**。载体各不相同而根因一致——参数 / 配置 / 外部接口 / 调用点四种载体均已中招：
+
+| # | 实例 | 失效点 |
+|---|---|---|
+| 1 | pandas_ta `bbands(std=)` 被拆成 `lower_std=`/`upper_std=` | 参数名过时，落进 `**kwargs` |
+| 2 | `config_defaults` **12 个字段零引用** | 代码另有同值模块常量，配置是平行副本（且对用户可编辑）|
+| 3 | Tushare `balancesheet` 逗号多码 / `hk_hold` 多码 / `fina_indicator` 索要 `total_share` | 外部接口静默返空或忽略字段 |
+| 4 | **`compute_pool` 的持仓保护**（2026-08-28）| 机制正确，但链上三层（`strategy_service` 116/472/579）默认 `frozenset()`、终点 `compute_pool` 虽是必填参数却**从未被传入非空值** |
+
+第 4 例代价最大：`candidate_pool` 全历史 87924 行中 `is_holding=true` 为 **0 行**
+（五年从未生效），导致持仓跌出候选池后**止损不可达**——四只持仓全部亏损超阈值
+（一只 −40.67%）却零卖出信号。详见 `docs/reviews/algo_framework_audit_2026-08-28.md`。
+
+**判据（写测试时按形态选，选错了测不出来）**：
+
+- **参数是否真被消费** → 写「改参数 → 结果必须变」（§4.4 pandas_ta 那条）
+- **配置是否真被读** → 全仓 grep 该字段名，零引用即可疑（注意**同名标识符会造成假阴性**——
+  实例见 §4.4 pandas_ta 那条末尾）
+- **外部接口是否真返数** → 单码 vs 多码逐字段比对；**新接入的时间序列先看符号/量级的分年分布**
+  （一个「净流入」序列长期零负值本身就是矛盾）
+- **调用点是否真传参** → ⚠️ **只能在调用点上验证**。任何「构造 spy 再调用它」的测试都是
+  自证式的，缺陷仍在时照样绿（EXIT-05 第一版就这么写错过）。用 **AST 检查调用点的关键字参数**：
+  ```python
+  calls = [n for n in ast.walk(ast.parse(src))
+           if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "run_daily_scoring"]
+  assert all("holding_codes" in {kw.arg for kw in c.keywords} for c in calls)
+  ```
+
+**元判据**：一个机制若「设计上应当生效」，就去查**它生效时会留下的痕迹**（数据库里的标记列、
+日志计数、非空率）。查不到痕迹 = 没生效，不管代码看起来多对。
+
 **TDD 细则**
 
 - **集成测试断言精确**：用 `== N`，不用 `<= N` 宽松上界——宽松断言会掩盖"写多了"的 bug
@@ -256,14 +290,14 @@ DEBUG=false
 
 ### 4.12 工具链陷阱（Windows / Docker / Git）
 
-- **不要 `git add -A` / `git add .`**：按文件名 add，防误传 `.env` / 凭证 / 大型二进制。本仓长期存在 `.agents/` `.codex/` `AGENTS.md` 三个未跟踪项，`-A` 会把它们一并带走
+- **不要 `git add -A` / `git add .`**：按文件名 add，防误传 `.env` / 凭证 / 大型二进制。判据是**每次 add 前先看一眼 `git status --porcelain --ignored`**——未跟踪项是随时间变化的（原机曾长期挂着 `.agents/` `.codex/` `AGENTS.md`，本机 2026-08-28 核实已不存在），靠记住清单没用，靠每次看才有用
 - **Bash 工具 ≠ PowerShell**：两者语法各不相通。PowerShell here-string `@'...'@` 写进 Bash 会把首尾的 `@` 当字面量混进内容（2026-08-18 混进过 commit message）。Bash 里多行文本一律用 heredoc `<<'EOF'`
 - **含反引号的文本绝不能进 `python -c "..."` —— 那不是"文本变形"，是任意命令执行**（2026-08-27 实际发生）：Bash 双引号内的 `` `...` `` 是命令替换。往 `CLAUDE.md` 补一条含 `` `docs/reviews/xxx.md` `` 的说明时，Bash **真的把那个 markdown 当 shell 脚本执行了一遍**——文件里以 `> ` 开头的引用块被解析成**输出重定向**，在仓库根凭空建出 3 个以中文短语命名的 0 字节文件；同时所有反引号包着的标识符被替换成命令输出（空），写进文件的那句话缺了 7 个标识符。**若那些 `>` 后面恰好是真实路径，就会静默截断真文件**。判据：`git diff --stat` 只显示有意改动的文件才算没波及（已跟踪文件被截断必然显示为 modified）。修法：改文档一律用 **Edit 工具**或 `<<'PY'` heredoc（引号括起定界符才禁止展开），**永远不用 `python -c "双引号"` 传带反引号/`$`/`>` 的内容**
 - **Bash 工具的 cwd 会漂移**：`cd` 过一次就持续生效，之后在仓库根跑 `uv run ruff/pytest/alembic` 会报 `program not found`（venv 在 `backend/`）。凡 `uv run` 一律前置 `cd .../backend &&`
 - **`MSYS_NO_PATHCONV=1` 会连 `--env-file` 一起停止转换**：该参数因此必须传 **Windows 路径**（`C:\...`），否则 docker 报 "cannot find the path"。同一条命令里 `-v` 用 Windows 路径、其余参数也得跟着走
 - **`git rev-parse --short HEAD origin/main`（双参数）在本仓 fatal**：改用 `git rev-parse --short HEAD` + `git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/origin/main`
 - **`docker exec` 喂 stdin（heredoc / 管道）必须带 `-i`**：不带 `-i` 时容器内进程拿不到 stdin → SQL 完全没执行，而 psql 退出码仍是 0（`set -e` 抓不到），极易误判"已生效"。多语句 SQL 用 `psql -c "stmt1; stmt2; ..."`（单 `-c` 多语句 = 一个隐式事务，配 `-v ON_ERROR_STOP=1`）或 `docker exec -i`
-- **系统 Python 是红线守卫的隐藏依赖,缺了 fail-open 且不吭声**：`.claude/hooks/guard.sh` 按 `python`→`py`→`python3` 探测解释器,三个全落空就 `exit 0` 放行一切(`git add -A`、生产 DROP 都不再拦),**无任何提示**。uv 托管的解释器**不进 PATH**,所以"只装 uv 不装 Python"会静默拆掉守卫(2026-08-26 配第二台机时发现)。同理 `~/.claude/settings.json` 的 `statusLine` 也调裸 `python`。判据不是"装了没",而是跑 **`python .claude/hooks/test_guard.py`**(28 条用例,期望 `28/28 passed`)。**别用手敲的 `echo '{...}' | python guard.py` 自检**：`guard.py` 在 JSON 解析失败时**同样静默 `sys.exit(0)`**,而该写法是 Bash 语法、在 cmd.exe 里单引号不是定界符 → JSON 变脏 → 静默放行,与"守卫已死"表现完全相同(2026-08-26 误判过一轮)。改 `guard.py` 规则时必须往夹具补用例,且**正反两面都钉**——只钉"该拦的拦住",规则写宽了没人发现
+- **系统 Python 是红线守卫的隐藏依赖,缺了 fail-open 且不吭声**：`.claude/hooks/guard.sh` 按 `python`→`py`→`python3` 探测解释器,三个全落空就 `exit 0` 放行一切(`git add -A`、生产 DROP 都不再拦),**无任何提示**。uv 托管的解释器**不进 PATH**,所以"只装 uv 不装 Python"会静默拆掉守卫(2026-08-26 配第二台机时发现)。同理 `~/.claude/settings.json` 的 `statusLine` 与 `claude_md_review.sh` 也调裸 `python`(后者 fail-open 只是丢掉评审,不涉安全)。判据不是"装了没",而是跑 **`python .claude/hooks/test_guard.py`**(28 条用例,期望 `28/28 passed`)。**别用手敲的 `echo '{...}' | python guard.py` 自检**：`guard.py` 在 JSON 解析失败时**同样静默 `sys.exit(0)`**,而该写法是 Bash 语法、在 cmd.exe 里单引号不是定界符 → JSON 变脏 → 静默放行,与"守卫已死"表现完全相同(2026-08-26 误判过一轮)。改 `guard.py` 规则时必须往夹具补用例,且**正反两面都钉**——只钉"该拦的拦住",规则写宽了没人发现
 - **非中文 Windows 上「管道里的中文」会崩,且崩得像「守卫已死」**（2026-08-27 第二台机实测,系统区域 ja-JP → cp932）：控制台直连时 Python 走 `WriteConsoleW`,不受 codepage 影响;**一旦重定向或走管道**就改用 locale 编码 → 中文 `UnicodeEncodeError`。而 Claude Code 跑命令**恰恰全是管道**,所以"手敲能跑、Claude 跑就崩"。三处已治本:① `guard.py` / `test_guard.py` 强制 UTF-8 输出——`guard.py` 崩溃 = 非零退出 = **fail-open**(PreToolUse 只有 exit 2 才拦截),一个编码异常就能把 deny 变成放行;② 夹具 `run()` 改「取字节 + 显式解码」,原 `text=True` 按 locale 解子进程输出,一含非 ASCII 就在 subprocess 内部炸、`p.stdout` 变 `None` → **整轮用例崩溃而不是判 FAIL**,守卫坏了会伪装成夹具坏了;③ 新增用例钉死「guard 输出恒为纯 ASCII」(改 `ensure_ascii` 或在 emit 路径加中文 print 都会在这条露馅)。机器侧另设 `PYTHONUTF8=1` 用户环境变量,兜住 `backend/scripts/*.py` 手工跑的场景(`run_ic_panel.sh` 早已自带 `export PYTHONIOENCODING=utf-8`)
 - **守卫的 `ask` 档可能整档失效,而 `deny` 仍然有效**（2026-08-27 实测）：在「Bash 自动放行」的权限模式下,钩子返回的 `permissionDecision: "ask"` **不会浮出确认框**——同一会话里 `deny` 正常拦截（`git add -A` 被当场挡下），只有 `ask` 被静默通过。**排除了放行名单的干扰**：用不在 `settings.local.json` 名单里的命令（`printf` / `stat` / 自造 `echo` 字符串）复测同样不弹。判据不是"守卫装了没",而是**这条动作真的被拦住了吗**。推论:**凡"不可逆且无处恢复"的动作,不能只靠 `ask`**——`sync_local_backtest_db.sh --force-wipe`（销毁 `ic_baseline_pre_c1` 4940 行 ≈ 57h 重造 + 面板 IC 行,而该库已禁止再 sync）因此提为 `deny`,由人在终端手敲。`ask` 仍适用于"可逆或有备份"的动作（裸 `sync` / `--force` / 生产栈 DROP)
 - **项目解释器由 `backend/.python-version`(=3.12)钉死**,不靠"记得装对版本"：`pyproject` 的 `requires-python = ">=3.12"` 上界开放,系统若装了 3.13/3.14,`uv sync` 可能拿它建 venv → 要么 pandas/asyncpg 无 wheel 现场编译失败,要么**跑起来了但运行时与生产不一致**(算力机上尤其危险:面板 IC 要用于策略决策,数值差异无从归因)
@@ -304,7 +338,24 @@ DEBUG=false
   runbook 与事故档案 → memory。**不要往 `~/.claude/CLAUDE.md` 加东西**——那是不含技术细节的
   个人全局规则，且未经用户明确要求不得修改；确有跨项目价值的，向用户提议而不是自行写入
 
-### 5.3 自动测试钩子（`.claude/hooks/auto_test.sh`）
+### 5.3 自动钩子（`.claude/hooks/`）
+
+**CLAUDE.md 第三方评审**（`claude_md_review.sh` + `.claude/agents/claude-md-reviewer.md`，2026-08-28 加）：
+本文件每次被 Edit/Write 修改后，PostToolUse 钩子自动触发 `claude-md-reviewer` 子 agent 做**冷启动**
+评审——它不带主会话上下文，只看文件本身能否自洽地被下一个人读懂。两条主线：**准确性**（自相矛盾 /
+过期 / 缺判据 / 判据作用域 / 声称与现实脱节）+ **信噪比**（冗余、不该写在 CLAUDE.md 的内容、
+该下沉到 memory 或 `docs/` 的内容）——后者是因为本文件**每个会话全文加载**，多一行就是此后每次
+对话都多付一次成本。**只出报告不改文件**（`tools` 含 `Bash` 是为了核实事实；"不写"是约定而非
+工具级强制），采纳与否由人判断。
+
+路径判定在脚本内完成（非 CLAUDE.md 静默退出、零开销）。**判据：跑
+`python .claude/hooks/test_claude_md_review.py`，期望 `12/12 passed`**——同 `guard.sh` 一个标准，
+"已手工验证过"不算判据。反向用例（`CLAUDE.md.bak` / `NOT_CLAUDE.md` / 名为 `CLAUDE.md` 的目录）
+经变异测试确认有效：把 basename 精确相等写宽成 `in` 包含，这三条立刻变红。
+⚠️ 夹具里**不能用裸 `bash`**——Windows 上它极可能解析到 WSL 的 `System32\bash.exe`，
+那里 `D:/...` 不存在 → 全用例 exit 127，表现与"钩子脚本丢了"完全相同（首版即栽在这里）。
+
+#### 自动测试钩子（`auto_test.sh`）
 
 编辑 `backend/*.py` 后自动跑 `tests/unit/` + `tests/e2e/`；编辑 alembic/integration 文件**且** PG 容器在跑时自动跑 integration。测试失败时 Claude 自动进入调试。
 
@@ -342,7 +393,7 @@ DEBUG=false
 **已完成**：Phase 1~15 ✓（V1.0 RC 验收收口）| **V1.5-G 多用户** ✓ 代码 + 生产部署（2026-07-23）
 | **V1.5-A 回测与监控** ✓ 全上线，A5b/F-4 功能级激活已实证 PASS
 
-**进行中：V1.5-C 策略扩展**（设计文档 `docs/design/phases/v1_5_c_strategy_expansion.md` v0.9，
+**进行中：V1.5-C 策略扩展**（设计文档 `docs/design/phases/v1_5_c_strategy_expansion.md` v0.14，
 C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
 
 - **C0 日级 IC 产出闭环** ✓ 全量上线（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，
@@ -350,8 +401,17 @@ C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
 - **收尾硬顺序**（后续任何 IC 回填仍适用）：回填产出 → 导入生产 → **再**部署代码。
   反序会让 `daily_ic_producer` Job 在 19:30 对积压逐日全 universe 评分，正是打挂生产的那条路径
 - **C1 策略约束与风险调整动量**：C1-1（约束落点统一，`ac069e5`）/ C1-2（风险调整动量，
-  `85df015`）/ C1-3（价格窗口按交易日推导，`be6d6d6`）**均已交付但未部署**——三者都会改变
-  选股结果，按设计文档要求在 C1 收口时单独上线并观察。**面板对比待在第二台 24h 算力机起跑**
+  `85df015`）/ C1-3（价格窗口按交易日推导，`be6d6d6`）**均已交付、面板对比已完成、仍未部署**。
+  面板实测（2026-08-28，off/on 各 25 chunk 全绿，497 交易日 × 4 策略）：**C1-2 的改善方向为正
+  但幅度微小**——占 65% 天数的主导状态 OSCILLATION 仅 +0.0007（`t_HAC=0.19`），momentum 三状态
+  仍为显著负 IC。**故上线理由是 C1-1 + C1-3 两个缺陷修复，不是「C1-2 验证有效」**，后续策略扩展
+  不得建立在后一前提上。完整结论与方法学（重叠窗口使有效样本仅名义的 8~12%、朴素 t 与 HAC 差
+  约 3 倍）见设计文档 §3.3
+- **P0 退出域缺陷**（2026-08-28 发现，修复 `e798e7a` **已提交、未部署**）：卖出评估取的是候选池而非
+  持仓集，`candidate_pool.is_holding` 五年 0 行 → 持仓跌出池后**硬止损不可达**（四只持仓全部
+  超阈值、一只 −40.67% 却零卖出信号）。**它是 C1 部署的前置门槛**——C1 改「买什么」，退出缺陷
+  决定「能不能卖」，在退出坏掉时部署一个改变选股的变更会放大风险。部署预案见 memory
+  `c1_deployment_runbook`，体检报告 `docs/reviews/algo_framework_audit_2026-08-28.md`
 - C2~C5 待启动
 
 > **运维红线（RC 验收期实证）**：① 生产 2GB 机**禁止一切「全 universe 评分」作业**——判据是代码路径是否调用 `score_universe_for_date` / `ScoringService.score_universe`，**不是功能叫什么名字**。已实证会打挂生产的两例：回测（单个 6 日任务拖垮 11 分钟 → `POST /backtest/run` 已 `backtest_enabled=false` 返 503）、日级 IC 回填（`scripts/backfill_daily_ic.py` **仅跑一个交易日** 即 RSS 1.58G 触发 OOM killer，2026-08-17 致站点 530 共 43 分钟）。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。**自 2026-08-26 起「本地算力中心」= 第二台 24h 常开机**（双活纪律与新机 runbook 见 `docs/guides/machine_migration.md`）：长任务须在该机 detached 起（`scripts/run_ic_panel.sh`），产出唯一权威；另一台的 5434 降级为可随时丢弃的 scratch，两台各跑一半会产生「谁都不完整、且无法判断某行出自哪台机/哪个配置」的状态。⚠️ `sync_local_backtest_db.sh` 会 DROP 重建 5434，其 `.last_restore` 标记**不足以充当保护**（钩子每天拉新备份 → 标记次日即失配，而面板要跑 31h、跨天必然）；2026-08-26 起脚本自带「库内已有 `ic_baseline_pre_c1` / `factor_ic_window_state` 数据则拒绝执行」，须显式 `--force-wipe` 才继续，而 `--force-wipe` 已被 `guard.py` 直接 **deny**（2026-08-27 起；不是 ask——见 §4.12 那条「ask 档在自动放行模式下不弹确认」），需要执行时由人在终端手敲。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。**双写的「仓库那一半」最容易漏，且漏了之后 printenv 照样通过**——服务器上就地手改 compose 能让行为立刻正确，于是没人发现 git 里那份是错的。实例：`BACKTEST_ENABLED`（防 4 次 OOM 宕机的那个开关）自 2026-06-29 起只存在于服务器的 compose，`3ffefcb` 没动仓库 compose，直到 2026-08-27 才发现——期间任何「按 git 重建一套生产」都会静默丢掉它、把回测重新打开。**判据：改完在仓库里 grep 一遍那个键名**；服务器上就地改过的任何配置都必须回写仓库，且生产专用开关的 compose 默认值取**失效方向**（如 `${BACKTEST_ENABLED:-false}`），漏配时保持关闭而不是打开。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
