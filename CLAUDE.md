@@ -258,6 +258,7 @@ DEBUG=false
 
 - **不要 `git add -A` / `git add .`**：按文件名 add，防误传 `.env` / 凭证 / 大型二进制。本仓长期存在 `.agents/` `.codex/` `AGENTS.md` 三个未跟踪项，`-A` 会把它们一并带走
 - **Bash 工具 ≠ PowerShell**：两者语法各不相通。PowerShell here-string `@'...'@` 写进 Bash 会把首尾的 `@` 当字面量混进内容（2026-08-18 混进过 commit message）。Bash 里多行文本一律用 heredoc `<<'EOF'`
+- **含反引号的文本绝不能进 `python -c "..."` —— 那不是"文本变形"，是任意命令执行**（2026-08-27 实际发生）：Bash 双引号内的 `` `...` `` 是命令替换。往 `CLAUDE.md` 补一条含 `` `docs/reviews/xxx.md` `` 的说明时，Bash **真的把那个 markdown 当 shell 脚本执行了一遍**——文件里以 `> ` 开头的引用块被解析成**输出重定向**，在仓库根凭空建出 3 个以中文短语命名的 0 字节文件；同时所有反引号包着的标识符被替换成命令输出（空），写进文件的那句话缺了 7 个标识符。**若那些 `>` 后面恰好是真实路径，就会静默截断真文件**。判据：`git diff --stat` 只显示有意改动的文件才算没波及（已跟踪文件被截断必然显示为 modified）。修法：改文档一律用 **Edit 工具**或 `<<'PY'` heredoc（引号括起定界符才禁止展开），**永远不用 `python -c "双引号"` 传带反引号/`$`/`>` 的内容**
 - **Bash 工具的 cwd 会漂移**：`cd` 过一次就持续生效，之后在仓库根跑 `uv run ruff/pytest/alembic` 会报 `program not found`（venv 在 `backend/`）。凡 `uv run` 一律前置 `cd .../backend &&`
 - **`MSYS_NO_PATHCONV=1` 会连 `--env-file` 一起停止转换**：该参数因此必须传 **Windows 路径**（`C:\...`），否则 docker 报 "cannot find the path"。同一条命令里 `-v` 用 Windows 路径、其余参数也得跟着走
 - **`git rev-parse --short HEAD origin/main`（双参数）在本仓 fatal**：改用 `git rev-parse --short HEAD` + `git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/origin/main`

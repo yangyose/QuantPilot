@@ -64,6 +64,10 @@ cd /opt/QuantPilot
 
 > 路径建议放 `/opt/QuantPilot`；后续所有命令默认从该目录执行。如放别处，把 `cron` / `systemd` 路径相应替换。
 
+> ℹ️ **本节讲的是「空机首次部署」**，对新实例仍然成立。**现役生产实例（43.134.63.13）不是按这条路径维护的**——
+> 它在 `/home/ubuntu/QuantPilot`、非 git 仓库、compose 已就地改过，升级走 §11 里那段"现役实例"专用步骤。
+> 别把本节的 `git clone` / `git pull` 套到它头上。
+
 ### 3.2 跑引导脚本
 
 ```bash
@@ -403,6 +407,39 @@ scripts/deploy.sh
 ```
 
 `deploy.sh` 会自动：拉新镜像 → 重建受影响容器 → backend 启动时跑 `alembic upgrade head`。**保留 db / redis / 日志 volume**。
+
+> ⚠️ **上面这条路径不适用于现役生产实例（43.134.63.13）**——2026-08-27 核实：
+>
+> 1. 服务器目录是 `/home/ubuntu/QuantPilot`，**不是 git 仓库**，`git pull` 直接不可用；
+> 2. `docker-compose.prod.yml` 已被**就地手改**（HTTPS 配置 + `environment:` 白名单，旁边留着 `.bak`），
+>    整树覆盖会砸掉 HTTPS；
+> 3. 因此实际升级只同步 `backend/` 子树（构建上下文正是 `./backend`），
+>    `compose` / `nginx` / `.env.prod` 一律不碰。
+>
+> 现役实例的升级步骤：
+>
+> ```bash
+> # 0) 回滚点：先备份服务器现有 backend/
+> ssh qp-tencent 'cd /home/ubuntu && tar czf backups/backend_pre_$(date +%Y%m%d_%H%M%S).tar.gz QuantPilot/backend'
+>
+> # 1) 只同步 backend/
+> git archive --format=tar HEAD backend | ssh -i ~/.ssh/qp_tencent ubuntu@43.134.63.13 \
+>   'tar -x -C /home/ubuntu/QuantPilot'
+>
+> # 2) 重建（纯代码变更不带 --pull，避免引入无关基础镜像变化）
+> docker compose -f docker-compose.prod.yml --env-file .env.prod build backend
+> docker compose -f docker-compose.prod.yml --env-file .env.prod up -d backend
+>
+> # 3) backend 重建后容器 IP 变，不 reload nginx 会 502
+> docker exec quantpilot-nginx-1 nginx -s reload
+> ```
+>
+> ⚠️ **`git archive HEAD backend` 是整树同步，不是 cherry-pick**——它会把自上次部署以来
+> `backend/` 的**每一个**改动一起推走。部署前务必先算一次实际 delta：
+> `git log --oneline <上次部署的 commit>..HEAD -- backend/`。服务器上没有 git，
+> 「上次部署的 commit」需从部署记录查，**不要假设它就是某个 commit**。
+>
+> 构建期磁盘可能一度到 93%，容器重建后自行回落——属正常，不是故障。
 
 ### 回滚（保留数据）
 
