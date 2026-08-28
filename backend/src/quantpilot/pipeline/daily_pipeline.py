@@ -365,7 +365,19 @@ class DailyPipeline:
                 calendar=self._calendar,
                 factor_monitor=factor_monitor,
             )
-            scores = await scoring_service.run_daily_scoring(trade_date)
+            # P0 退出域修复（2026-08-28）：必须传全体账户持仓并集。
+            # `compute_pool` 早就写着「持仓保护：holding_codes 强制入池」，但链上三层
+            # (strategy_service 116/472/579) 默认 frozenset()、而此处从未传过
+            # → 传到 compute_pool 的恒为空集，保护是空操作。生产
+            # candidate_pool 全历史 87924 行中 is_holding=true 的为 **0 行**
+            # （2021-05-13 ~ 2026-08-25），证明它自项目开始就没生效过。
+            # 后果是反向的：持仓跌得越狠越会掉出候选池，退出判定就越触发不到——
+            # 实证四只持仓全部亏损超阈值（一只 −40.67%）却零卖出信号。
+            # 详见 docs/reviews/algo_framework_audit_2026-08-28.md §1。
+            holding_codes = await repo.get_all_holding_codes()
+            scores = await scoring_service.run_daily_scoring(
+                trade_date, holding_codes=holding_codes,
+            )
             await session.commit()
             logger.info("cp2_scoring_done: trade_date=%s scored=%d", trade_date, len(scores))
 

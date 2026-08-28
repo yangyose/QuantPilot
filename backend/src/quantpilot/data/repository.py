@@ -1540,6 +1540,23 @@ class MarketDataRepository:
         )
         return list(result.scalars().all())
 
+    async def get_all_holding_codes(self) -> set[str]:
+        """返回**全体账户**当前持仓（``shares > 0``）的 ts_code 并集。
+
+        供每日管线做候选池的持仓保护用。管线自 V1.5-G 起是账户无关的，
+        因此这里取并集而不是某个账户——只要有任何账户持有，该股就必须进入
+        当日评分与退出评估的范围。
+
+        **不设数量上限**：``pool_capacity`` 限制的是"评分最高那部分"的规模，
+        持仓是语义完全不同的另一部分，额外并入。若将来为了控制池子大小把持仓
+        也纳入截断，就会原样复现 2026-08-28 修复的那个缺陷——
+        **持仓必须全部可评估**（见 `docs/reviews/algo_framework_audit_2026-08-28.md` §1）。
+        """
+        result = await self._session.execute(
+            select(Position.ts_code).where(Position.shares > 0).distinct()
+        )
+        return {row[0] for row in result.all()}
+
     async def get_account_by_id(self, account_id: int) -> Account | None:
         """按 ID 查询账户。"""
         result = await self._session.execute(

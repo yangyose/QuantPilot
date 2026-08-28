@@ -368,4 +368,42 @@ class SignalGenerator:
                 trigger_reason="pct_below_buy",
             ))
 
+        # ─── 补判：未出现在 composite_scores 中的持仓（P0 退出域修复，2026-08-28）───
+        # 上面的主循环遍历的是 composite_scores，而生产传进来的是**候选池**（日均 68 只）。
+        # 持仓一旦跌出候选池就永远走不到持仓分支 → 止损不可达。后果是反向的：
+        # 跌得越狠越会掉出池子，就越判不到——实证四只持仓全部亏损超阈值（一只 −40.67%）
+        # 却零卖出信号，五年仅 4 条 hard_stop_loss。
+        #
+        # **硬止损不依赖评分**（`pnl_pct` 直接来自 position 表），故在此对漏判的持仓补一轮。
+        # 这也是相对「持仓强制入池」的第二道保险：即使入池因配置/时序/账户为空而失效，
+        # 止损仍然触发。详见 docs/reviews/algo_framework_audit_2026-08-28.md §1。
+        #
+        # 只补**不需要评分上下文**的触发器：`short_term_z_drop` / `mid_term_icir_flip`
+        # 需要 z / ICIR，对无评分持仓本就不可判，不在此补（入池后它们自然可用）。
+        scored_codes = set(composite_scores.index)
+        for ts_code in holding_codes - scored_codes:
+            pos = position_map[ts_code]
+            pnl_pct = float(pos.pnl_pct) if pos.pnl_pct is not None else 0.0
+            if pnl_pct > -params.stop_loss_pct:
+                continue
+            # 停牌股仍然产出信号：今天卖不掉不等于没有风险，交由下游决定可执行性。
+            close_px = float("nan")
+            if ts_code in snapshot_quotes.index:
+                try:
+                    close_px = float(snapshot_quotes.loc[ts_code].get("close", float("nan")))
+                except Exception:  # noqa: BLE001 - 快照缺列不应阻断止损
+                    close_px = float("nan")
+            signals.append(TradeSignal(
+                ts_code=ts_code,
+                signal_type="SELL",
+                trade_date=trade_date,
+                score=0.0,
+                reason=(
+                    f"硬止损（浮亏 {pnl_pct:.1%}，阈值 -{params.stop_loss_pct:.1%}）"
+                    "；该标的当日不在评分范围内，按持仓直接判定"
+                ),
+                trigger_reason="hard_stop_loss",
+                stop_loss_price=close_px if close_px == close_px else None,
+            ))
+
         return signals
