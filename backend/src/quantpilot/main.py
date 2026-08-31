@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import pathlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -275,6 +276,38 @@ app.include_router(health.router, prefix="/api/v1/health", tags=["健康检查"]
 # 实际路径：/api/v1/backtest/{task_id}/progress（WebSocket）
 
 
+# 版本戳文件：容器内 /app/VERSION，本地开发 backend/VERSION
+# （两处相对本文件的层级一致：main.py → quantpilot → src → 根）
+VERSION_FILE = pathlib.Path(__file__).resolve().parents[2] / "VERSION"
+
+
+def _read_deployed_version(path: pathlib.Path | None = None) -> str:
+    """读部署版本戳（由 `scripts/deploy_prod.sh` 在服务器上 build 前写入）。
+
+    原先此处硬编码 `"1.0.0"`——那是 Phase 10 写下的常量，此后从未变过，
+    问它等于没问，属 CLAUDE.md §4.11「接了但没生效」一族。
+
+    `path` 可注入是为了让测试能验证「它真的在读文件」——不可注入的话，任何测试都
+    只能断言它返回了某个值，而返回硬编码常量同样能通过。
+
+    【降级说明】读不到文件或内容为空时返回 `"unknown"`，**绝不回落到某个像样的
+    假版本号**："unknown" 会促使人去查，一个看起来合理的版本号只会让人相信错误的东西。
+    """
+    target = VERSION_FILE if path is None else path
+    try:
+        raw = target.read_text(encoding="utf-8").strip()
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "version_stamp_unreadable: path=%s", target, exc_info=True,
+        )
+        return "unknown"
+    return raw or "unknown"
+
+
+# 进程内只读一次：文件在容器生命周期内不会变，且避免每次探活都打磁盘
+_DEPLOYED_VERSION = _read_deployed_version()
+
+
 @app.get("/health", tags=["系统"])
 async def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": _DEPLOYED_VERSION}

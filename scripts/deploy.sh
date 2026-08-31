@@ -8,6 +8,32 @@ ENV_FILE="${1:-.env.prod}"
 
 cd "$(dirname "$0")/.."
 
+# ---------------------------------------------------------------------------
+# ⛔ 本脚本**不适用于腾讯生产实例**（43.134.63.13）。它是 Phase 10 的一键脚本，
+#    用于在一台干净机器上从零起一套栈；对**现有**生产它有三处会造成事故：
+#      ① `build --pull` 会引入无关基础镜像变化（生产明令禁止）
+#      ② 用 compose 起 nginx——服务器上的 compose 被就地改过（HTTPS + env 白名单），
+#         且它不会做 `nginx -s reload`，backend 重建后容器 IP 变 → 必 502
+#      ③ 完全不同步代码，也不备份、不核验基线、不留版本戳
+#    现有生产的部署走 `scripts/deploy_prod.sh`。
+#
+#    用闸门而非注释：注释拦不住手快的人（也拦不住手快的 agent）。
+# ---------------------------------------------------------------------------
+if [ "$COMPOSE_FILE" = "docker-compose.prod.yml" ] && [ "${ALLOW_LEGACY_DEPLOY:-0}" != "1" ]; then
+    cat >&2 <<'EOF'
+❌ 拒绝执行：本脚本不适用于现有生产实例。
+
+   现有生产（腾讯 43.134.63.13）请用：
+       scripts/deploy_prod.sh --dry-run     # 先预检
+       scripts/deploy_prod.sh               # 需 CLAUDE.md C-1 单独确认
+
+   若你确实是在**一台干净机器上从零起栈**（新机 bootstrap / 灾备重建），
+   显式声明后再跑：
+       ALLOW_LEGACY_DEPLOY=1 scripts/deploy.sh
+EOF
+    exit 1
+fi
+
 if [ ! -f "$ENV_FILE" ]; then
     echo "❌ 环境文件不存在: $ENV_FILE"
     echo "   请先执行: cp .env.prod.example $ENV_FILE && 编辑后重试"

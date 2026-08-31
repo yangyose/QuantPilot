@@ -5,6 +5,28 @@
 
 ---
 
+## ⚠️ 先读这段：本篇讲「从空机器起栈」，不讲「更新现有生产」
+
+**现有生产实例（腾讯 43.134.63.13）不适用本篇的升级/回滚流程。** 两者是不同的部署模型：
+
+| | 本篇（从零起栈） | 现有生产 |
+|---|---|---|
+| 服务器上有 git 仓库 | 是（`git pull` 可用）| **否**——由 `git archive \| tar -x` 只同步 `backend/` |
+| 部署脚本 | `scripts/deploy.sh` | **`scripts/deploy_prod.sh`** |
+| compose / nginx | 用仓库里的 | **服务器上被就地改过**，整树覆盖会砸掉 HTTPS |
+| 构建 | 带 `--pull` | **禁止 `--pull`** |
+| nginx | 由 compose 起 | 需 `docker exec ... nginx -s reload`，否则 backend 重建后必 502 |
+
+所以本篇 §7 / §9 里出现的 `git pull && scripts/deploy.sh` **对现有生产是错的**——
+服务器上没有 git，且那条路径会带 `--pull` 并绕过 reload。`scripts/deploy.sh` 已加闸门，
+对 `docker-compose.prod.yml` 默认拒绝执行（需 `ALLOW_LEGACY_DEPLOY=1` 显式放行）。
+
+**更新现有生产**：`scripts/deploy_prod.sh --dry-run` 预检 → `scripts/deploy_prod.sh`
+（生产写，需 CLAUDE.md C-1 单独确认）。部署历史见 `docs/ops/deploy_log.md`，
+运行中的版本可直接问：`curl https://quant.portableagi.com/health`。
+
+---
+
 ## 0. 谁该看这篇？
 
 - ✅ 在自己的服务器（云主机 / 家用 NAS）上首次部署 QuantPilot
@@ -334,13 +356,18 @@ docker compose -f docker-compose.prod.yml restart backend
 docker compose -f docker-compose.prod.yml stop
 docker compose -f docker-compose.prod.yml start
 
-# 升级（拉新代码后）
+# 升级（仅「从零起栈」型部署——服务器上有 git 仓库时）
 git pull
-scripts/deploy.sh        # 自动重建镜像、滚动重启
+ALLOW_LEGACY_DEPLOY=1 scripts/deploy.sh
 
-# 回滚
-git checkout <previous-commit>
-scripts/deploy.sh
+# ⚠️ 现有生产（腾讯 43.134.63.13）不走上面两行——服务器上没有 git 仓库。
+#    在**本地**仓库执行：
+scripts/deploy_prod.sh --dry-run    # 预检：闸门 + 基线核验 + 变更范围
+scripts/deploy_prod.sh              # 生产写，需 C-1 单独确认
+
+# 回滚（现有生产）：用部署时自动生成的 tar 回滚点，见 docs/ops/deploy_log.md
+ssh qp-tencent 'cd /home/ubuntu && tar xzf backups/backend_pre_<sha>_<ts>.tar.gz'
+# 然后重跑 build + up -d backend + nginx -s reload
 
 # 冒烟自测
 BASE_URL=http://localhost API_PASSWORD=YOUR_PASSWORD scripts/prod_smoke.sh

@@ -121,7 +121,14 @@ services:
     image: nginx:1.25-alpine
     restart: unless-stopped
     ports:
-      - "${HTTP_PORT:-80}:80"
+      # 绑定地址默认 127.0.0.1（**失效方向**）：本套生产的 HTTPS 走宿主上的
+      # Cloudflare Tunnel 回源到 localhost，nginx 不需要、也不应该监听公网。
+      # 2026-08-31 仓库↔服务器对账发现：服务器上早已是 `127.0.0.1:`（就地手改，
+      # 从未回写 git），而仓库这份是裸 `${HTTP_PORT}:80` → **谁按 git 重建一套
+      # 生产，nginx 就会绑到所有网卡、绕过 Tunnel 直接暴露**。与 BACKTEST_ENABLED
+      # 同一个成因（运维红线②：服务器就地改过的配置必须回写仓库）。
+      # 确需公网监听（无 Tunnel 的独立部署）时在 .env.prod 显式设 HTTP_BIND=0.0.0.0。
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-80}:80"
       # 启用 HTTPS 时取消注释
       # - "443:443"
     volumes:
