@@ -204,6 +204,14 @@ async def _run_one_trade_date(
             scoring_service, ms_service = _build_scoring_service(session, calendar)
             await ms_service.identify_and_save(trade_date)
             await session.flush()  # market_state 落库供 score_universe 读
+            # 【故意豁免 holding_codes —— 不是漏传，改了就是 PIT 穿越】
+            # 每日管线（daily_pipeline.py）必须传 holding_codes，否则 compute_pool 的
+            # 持仓保护是空操作（P0 退出域缺陷，commit e798e7a）。**本脚本相反**：
+            # 它重建的是**历史**候选池，而 `get_all_holding_codes()` 返回的是**今天**的
+            # 持仓——把今天的持仓塞进 2021 年的候选池，等于让历史数据看见未来，
+            # 由此产出的日级 IC / ICIR 会被污染且无法归因。
+            # 历史上某日真实持仓需从 trade_record 按 PIT 重建，当前无此需求，故不传。
+            # 对应测试 tests/unit/test_exit_domain.py::EXIT-05 的 _SCOPE 刻意不含本文件。
             composites = await scoring_service.run_daily_scoring(trade_date)
             await session.commit()
             return True, len(composites)

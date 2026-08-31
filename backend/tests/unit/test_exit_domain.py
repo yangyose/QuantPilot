@@ -189,32 +189,44 @@ def test_exit_04_compute_pool_consumes_holding_codes() -> None:
 def test_exit_05_pipeline_passes_holding_codes() -> None:
     """用 AST 直接检查调用点，而不是 mock。
 
-    本次缺陷的形态是**调用点漏传关键字参数**——链路上四层都有 `holding_codes` 且都默认
-    `frozenset()`，任何"构造一个 spy 再调用它"的测试都会自证式通过（写这条用例时先踩过
-    一次：spy 版本在缺陷仍存在时照样绿）。能钉住"调用点真的传了"的，只有直接检查调用点。
+    本次缺陷的形态是**调用点漏传关键字参数**——`strategy_service` 链上三层（116/472/579）
+    默认 `frozenset()`，终点 `compute_pool` 虽是必填参数但恒收到空集。任何"构造一个 spy
+    再调用它"的测试都会自证式通过（写这条用例时先踩过一次：spy 版本在缺陷仍存在时照样绿）。
+    能钉住"调用点真的传了"的，只有直接检查调用点。
+
+    **作用域（判据不写作用域会产生假阴性）**：本用例只覆盖
+    `pipeline/daily_pipeline.py`——生产每日管线这一条路径。全仓另有一个
+    `run_daily_scoring` 生产调用点 `scripts/backfill_candidate_pool.py`，它**故意不传**
+    `holding_codes`（传今天的持仓去重建历史候选池是 PIT 穿越），豁免理由写在该文件内。
+    新增走每日管线的调用点时，把文件加进下面的 `_SCOPE`；新增回填类脚本前先判断
+    PIT 语义，别无脑照抄本断言。
     """
     import ast
     import pathlib
 
-    src = pathlib.Path(
-        "src/quantpilot/pipeline/daily_pipeline.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(src)
+    # 必须显式传 holding_codes 的文件（每日管线路径）。
+    # 刻意**不**用「全仓扫 run_daily_scoring」——那会误伤 backfill_candidate_pool.py
+    # 这个 PIT 豁免点，把一条正确的代码判成缺陷。
+    _SCOPE = ["src/quantpilot/pipeline/daily_pipeline.py"]
 
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "run_daily_scoring"
-    ]
-    assert calls, "daily_pipeline 中未找到 run_daily_scoring 调用点"
+    for rel in _SCOPE:
+        src = pathlib.Path(rel).read_text(encoding="utf-8")
+        tree = ast.parse(src)
 
-    for call in calls:
-        kwargs = {kw.arg for kw in call.keywords if kw.arg}
-        assert "holding_codes" in kwargs, (
-            "daily_pipeline 调用 run_daily_scoring 时必须显式传 holding_codes。"
-            "缺陷根因即此处漏传，导致 compute_pool 的持仓保护成为空操作——"
-            "生产 candidate_pool 全历史 87924 行中 is_holding=true 的为 0 行，"
-            "证明该保护自项目开始从未生效过"
-        )
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run_daily_scoring"
+        ]
+        assert calls, f"{rel} 中未找到 run_daily_scoring 调用点"
+
+        for call in calls:
+            kwargs = {kw.arg for kw in call.keywords if kw.arg}
+            assert "holding_codes" in kwargs, (
+                f"{rel} 调用 run_daily_scoring 时必须显式传 holding_codes。"
+                "缺陷根因即此处漏传，导致 compute_pool 的持仓保护成为空操作——"
+                "生产 candidate_pool 全历史 87924 行中 is_holding=true 的为 0 行，"
+                "证明该保护自项目开始从未生效过"
+            )
