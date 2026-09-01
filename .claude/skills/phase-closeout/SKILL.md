@@ -34,7 +34,7 @@ uv run pytest tests/integration/ -q              # 需 DB:5433 + alembic upgrade
 容器自动启动 + `alembic upgrade head` 后 integration 全绿。
 
 ### 6. 推迟项三链校验（C-3）
-本 phase 若推迟任何项，确认三链齐全（§5.4）：评审报告 §8 修订追踪表 + `system_design §9` 目标行 / `v1_5_roadmap §6`，链 B/C **展开列出**编号 + 一句话，禁止"详见评审报告"占位。用 Grep 扫 `R\d+-P[2-3]-\d+` 跨 system_design + roadmap + `docs/reviews/` 复核。
+本 phase 若推迟任何项，确认三链齐全（§5.4）：评审报告 §8 修订追踪表 + `system_design §9` 目标行 / `v1_post_release_roadmap §6`，链 B/C **展开列出**编号 + 一句话，禁止"详见评审报告"占位。用 Grep 扫 `R\d+-P[2-3]-\d+` 跨 system_design + roadmap + `docs/reviews/` 复核。
 
 ### 7. 设计文档编号规约（C-5 / §5.5）
 设计文档正文 + 修订历史**无外部追踪编号**（评审报告 DESIGN-09/P-3、memory TD-1）。可接受：文档内正式定义的编号（如 P5-PRE-1）。

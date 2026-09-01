@@ -10,7 +10,7 @@ description: QuantPilot Phase 启动核查——创建 phaseN 设计文档前执
 **关键路径**：
 - `docs/spec/QuantPilot_SDD.md`（权威需求）
 - `docs/design/system_design.md`（§3/§5 模块 · §6 端点 · §9 phase 表）
-- `docs/design/v1_5_roadmap.md`（V1.5+ 主题）
+- `docs/design/v1_post_release_roadmap.md`（V1.5+ 主题）
 - `docs/reviews/phaseN_*_review_*.md`（评审报告，§8 修订追踪表）
 - `docs/design/phases/phaseN_*.md`（产出物）
 
@@ -24,7 +24,7 @@ Read `docs/design/system_design.md` §9，定位本 phase 行，列出分配的�
 - 命中四类充分理由之一（依赖外部决策 / 跨 phase 大重构 / 验收标准未定义 / 物理资源约束；见 CLAUDE.md §5.4）。禁止伪推迟（「不影响主路径」「范围外」「一起做」「小改进」）。
 - 在新设计文档**引言处显式注明**「模块 X 推迟至 Phase N，原因：……」。
 - **立即**更新 §9 对应行（不等收尾）。
-- 落「推迟三链」（§5.4）：评审报告 §8 + §9 目标 phase 行 / v1_5_roadmap §6，链 B/C 子项展开编号 + 一句话。
+- 落「推迟三链」（§5.4）：评审报告 §8 + §9 目标 phase 行 / v1_post_release_roadmap §6，链 B/C 子项展开编号 + 一句话。
 
 ### 3. 孤儿检查（C-5）
 确认 system_design §3/§5 每个模块、§6 每个 API 端点，都在某个 phase **有且仅有一个**明确归属。本 phase 新引入的模块/端点必须在 §9 落位。
@@ -34,7 +34,7 @@ Read `docs/design/system_design.md` §9，定位本 phase 行，列出分配的�
 ```
 # 4a. 跨 system_design + roadmap + reviews 三处扫推迟项编号
 pattern: R\d+-P[2-3]-\d+
-path: docs/design/system_design.md, docs/design/v1_5_roadmap.md, docs/reviews/
+path: docs/design/system_design.md, docs/design/v1_post_release_roadmap.md, docs/reviews/
 # 4b. 本 phase 行所有子项（含 R<N>-P<X>- 评审追溯）逐条核对是否已规划进设计文档
 ```
 对每个命中编号判断：本 phase 消费 / 仍推迟（须有三链）/ 已完成。
