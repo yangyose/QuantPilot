@@ -297,7 +297,7 @@ DEBUG=false
 - **`MSYS_NO_PATHCONV=1` 会连 `--env-file` 一起停止转换**：该参数因此必须传 **Windows 路径**（`C:\...`），否则 docker 报 "cannot find the path"。同一条命令里 `-v` 用 Windows 路径、其余参数也得跟着走
 - **`git rev-parse --short HEAD origin/main`（双参数）在本仓 fatal**：改用 `git rev-parse --short HEAD` + `git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/origin/main`
 - **`docker exec` 喂 stdin（heredoc / 管道）必须带 `-i`**：不带 `-i` 时容器内进程拿不到 stdin → SQL 完全没执行，而 psql 退出码仍是 0（`set -e` 抓不到），极易误判"已生效"。多语句 SQL 用 `psql -c "stmt1; stmt2; ..."`（单 `-c` 多语句 = 一个隐式事务，配 `-v ON_ERROR_STOP=1`）或 `docker exec -i`
-- **系统 Python 是红线守卫的隐藏依赖,缺了 fail-open 且不吭声**：`.claude/hooks/guard.sh` 按 `python`→`py`→`python3` 探测解释器,三个全落空就 `exit 0` 放行一切(`git add -A`、生产 DROP 都不再拦),**无任何提示**。uv 托管的解释器**不进 PATH**,所以"只装 uv 不装 Python"会静默拆掉守卫(2026-08-26 配第二台机时发现)。同理 `~/.claude/settings.json` 的 `statusLine` 与 `claude_md_review.sh` 也调裸 `python`(后者 fail-open 只是丢掉评审,不涉安全)。判据不是"装了没",而是跑 **`python .claude/hooks/test_guard.py`**(28 条用例,期望 `28/28 passed`)。**别用手敲的 `echo '{...}' | python guard.py` 自检**：`guard.py` 在 JSON 解析失败时**同样静默 `sys.exit(0)`**,而该写法是 Bash 语法、在 cmd.exe 里单引号不是定界符 → JSON 变脏 → 静默放行,与"守卫已死"表现完全相同(2026-08-26 误判过一轮)。改 `guard.py` 规则时必须往夹具补用例,且**正反两面都钉**——只钉"该拦的拦住",规则写宽了没人发现
+- **系统 Python 是红线守卫的隐藏依赖,缺了 fail-open 且不吭声**：`.claude/hooks/guard.sh` 按 `python`→`py`→`python3` 探测解释器,三个全落空就 `exit 0` 放行一切(`git add -A`、生产 DROP 都不再拦),**无任何提示**。uv 托管的解释器**不进 PATH**,所以"只装 uv 不装 Python"会静默拆掉守卫(2026-08-26 配第二台机时发现)。同理 `~/.claude/settings.json` 的 `statusLine` 与两个评审钩子(`claude_md_review.sh` / `design_doc_review.sh`)也调裸 `python`(后两者 fail-open 只是丢掉评审,不涉安全)。判据不是"装了没",而是跑 **`python .claude/hooks/test_guard.py`**(28 条用例,期望 `28/28 passed`)。**别用手敲的 `echo '{...}' | python guard.py` 自检**：`guard.py` 在 JSON 解析失败时**同样静默 `sys.exit(0)`**,而该写法是 Bash 语法、在 cmd.exe 里单引号不是定界符 → JSON 变脏 → 静默放行,与"守卫已死"表现完全相同(2026-08-26 误判过一轮)。改 `guard.py` 规则时必须往夹具补用例,且**正反两面都钉**——只钉"该拦的拦住",规则写宽了没人发现
 - **非中文 Windows 上「管道里的中文」会崩,且崩得像「守卫已死」**（2026-08-27 第二台机实测,系统区域 ja-JP → cp932）：控制台直连时 Python 走 `WriteConsoleW`,不受 codepage 影响;**一旦重定向或走管道**就改用 locale 编码 → 中文 `UnicodeEncodeError`。而 Claude Code 跑命令**恰恰全是管道**,所以"手敲能跑、Claude 跑就崩"。三处已治本:① `guard.py` / `test_guard.py` 强制 UTF-8 输出——`guard.py` 崩溃 = 非零退出 = **fail-open**(PreToolUse 只有 exit 2 才拦截),一个编码异常就能把 deny 变成放行;② 夹具 `run()` 改「取字节 + 显式解码」,原 `text=True` 按 locale 解子进程输出,一含非 ASCII 就在 subprocess 内部炸、`p.stdout` 变 `None` → **整轮用例崩溃而不是判 FAIL**,守卫坏了会伪装成夹具坏了;③ 新增用例钉死「guard 输出恒为纯 ASCII」(改 `ensure_ascii` 或在 emit 路径加中文 print 都会在这条露馅)。机器侧另设 `PYTHONUTF8=1` 用户环境变量,兜住 `backend/scripts/*.py` 手工跑的场景(`run_ic_panel.sh` 早已自带 `export PYTHONIOENCODING=utf-8`)
 - **守卫的 `ask` 档可能整档失效,而 `deny` 仍然有效**（2026-08-27 实测）：在「Bash 自动放行」的权限模式下,钩子返回的 `permissionDecision: "ask"` **不会浮出确认框**——同一会话里 `deny` 正常拦截（`git add -A` 被当场挡下），只有 `ask` 被静默通过。**排除了放行名单的干扰**：用不在 `settings.local.json` 名单里的命令（`printf` / `stat` / 自造 `echo` 字符串）复测同样不弹。判据不是"守卫装了没",而是**这条动作真的被拦住了吗**。推论:**凡"不可逆且无处恢复"的动作,不能只靠 `ask`**——`sync_local_backtest_db.sh --force-wipe`（销毁 `ic_baseline_pre_c1` 4940 行 ≈ 57h 重造 + 面板 IC 行,而该库已禁止再 sync）因此提为 `deny`,由人在终端手敲。`ask` 仍适用于"可逆或有备份"的动作（裸 `sync` / `--force` / 生产栈 DROP)
 - **项目解释器由 `backend/.python-version`(=3.12)钉死**,不靠"记得装对版本"：`pyproject` 的 `requires-python = ">=3.12"` 上界开放,系统若装了 3.13/3.14,`uv sync` 可能拿它建 venv → 要么 pandas/asyncpg 无 wheel 现场编译失败,要么**跑起来了但运行时与生产不一致**(算力机上尤其危险:面板 IC 要用于策略决策,数值差异无从归因)
@@ -354,6 +354,22 @@ DEBUG=false
 经变异测试确认有效：把 basename 精确相等写宽成 `in` 包含，这三条立刻变红。
 ⚠️ 夹具里**不能用裸 `bash`**——Windows 上它极可能解析到 WSL 的 `System32\bash.exe`，
 那里 `D:/...` 不存在 → 全用例 exit 127，表现与"钩子脚本丢了"完全相同（首版即栽在这里）。
+
+**设计文档第三方评审**（`design_doc_review.sh` + `.claude/agents/design-doc-reviewer.md`，
+2026-09-01 加）：同上一条同款机制（冷启动子 agent / 只出报告 / 命令钩子 + `additionalContext`），
+触发范围 `docs/design/**.md` + `docs/spec/**.md`（**不含** `docs/reviews/`——那是历史日志，
+也不含 `docs/guides/`）。**判据：`python .claude/hooks/test_design_doc_review.py` → `15/15 passed`**，
+两个方向的变异测试均确认有效（去掉 `docs/design/` 尾斜杠 → `designer_prefix` 红；
+去掉 `.md` 后缀检查 → `md_bak` + `py_in_design` 红）。
+
+它与 CLAUDE.md 评审员的**分工不同**：那个查信噪比，这个的第一主线是
+**「文档声称 vs 代码/生产的真实状态」**——本仓设计文档最高发的缺陷不是写得不好，
+而是写的和实际不一致，且只读文本永远查不出来（§4 记着已 DROP 的表、§6 停在一个月前的版本、
+`deployment.md` 描述了一套服务器上不存在的部署模型，都是几个月无人发现）。
+故它必须**逐条核实**文中所有「已完成 / 已登记 / 已回写 / 已部署」类声称。
+
+⚠️ **必须攒批**：设计文档一次会话常被改多次（2026-09-01 单会话改了 roadmap 6 次），
+逐个 Edit 起一次 agent 非常贵。钩子文案已写明「本轮改动收口后起一次」。
 
 #### 自动测试钩子（`auto_test.sh`）
 

@@ -36,6 +36,12 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/claude_md_review.sh\"",
             "timeout": 15,
             "statusMessage": "CLAUDE.md 变更 → 触发第三方评审"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/design_doc_review.sh\"",
+            "timeout": 15,
+            "statusMessage": "设计文档变更 → 触发第三方评审"
           }
         ]
       }
