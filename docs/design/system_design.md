@@ -1,8 +1,8 @@
 # QuantPilot 系统设计文档
 
-> **版本：** v1.14
+> **版本：** v1.15
 > **基线依据：** QuantPilot_SDD（规范文档，专家审定版）
-> **日期：** 2026-08-07
+> **日期：** 2026-09-01
 > **说明：** 本文档为顶层架构基线，保持稳定。各开发阶段的详细设计见 `docs/design/phases/` 目录，按需创建。
 
 ---
@@ -29,6 +29,7 @@
 | **v1.11** | 2026-06-26 | **V1.5-G 多用户化 + L1/L2/L3 分层兑现（仅设计登记，实现排 RC 后）**：§9 Phase 6 行④「user_level…V1.5 实现分层」推迟标记翻转，指向新设计文档 `docs/design/phases/v1_5_g_multiuser.md` §6 + roadmap §2.2。V1.5-G = 开放自助注册 + 账户层数据完整隔离（新增 `user` 表 + `account.user_id` + JWT 带真实身份 + ownership 强制）+ 兑现 SDD §2/§9.3/§14 被 V1.0 折衷推迟的 L1/L2/L3 分层（`user.level` 自选偏好，默认 L1）。per-user/shared 边界：账户层（account 及其派生）隔离，市场/信号/评分计算层共享。env admin 迁移为首个 DB 用户后废弃。本条仅范围登记（C-5 先回写后实现），不触发任何 V1.0 §9 表变更——V1.5-G 权威登记在 roadmap §2.2/§6 V1.5-G 行 |
 | **v1.13** | 2026-07-29 | **V1.5-A 实施回写（回测深化 + 监控 + 市场宽度 + 财务 PIT）**：§2.6 市场状态叠加 NH-NL 市场宽度弱势修正（UPTREND 且 NH-NL≤0 → breadth_weak，评分按 OSCILLATION 查权重压制趋势，"权重承载方案(a)"，A3/SDD-EXT-07）；§4.1 新增 `financial_forecast` 表（业绩预告/快报 PIT，A5/SDD-EXT-03，alembic 0023）；§4.2 `market_state_history` 加 `breadth_weak` 列（alembic 0021）；§5.8 `BacktestConfig.slippage_scenarios`（滑点情景 A1b）+ `BacktestDataBundle.forecast`（回测前瞻 ROE 覆盖 A5b）+ `run(position_sink=…)` 流式持仓落库（A1a/S6-GAP-02）+ `BacktestResult.daily_positions` 由"不持久化"更正为持久化到 `backtest_daily_position` 表（alembic 0022，表定义见 `phases/v1_5_a_backtest_monitoring.md`）；§6 新增 `POST /backtest/import` 行 + `/backtest/{id}/result` daily_positions 分页注记。涨停成交（A2/SDD-EXT-02s）与监控增强（A4）为引擎/运维内部实现，无 §3-6 结构变更。权威见 `phases/v1_5_a_backtest_monitoring.md` |
 | **v1.14** | 2026-08-07 | **财务 PIT 缺陷修复（get_latest_financial 基本面 LOCF + refresh_financials_full arity）**——2026-08 管线验证挖出，A5b 落地缺陷：§4.1 financial_data 表补「最新财务解析」行为规范——拆日频段（pe/pb/dividend_yield 取最新交易日）与报告期基本面段（roe/yoy/total_equity 走 LOCF 取最近有值报告期，`GROUP BY(ts_code,report_period)+max` 跨行合并 roe[日频行] 与 total_equity[balancesheet 公告日行]，450 日回看窗，2GB 机 EXPLAIN 实测 2.7s，无窗 10.5s），返回 `report_period=基本面所属期`以支撑 A5b 真空判定。根因：旧「取最新 publish_date 行」使跨季度末真空期 roe/total_equity 恒 NULL（生产实证 latest 行 roe 非空 2.4%/total_equity 0%）→ 价值因子季节性退化 + F-4/A5b 失效；叠加 `refresh_financials_full` arity bug（逐股调批量方法缺 2 个 date 参，生产 06-30 success=0 fail=5515）使 total_equity 全市场恒 NULL。均无 §3/§5/§6 结构变更（仅取数语义 + 采集调用修复）。V1.5-A scope 权威登记见 `v1_post_release_roadmap §6 V1.5-A`；生产 total_equity 回填为独立 C-1 生产写 |
+| **v1.15** | 2026-09-01 | **V1.5-K 新增研究表 `factor_panel_stat`（C-5 先回写后实施）**：§4.2 新增建表 DDL——因子验证面板统计量，与运行时 `factor_ic_window_state` **分离**，切分依据是「运行时 vs 研究」：前者每日增量、喂 ICIR 决定实盘权重，本次一个字节都不动；后者整批重跑产出、可整批丢弃重来。长表(tidy)形态承载 K-2~K-6 全部指标（ic / valid_ratio / decile_fwd_return / top5_excess / turnover_jaccard / cost_drag），`bucket` 取 NOT NULL DEFAULT -1 而非可空——PG 的 UNIQUE 视 NULL 互不相等，可空维度会让唯一键形同虚设、静默写入重复行（与 C0-7 唯一约束撞车同族）。本主题不新增 API 端点，§3/§5/§6 无变更。**另标注两处 §4 既存问题**：`factor_ic_history` 已于 Phase 15 §15-7 归并 DROP、生产不存在，定义仅留历史追溯；§4 尚缺 10 张已上线表的定义，已登记 roadmap V1.5-J 文档同步。设计见 `phases/v1_5_k_factor_validation.md` §2.1 |
 
 ---
 
@@ -643,7 +644,14 @@ CREATE TABLE signal_score_snapshot (
 );
 CREATE INDEX idx_snapshot_signal ON signal_score_snapshot(signal_id);
 
--- 因子质量监控历史（SDD §7.4，V1.0 必需）
+-- ⚠️ 下表 factor_ic_history 已于 Phase 15 §15-7 归并并 DROP（读写迁移至
+-- factor_ic_window_state），生产库中**不存在**此表。保留定义仅供历史追溯，
+-- 勿据此建表。运行时 IC/ICIR 的实际结构见 models/business.py::FactorICWindowState
+-- （strategy/factor/state/trade_date/row_type 五元唯一键 + ICIR 聚合列）。
+-- 【文档待补】§4 尚缺 10 张已上线表（factor_ic_window_state / strategy_weights_history /
+-- attribution_history / data_quality_metric / backtest_task / backtest_result /
+-- backtest_daily_position / daily_portfolio_value / in_app_notification / user），
+-- 已登记 roadmap V1.5-J 文档同步。
 CREATE TABLE factor_ic_history (
     id              BIGSERIAL PRIMARY KEY,
     calc_month      DATE NOT NULL,               -- 计算月份（月末日期，如 2026-02-28）
@@ -661,6 +669,34 @@ CREATE TABLE factor_ic_history (
     UNIQUE (calc_month, strategy_name, factor_name, return_window)
 );
 CREATE INDEX idx_ic_history_strategy ON factor_ic_history(strategy_name, calc_month DESC);
+
+-- 因子验证面板统计量（V1.5-K，研究用；与运行时 factor_ic_window_state 分离）
+-- 切分依据是「运行时 vs 研究」：factor_ic_window_state 每日增量、喂 ICIR 决定实盘权重，
+-- 一个字节都不动；本表整批重跑产出、可整批丢弃重来。设计见
+-- phases/v1_5_k_factor_validation.md §2.1。
+CREATE TABLE factor_panel_stat (
+    id           BIGSERIAL PRIMARY KEY,
+    panel_run    VARCHAR(64)  NOT NULL,          -- 重跑批次（配置+日期），多次重跑并存可比
+    trade_date   DATE         NOT NULL,
+    strategy     VARCHAR(32)  NOT NULL,
+    factor       VARCHAR(64)  NOT NULL,          -- 因子名；组合级指标填 '__portfolio__'
+    stage        VARCHAR(16)  NOT NULL,          -- 'raw'（固有预测力）/ 'z'（进 composite 那版）
+                                                 -- 组合级填 'n/a'；两版之差 = 五步管线的增益或损耗
+    state        VARCHAR(16)  NOT NULL,          -- 市场状态
+    horizon      SMALLINT     NOT NULL,          -- 前向交易日 5/10/20/40；无前向概念填 0
+    metric       VARCHAR(32)  NOT NULL,          -- ic / valid_ratio / decile_fwd_return
+                                                 -- / top5_excess / turnover_jaccard / cost_drag
+    bucket       SMALLINT     NOT NULL DEFAULT -1,  -- 十分位 1..10；不适用填 -1
+                                                 -- **必须 NOT NULL**：PG 的 UNIQUE 视 NULL 互不相等，
+                                                 -- 可空 bucket 会让唯一键形同虚设、静默写重复行
+    value        NUMERIC(12,6),
+    sample_size  INTEGER      NOT NULL,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT uq_factor_panel_stat UNIQUE
+        (panel_run, trade_date, strategy, factor, stage, state, horizon, metric, bucket)
+);
+CREATE INDEX idx_factor_panel_stat_lookup
+    ON factor_panel_stat(panel_run, metric, trade_date DESC);
 
 -- 报告存储（SDD §12.5）
 CREATE TABLE report (
