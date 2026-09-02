@@ -153,6 +153,8 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d  # 生产�
   - 断点续传查 `repo.get_fully_ingested_dates()`（daily_quote ∩ financial_data 双表交集），禁用单表 `MAX(trade_date)`
 - **完整性校验 `prev_count`** 必须 PIT 活股数：用 `get_active_stock_codes_as_of(trade_date)` 而非 `get_active_stock_codes()` 当前快照（5 年前对比当前快照必然 < 95% → 整日 rollback → 5y 回填跑完仍空 DB）
 - **`refill_history.py` 双模式**：默认增量（不删，走双表交集断点续传）/ `--force-clean`（DELETE 4 表重灌）/ `--dry-run-plan`（预检）
+- **接口参数名写错 = 静默返全表前 5000 行**（2026-09-02 实证）：`suspend_d` 的参数是 `trade_date`，代码误写 `suspend_date` → Tushare 忽略未知参数，返回**全表最早 5000 行（1999~2001 年）**，不报错。后果是约 818 只（逐日 818~845）正常交易股被当成停牌、**自 Initial commit 起每日排除**（`is_suspended` 假阳性 100% / 真阳性 0%，110 万行无一例外）。详见 `docs/reviews/universe_suspension_defect_2026-09-02.md`
+- **判据：日期类接口一律验「返回数据的日期是否落在入参窗口内」**，不是「有没有报错」——已实测的 10 个接口全都不报错，坏的那个也不报错。⚠️ 判越界前先分清语义：`namechange` / `balancesheet` 的 start/end 过滤的是 **`ann_date`（公告日）**，返回更早的报告期属正常（2024 年报 2025-04 公告）
 
 ### 4.4 Engine 层
 
@@ -250,8 +252,8 @@ DEBUG=false
 **「接了但没生效」一族——本项目最高发的缺陷类型**
 
 共同形态：参数 / 规则 / 机制**写好了**，但从未被真实数据走过 → 静默失效、不报错、
-**且常规测试全绿**。载体各不相同而根因一致——参数 / 配置 / 外部接口 / 调用点 / 测试替身
-五种载体均已中招：
+**且常规测试全绿**。载体各不相同而根因一致——参数 / 配置 / 外部接口（两种形态：返空 / 返错数）/ 调用点 / 测试替身
+六种载体均已中招：
 
 | # | 实例 | 失效点 |
 |---|---|---|
@@ -260,6 +262,7 @@ DEBUG=false
 | 3 | Tushare `balancesheet` 逗号多码 / `hk_hold` 多码 / `fina_indicator` 索要 `total_share` | 外部接口静默返空或忽略字段 |
 | 4 | **`compute_pool` 的持仓保护**（2026-08-28）| 机制正确，但链上三层（`strategy_service` 116/472/579）默认 `frozenset()`、终点 `compute_pool` 虽是必填参数却**从未被传入非空值** |
 | 5 | **WxPusher「未配置」被当成「发送失败」**（2026-09-02）| **测试替身缺状态**：`_FakeWx` 没有真实 adapter 的 `configured`，「未配置」这个现实分支在测试世界**不可表达**，于是无人写它。配置与历史遗留见 `docs/guides/wxpusher_setup.md` |
+| 6 | **`suspend_d` 参数名错 → 每日排除约 818 只正常股**（2026-09-02，**本族损害面最大的一例**）| **接口静默返回「看似正常但完全错误」的旧数据**——与第 3 行的「静默返空」不同形态：返回的是全表最早 5000 行（1999~2001），字段齐全、量级合理、不报错，**只是全错**。自 Initial commit 起 4 个月，universe 失真 −17%。见 §4.3 与 `docs/reviews/universe_suspension_defect_2026-09-02.md` |
 
 第 4 例代价最大：`candidate_pool` 全历史 87924 行中 `is_holding=true` 为 **0 行**
 （五年从未生效），导致持仓跌出候选池后**止损不可达**——四只持仓全部亏损超阈值
