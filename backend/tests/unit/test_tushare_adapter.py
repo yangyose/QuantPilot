@@ -632,3 +632,75 @@ async def test_a4_call_classifies_rate_limit() -> None:
         await adp._call(fake_rl)
     after = TUSHARE_CALLS.labels(interface="daily_basic", status="rate_limit")._value.get()
     assert after - before == 1
+
+
+# ───────── ADP-07：suspend_d 参数名 + suspend_type 过滤（2026-09-02 生产缺陷回归） ─────────
+#
+# 缺陷：`suspend_d` 的参数是 `trade_date`，代码误写 `suspend_date` → Tushare
+# **静默忽略未知参数**，返回全表最早 5000 行（1999~2001 年的停牌记录）。
+# 后果：约 818 只正常交易股被当成停牌、自 Initial commit 起每日排除，
+# universe 失真 −17%（`is_suspended` 假阳性 100% / 真阳性 0%，110 万行无一例外）。
+# 详见 docs/reviews/universe_suspension_defect_2026-09-02.md
+#
+# ⚠️ 为什么本文件既有测试抓不到：`_call` 被 AsyncMock(side_effect=[...]) 替换，
+# **不校验传入的 kwargs**，参数名写什么都能跑过；且 `suspend` 的 mock 连
+# `suspend_type` 列都没有——替身比现实弱，那条分支在测试世界不可表达。
+class TestSuspendParams:
+    async def test_suspend_d_called_with_trade_date(self, adapter: TushareAdapter) -> None:
+        """在**调用点**上验证参数名（§4.11：只能在调用点验证，spy 式测试是自证的）。"""
+        daily, basic, adj, _suspend, limit = _make_daily_mocks()
+        suspend = pd.DataFrame({"ts_code": [], "suspend_type": []})
+        captured: list[dict] = []
+
+        async def _spy(fn, **kwargs):
+            captured.append({"fn": getattr(fn, "_mock_name", None) or str(fn), **kwargs})
+            return [daily, basic, adj, suspend, limit][len(captured) - 1]
+
+        with patch.object(adapter, "_call", new=_spy):
+            await adapter.fetch_daily_quotes(date(2026, 1, 2))
+
+        # 第 4 个调用是 suspend_d（顺序见 fetch_daily_quotes 的 asyncio.gather）
+        kw = captured[3]
+        assert "trade_date" in kw, f"suspend_d 必须用 trade_date，实得 {sorted(kw)}"
+        assert "suspend_date" not in kw, "suspend_date 不是 suspend_d 的参数，会被静默忽略"
+        assert kw["trade_date"] == "20260102"
+
+    async def test_only_suspend_type_S_marks_suspended(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """S=停牌 / R=复牌，只有 S 才算停牌；复牌股必须可交易。"""
+        daily, basic, adj, _s, limit = _make_daily_mocks()
+        daily = pd.concat([daily, daily.assign(ts_code="000002.SZ")], ignore_index=True)
+        basic = pd.concat([basic, basic.assign(ts_code="000002.SZ")], ignore_index=True)
+        adj = pd.concat([adj, adj.assign(ts_code="000002.SZ")], ignore_index=True)
+        suspend = pd.DataFrame(
+            {"ts_code": ["000001.SZ", "000002.SZ"], "suspend_type": ["S", "R"]}
+        )
+        with patch.object(
+            adapter, "_call",
+            new=AsyncMock(side_effect=[daily, basic, adj, suspend, limit]),
+        ):
+            result = await adapter.fetch_daily_quotes(date(2026, 1, 2))
+
+        flags = dict(zip(result["ts_code"], result["is_suspended"]))
+        assert flags["000001.SZ"] is True or bool(flags["000001.SZ"]) is True
+        assert bool(flags["000002.SZ"]) is False, "R=复牌被当成了停牌"
+
+    async def test_missing_suspend_type_column_degrades_safely(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """接口若不返 suspend_type（旧版/降级），不得整体崩溃。
+
+        【降级说明】此时无法区分 S/R → 保守起见**全部不标停牌**：
+        误标停牌会把正常股票逐出 universe（本次缺陷的形态，代价已实证为 −17%），
+        而漏标停牌无实际损害（真停牌股在 daily 接口里根本没有行情行，
+        自然进不了 universe——评审报告 §4.1 已实证 BUY 落在零成交日 0 条）。
+        """
+        daily, basic, adj, _s, limit = _make_daily_mocks()
+        suspend = pd.DataFrame({"ts_code": ["000001.SZ"]})  # 无 suspend_type
+        with patch.object(
+            adapter, "_call",
+            new=AsyncMock(side_effect=[daily, basic, adj, suspend, limit]),
+        ):
+            result = await adapter.fetch_daily_quotes(date(2026, 1, 2))
+        assert bool(result.iloc[0]["is_suspended"]) is False

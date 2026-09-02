@@ -143,7 +143,11 @@ class TushareAdapter(DataSourceAdapter):
             self._call(self._pro.daily, trade_date=date_str),
             self._call(self._pro.daily_basic, trade_date=date_str),
             self._call(self._pro.adj_factor, trade_date=date_str),
-            self._call(self._pro.suspend_d, suspend_date=date_str),
+            # ⚠️ 参数名必须是 trade_date：曾误写 suspend_date（Tushare **静默忽略**
+            # 未知参数并返回全表最早 5000 行 = 1999~2001 年的停牌记录），导致约 818 只
+            # 正常交易股被当成停牌、自 Initial commit 起每日排除，universe 失真 −17%。
+            # 见 docs/reviews/universe_suspension_defect_2026-09-02.md
+            self._call(self._pro.suspend_d, trade_date=date_str),
             self._call(self._pro.limit_list_d, trade_date=date_str),
         )
 
@@ -151,8 +155,22 @@ class TushareAdapter(DataSourceAdapter):
         df = daily.merge(basic[["ts_code", "turnover_rate", "circ_mv"]], on="ts_code", how="left")
         df = df.merge(adj[["ts_code", "adj_factor"]], on="ts_code", how="left")
 
-        # 停牌标记
-        suspended_codes: set[str] = set(suspend["ts_code"].tolist()) if len(suspend) else set()
+        # 停牌标记：suspend_type 为 S=停牌 / R=复牌，**只有 S 算停牌**
+        # 【降级说明】接口未返 suspend_type 时（旧版/降级）无法区分 S/R →
+        # 保守起见全部不标停牌。方向是刻意选的：误标停牌会把正常股逐出 universe
+        # （本次缺陷形态，代价已实证为 −17%），而漏标停牌无实际损害——真停牌股在
+        # daily 接口里根本没有行情行，自然进不了 universe。
+        if len(suspend) and "suspend_type" in suspend.columns:
+            suspended_codes: set[str] = set(
+                suspend.loc[suspend["suspend_type"] == "S", "ts_code"].tolist()
+            )
+        else:
+            if len(suspend):
+                logger.warning(
+                    "suspend_d_missing_suspend_type: rows=%d，无法区分停牌/复牌，"
+                    "本日不标任何停牌（保守降级）", len(suspend),
+                )
+            suspended_codes = set()
         df["is_suspended"] = df["ts_code"].isin(suspended_codes)
 
         # 涨跌停标记
