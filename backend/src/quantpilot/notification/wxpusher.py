@@ -51,7 +51,12 @@ class WxPusherAdapter(NotificationChannel):
 
     @property
     def uid(self) -> str:
-        """暴露 uid 供 NotificationService 写入降级日志。"""
+        """本渠道的收件 uid（WxPusher 专有；跨渠道日志请用 `target`）。"""
+        return self._uid
+
+    @property
+    def target(self) -> str:
+        """ABC 契约成员：收件目标的可读标识，供上层写日志。"""
         return self._uid
 
     @property

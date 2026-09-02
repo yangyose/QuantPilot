@@ -4,7 +4,7 @@ Phase 7 时为 no-op stub。Phase 10 改造目标：
 - 统一入口 `notify(notify_type, title, body, payload)`：
   1. 读 `NotificationConfig` 偏好，按类型/时段过滤
   2. **始终写入** `in_app_notification`（兜底渠道，SDD §13.1）
-  3. WxPusher 启用且在推送时段内 → 调 `WxPusherAdapter.send`，结果回写 `wx_pushed/wx_error`
+  3. WxPusher 启用且在推送时段内 → 调 `NotificationChannel.send`，结果回写 `wx_pushed/wx_error`
 - 5 类便捷方法 + `_render_*` 模板（SDD §13.3）：
   notify_signal / notify_market_state_change / notify_stop_loss_warn /
   notify_risk_warn / notify_factor_alert
@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.core.config_defaults import NotificationConfig
 from quantpilot.models.business import InAppNotification, Signal
-from quantpilot.notification.wxpusher import WxPusherAdapter
+from quantpilot.notification.base import NotificationChannel
 from quantpilot.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,9 @@ class NotificationService:
         self,
         session: AsyncSession,
         config_service: ConfigService,
-        wxpusher: WxPusherAdapter | None = None,
+        # 只依赖 ABC 契约（2026-09-02）：原标注为 WxPusherAdapter，而 scheduler.py
+        # 传入的一直是 NotificationChannel —— 标注与调用点本就不一致。
+        wxpusher: NotificationChannel | None = None,
     ) -> None:
         self._session = session
         self._cfg = config_service
@@ -120,8 +122,8 @@ class NotificationService:
             if not ok:
                 notif.wx_error = "WxPusher 重试 3 次均失败，已降级为系统内通知"
                 logger.error(
-                    "notification_degraded_to_in_app type=%s uid=%s title=%s",
-                    notify_type, self._wx.uid, title,
+                    "notification_degraded_to_in_app type=%s target=%s title=%s",
+                    notify_type, self._wx.target, title,
                 )
 
         try:

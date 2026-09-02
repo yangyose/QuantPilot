@@ -15,6 +15,7 @@ import pytest
 
 from quantpilot.core.config_defaults import DEFAULT_NOTIFICATION, NotificationConfig
 from quantpilot.models.business import InAppNotification
+from quantpilot.notification.base import NotificationChannel
 from quantpilot.services.notification_service import NotificationService
 
 # 在 autouse fixture 替换前捕获原始静态方法，留给 TestPushWindow 直接调用
@@ -77,6 +78,7 @@ class _FakeWx:
     ) -> None:
         self.ok = ok
         self.uid = uid
+        self.target = uid   # ABC 契约成员（日志用），真实 adapter 亦返回 uid
         self.configured = configured
         self.calls: list[tuple[str, str]] = []
 
@@ -389,7 +391,7 @@ class TestDoubleFidelity:
         # 在替身上是实例属性，类层面 hasattr 对后者恒 False。
         real = WxPusherAdapter(app_token="", uid="")
         fake = _FakeWx()
-        for attr in ("send", "uid", "configured"):
+        for attr in ("send", "configured", "target"):
             assert hasattr(real, attr), f"真实 adapter 缺 {attr}"
             assert hasattr(fake, attr), f"替身缺 {attr}，测试会比现实宽松"
 
@@ -405,3 +407,91 @@ class TestDoubleFidelity:
         assert WxPusherAdapter(app_token="AT_x", uid="").configured is False
         assert WxPusherAdapter(app_token="", uid="UID_x").configured is False
         assert WxPusherAdapter(app_token="AT_x", uid="UID_x").configured is True
+
+
+# ───────── INV-NTF-06：NotificationService 只依赖 ABC 契约（2026-09-02） ─────────
+#
+# 缺陷形态：`NotificationChannel` ABC 只声明 `send()`，但 NotificationService 还直接
+# 访问 `self._wx.configured` / `.uid` —— 两者都是 WxPusherAdapter 私有的。
+# 于是「只实现 ABC 的新渠道」塞进来会当场 AttributeError，而 ABC 的存在让人
+# 以为可以直接扩展（`base.py` 注释甚至写着「V1.5 可扩 ServerChan/Email/Slack」）。
+#
+# 这条边界一直靠「唯一实现恰好是 WxPusherAdapter」掩盖着，ABC 从未真正生效。
+# ⚠️ 判据必须用**只实现 ABC 的最小渠道**，不能用 _FakeWx —— 后者有 configured/uid，
+# 缺陷仍在时照样绿（自证式测试，见 CLAUDE.md §4.11「调用点是否真传参」那条的教训）。
+class _MinimalChannel(NotificationChannel):
+    """严格只实现 ABC 声明的成员——未来 WeComAdapter 的形状。"""
+
+    def __init__(self, ok: bool = True, configured: bool = True) -> None:
+        self._ok = ok
+        self._configured = configured
+        self.calls: list[tuple[str, str]] = []
+
+    @property
+    def configured(self) -> bool:
+        return self._configured
+
+    async def send(self, title: str, body: str) -> bool:
+        self.calls.append((title, body))
+        return self._ok
+
+
+class TestDependsOnlyOnABC:
+    async def test_minimal_channel_send_succeeds(self) -> None:
+        ch = _MinimalChannel(ok=True)
+        svc = NotificationService(
+            session=_FakeSession(),  # type: ignore[arg-type]
+            config_service=_FakeConfigService(DEFAULT_NOTIFICATION),  # type: ignore[arg-type]
+            wxpusher=ch,  # type: ignore[arg-type]
+        )
+        result = await svc.notify("SIGNAL_BUY", "t", "b", {"ts_code": "000001.SZ"})
+        assert result is not None and result.wx_pushed is True
+        assert len(ch.calls) == 1
+
+    async def test_minimal_channel_failure_path_does_not_crash(self) -> None:
+        """失败分支要读「收件目标」写进 ERROR 日志——这里原先直接取 .uid 会炸。"""
+        ch = _MinimalChannel(ok=False)
+        svc = NotificationService(
+            session=_FakeSession(),  # type: ignore[arg-type]
+            config_service=_FakeConfigService(DEFAULT_NOTIFICATION),  # type: ignore[arg-type]
+            wxpusher=ch,  # type: ignore[arg-type]
+        )
+        result = await svc.notify("SIGNAL_BUY", "t", "b", {"ts_code": "000001.SZ"})
+        assert result is not None and result.wx_error is not None
+
+    async def test_minimal_channel_unconfigured_is_skipped(self) -> None:
+        ch = _MinimalChannel(configured=False)
+        svc = NotificationService(
+            session=_FakeSession(),  # type: ignore[arg-type]
+            config_service=_FakeConfigService(DEFAULT_NOTIFICATION),  # type: ignore[arg-type]
+            wxpusher=ch,  # type: ignore[arg-type]
+        )
+        result = await svc.notify("SIGNAL_BUY", "t", "b", {"ts_code": "000001.SZ"})
+        assert result is not None and result.wx_error is None
+        assert ch.calls == []
+
+    def test_abc_declares_what_the_service_uses(self) -> None:
+        """AST 检查：NotificationService 对渠道对象的属性访问必须都在 ABC 契约内。
+
+        这条比上面三条更根本——它在**访问点**上验证，
+        新加一个 `self._wx.<私有属性>` 会立刻变红，而不必等到有人真去写新渠道。
+        """
+        import ast
+        import inspect
+
+        from quantpilot.services import notification_service as ns
+
+        allowed = {n for n in dir(NotificationChannel) if not n.startswith("_")}
+        tree = ast.parse(inspect.getsource(ns))
+        used = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "_wx"
+        }
+        assert used, "未扫到任何 self._wx.<attr> 访问，检查 AST 匹配逻辑是否失效"
+        assert used <= allowed, (
+            f"越过 ABC 契约访问了 {sorted(used - allowed)}；"
+            "应加进 NotificationChannel 或改用契约内成员"
+        )
