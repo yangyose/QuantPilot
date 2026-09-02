@@ -65,13 +65,26 @@ class _FakeConfigService:
 
 
 class _FakeWx:
-    def __init__(self, ok: bool = True, uid: str = "UID_test") -> None:
+    """WxPusherAdapter 的测试替身。
+
+    ⚠️ `configured` 不是可选装饰——真实 adapter 有这个状态，替身缺了它就等于
+    在测试世界里删掉了「未配置」这个现实存在的分支（2026-09-02 生产缺陷成因）。
+    契约由 TestDoubleFidelity 钉死。
+    """
+
+    def __init__(
+        self, ok: bool = True, uid: str = "UID_test", configured: bool = True
+    ) -> None:
         self.ok = ok
         self.uid = uid
+        self.configured = configured
         self.calls: list[tuple[str, str]] = []
 
     async def send(self, title: str, body: str) -> bool:
         self.calls.append((title, body))
+        # 与真实 adapter 同构：未配置直接 False，不产生任何"尝试"
+        if not self.configured:
+            return False
         return self.ok
 
 
@@ -80,9 +93,12 @@ def _build(
     prefs: NotificationConfig | None = None,
     wx_ok: bool = True,
     with_wx: bool = True,
+    wx_configured: bool = True,
 ) -> tuple[NotificationService, _FakeSession, _FakeWx | None]:
     session = _FakeSession()
-    wx: _FakeWx | None = _FakeWx(ok=wx_ok) if with_wx else None
+    wx: _FakeWx | None = (
+        _FakeWx(ok=wx_ok, configured=wx_configured) if with_wx else None
+    )
     svc = NotificationService(
         session=session,  # type: ignore[arg-type]
         config_service=_FakeConfigService(prefs or DEFAULT_NOTIFICATION),  # type: ignore[arg-type]
@@ -299,3 +315,93 @@ class TestSignalTemplate:
         # stop_loss_pct = (1 - 9.20/10.00) * 100 = 8.0
         assert "8.0%" in result.body
         assert "T+1" in result.body
+
+
+# ───────── INV-NTF-05：未配置渠道 ≠ 发送失败（2026-09-02 生产缺陷回归） ─────────
+#
+# 生产实证：`.env.prod` 的 WXPUSHER_APP_TOKEN/UID 为空 → adapter `_configured=False`
+# → `send()` 立即 return False（未发 HTTP、未重试）。但 Service 把这个 False 当成
+# 「发送失败」处理：每条通知记一条 ERROR，并把 "重试 3 次均失败" 写进 wx_error。
+# 结果是 3196 行通知带着一句**假话**，外加每天 52 行伪 ERROR 淹没真错误。
+#
+# 缺陷藏了 3.5 个月的原因就在本文件里：`_FakeWx` 没有 `configured` 属性，
+# **测试替身比真实对象更能干**，那条分支在测试中根本无法被触发。
+# 故本组用例同时钉住替身与真实 adapter 的接口一致性（TestDoubleFidelity）。
+class TestUnconfiguredChannel:
+    async def test_unconfigured_wx_is_not_called(self) -> None:
+        """未配置 → 根本不该去调 send（它必然失败，调了只是浪费与噪声）。"""
+        svc, _session, wx = _build(wx_configured=False)
+        await svc.notify("SIGNAL_BUY", "t", "b", {"ts_code": "000001.SZ"})
+        assert wx is not None and wx.calls == []
+
+    async def test_unconfigured_wx_writes_no_false_error(self) -> None:
+        """未配置 → wx_error 必须为 None。
+
+        语义锚点：`wx_error IS NOT NULL` 恒等于「真的尝试过发送且失败了」。
+        运维靠这个区分「没配」和「配了但发不出去」——写假话会让这个区分失效。
+        """
+        svc, _session, _wx = _build(wx_configured=False)
+        result = await svc.notify("SIGNAL_BUY", "t", "b", {"ts_code": "000001.SZ"})
+        assert result is not None
+        assert result.wx_pushed is False
+        assert result.wx_error is None
+
+    async def test_unconfigured_wx_logs_no_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """未配置是启动时已 WARN 过一次的既知状态，不该每条通知再 ERROR 一次。"""
+        svc, _session, _wx = _build(wx_configured=False)
+        with caplog.at_level("ERROR", logger="quantpilot.services.notification_service"):
+            await svc.notify("SIGNAL_BUY", "t", "b", {"ts_code": "000001.SZ"})
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+    async def test_configured_failure_still_errors(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """反向守卫：真失败仍必须 ERROR + 写 wx_error。
+
+        没有这条，把上面三条「修绿」的最省事做法就是把 ERROR 整个删掉——
+        那会连真正的发送失败一起静音，比原缺陷更糟。
+        """
+        svc, _session, wx = _build(wx_ok=False, wx_configured=True)
+        with caplog.at_level("ERROR", logger="quantpilot.services.notification_service"):
+            result = await svc.notify("SIGNAL_BUY", "t", "b", {"ts_code": "000001.SZ"})
+        assert result is not None and result.wx_error is not None
+        assert "重试 3 次均失败" in result.wx_error
+        assert wx is not None and len(wx.calls) == 1
+        assert any(
+            "notification_degraded" in r.message for r in caplog.records
+            if r.levelname == "ERROR"
+        )
+
+
+class TestDoubleFidelity:
+    """替身接口必须是真实 adapter 的子集——否则测试会比现实宽松。
+
+    本缺陷的成因不是逻辑写错，而是 `_FakeWx` 缺了 `configured`，
+    使「未配置」这个真实存在的状态在测试世界里不可表达（§4.11「接了但没生效」族）。
+    """
+
+    def test_fake_wx_exposes_same_contract_as_real_adapter(self) -> None:
+        from quantpilot.notification.wxpusher import WxPusherAdapter
+
+        # 在**实例**上查：uid / configured 在真实 adapter 上是 property、
+        # 在替身上是实例属性，类层面 hasattr 对后者恒 False。
+        real = WxPusherAdapter(app_token="", uid="")
+        fake = _FakeWx()
+        for attr in ("send", "uid", "configured"):
+            assert hasattr(real, attr), f"真实 adapter 缺 {attr}"
+            assert hasattr(fake, attr), f"替身缺 {attr}，测试会比现实宽松"
+
+    def test_real_adapter_reports_unconfigured_on_empty_credentials(self) -> None:
+        """钉死生产实际形态：空 token/uid → configured 为 False。
+
+        这是「未配置」这条分支在真实对象上的入口；它若变了，
+        上面 TestUnconfiguredChannel 全组就都在测一个不存在的状态。
+        """
+        from quantpilot.notification.wxpusher import WxPusherAdapter
+
+        assert WxPusherAdapter(app_token="", uid="").configured is False
+        assert WxPusherAdapter(app_token="AT_x", uid="").configured is False
+        assert WxPusherAdapter(app_token="", uid="UID_x").configured is False
+        assert WxPusherAdapter(app_token="AT_x", uid="UID_x").configured is True

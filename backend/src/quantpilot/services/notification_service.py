@@ -11,6 +11,7 @@ Phase 7 时为 no-op stub。Phase 10 改造目标：
 - 去重：同 `notify_type` + 同 `payload` 在最近 1 天内只发一次
 - 日志级别（v1.1 评审 Q-4）：
   · WxPusher 3 次失败 → ERROR
+  · WxPusher **未配置** → 不记（启动时 adapter 已 WARN 一次），2026-09-02 修正
   · in_app 写库失败 → ERROR + re-raise（best-effort 由上层 commit 决定）
 """
 from __future__ import annotations
@@ -102,7 +103,18 @@ class NotificationService:
         )
         self._session.add(notif)
 
-        if prefs.wx_enabled and self._wx is not None and self._in_push_window(prefs):
+        # `configured` 必须参与判定：未配置时 adapter 的 send() 直接返回 False，
+        # 不发 HTTP、不重试。若把这个 False 当「发送失败」，就会
+        # ① 每条通知记一条伪 ERROR（生产实测 52 行/天，淹没真错误）
+        # ② 把 "重试 3 次均失败" 这句**假话**写进 wx_error（生产已写了 3196 行）
+        # 未配置是启动时 `wxpusher_not_configured` 已 WARN 过一次的既知状态，
+        # 不是运行期异常。语义锚点：`wx_error IS NOT NULL` ⟺ 真的尝试过且失败。
+        if (
+            prefs.wx_enabled
+            and self._wx is not None
+            and self._wx.configured
+            and self._in_push_window(prefs)
+        ):
             ok = await self._wx.send(title, body)
             notif.wx_pushed = ok
             if not ok:
