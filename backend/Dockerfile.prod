@@ -27,6 +27,13 @@ COPY alembic/ alembic/
 COPY alembic.ini .
 COPY scripts/ scripts/
 
+# 部署版本戳。⚠️ **生产用的是本文件（compose 的 dockerfile: Dockerfile.prod），
+# 不是 backend/Dockerfile** —— 2026-09-03 首次部署时 `COPY VERSION .` 只加在了
+# 后者，于是 /health 报 "unknown"：机制写了、单测绿了（`_read_deployed_version`
+# 的 path 可注入），但文件从未进入镜像。改这两个 Dockerfile 中的任何一个，
+# 都要问一句「生产用的是哪个」。
+COPY VERSION .
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \

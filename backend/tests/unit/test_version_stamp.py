@@ -102,3 +102,44 @@ def test_ver_05_health_endpoint_uses_the_stamp() -> None:
     assert not any(ch.isdigit() for lit in literals for ch in lit), (
         f"/health 函数体内不应出现含数字的字符串字面量（疑似写死版本号）：{literals}"
     )
+
+
+# ───────── VER-06：生产实际使用的 Dockerfile 必须 COPY VERSION（2026-09-03） ─────────
+def test_prod_dockerfile_copies_version_file() -> None:
+    """版本戳只有进了镜像才有意义——单测建不了镜像，但能验证**生产用的那个
+    Dockerfile** 里有没有这条 COPY。
+
+    2026-09-03 首次部署踩到：`COPY VERSION .` 只加在了 `backend/Dockerfile`，
+    而 `docker-compose.prod.yml` 用的是 `Dockerfile.prod` → 文件从未进入镜像，
+    `/health` 报 "unknown"。机制写了、VER-01~05 全绿（`_read_deployed_version`
+    的 path 可注入，测得到「它会读文件」，测不到「文件在不在」）。
+
+    ⚠️ 判据必须**从 compose 反查用的是哪个 Dockerfile**，不能写死文件名——
+    写死的话，改天 compose 换一个 Dockerfile，这条测试照样绿。
+    """
+    import re
+
+    # parents: [0]=unit [1]=tests [2]=backend [3]=仓库根（compose 在仓库根）
+    root = pathlib.Path(__file__).resolve().parents[3]
+    compose = (root / "docker-compose.prod.yml").read_text(encoding="utf-8")
+
+    m = re.search(
+        r"^\s*backend:\s*$.*?^\s*build:\s*$(.*?)(?=^\s{0,4}\w[\w-]*:\s*$)",
+        compose, re.M | re.S,
+    )
+    assert m, "未能在 docker-compose.prod.yml 中定位 backend.build 段"
+    block = m.group(1)
+
+    ctx_m = re.search(r"context:\s*(\S+)", block)
+    df_m = re.search(r"dockerfile:\s*(\S+)", block)
+    context = (ctx_m.group(1) if ctx_m else ".").lstrip("./") or "."
+    dockerfile = df_m.group(1) if df_m else "Dockerfile"
+
+    target = root / context / dockerfile
+    assert target.is_file(), f"compose 指向的 Dockerfile 不存在：{target}"
+
+    body = target.read_text(encoding="utf-8")
+    assert re.search(r"^\s*COPY\s+VERSION\s", body, re.M), (
+        f"生产构建用的是 {context}/{dockerfile}，但它没有 `COPY VERSION .`——"
+        "版本戳不会进入镜像，/health 将永远报 unknown。"
+    )
