@@ -79,3 +79,80 @@ ae64667 test: 解除限频 e2e 对墙钟的耦合
 
 `22a6f24`（C0 日级 IC，2026-08-19）及更早的部署没有留下机器可读的记录，
 散落在各 phase 进度档与 memory 中。**不再往回补**——从本文件起向前有记录即可。
+
+## a9b7378 — 2026-09-02T16:52:41Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `0869e1e` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_a9b7378_20260903_015045.tar.gz` |
+| delta | 0 个 commit |
+
+```
+a9b7378 fix(ops): 版本戳加到生产实际使用的 Dockerfile.prod——此前从未进入镜像
+```
+
+### 本次部署的完整上下文（2026-09-03 CST，手工补录）
+
+脚本自动记录的只有最后一次调用（`0869e1e → a9b7378`）。实际这一晚做了两轮部署
+加三项配置变更，全部记在这里——只看上面的表会以为只上了一个 commit。
+
+**第一轮 `2bab523 → 0869e1e`**（4 个 commit）：
+
+```
+0869e1e fix(universe): suspend_d 参数名 trade_date + 只认 suspend_type=S
+c3c4943 refactor(notify): NotificationService 收敛到 ABC 契约
+54aa3fd fix(notify): 「未配置」不再伪装成「发送失败」
+397af23 feat(ops): 生产版本管理——运行时版本戳 + 部署记录进仓库 + 部署脚本重写
+```
+
+⚠️ **该轮在第 8 步闸门处被拒**：`/health` 报 `"unknown"` 而非 sha。
+代码本身已上线（旧代码返回硬编码 `1.0.0`，变成 `unknown` 即证明新代码在跑），
+但版本戳读不到文件——`COPY VERSION .` 只加在了 `backend/Dockerfile`，
+而 compose 用的是 **`Dockerfile.prod`**。修复见 `a9b7378` 与单测 VER-06。
+**闸门做对了**：它拒绝把这次记成成功部署，否则版本戳会永远报 unknown 而无人知。
+
+**第二轮 `0869e1e → a9b7378`**：修复上述问题，`/health` 正常自报 sha。
+
+**三项配置变更（脚本不碰这些，手工执行）**：
+
+| 项 | 前 | 后 |
+|---|---|---|
+| 服务器 compose | `BACKTEST_ENABLED:-true` / 硬编码 `127.0.0.1:` | **与仓库逐字节一致**（`:-false` / `${HTTP_BIND:-127.0.0.1}`）|
+| `.env.prod` WxPusher | 两键为空 | 已填（`AT_` 35 位 / `UID` 32 位）|
+| `.env.prod` ADMIN_* | 缺失 | 补空占位（仓库 compose 引用它们；新装时 alembic 0018 要用）|
+
+生效值未变（`BACKTEST_ENABLED=false` 由 `.env.prod` 显式给定，nginx 仍绑 `127.0.0.1:80`）；
+改的是**漏配时的默认方向**——运维红线②要求生产开关默认取失效方向。
+
+**历史数据回补**（`is_suspended` 缺陷，见 `docs/reviews/universe_suspension_defect_2026-09-02.md`）：
+
+```sql
+UPDATE daily_quote SET is_suspended = false WHERE is_suspended AND amount > 0;
+-- UPDATE 1103596，执行后 still_marked = 0，total_rows 6662108 未变
+```
+
+- 回滚点：`/home/ubuntu/backups/pre_suspfix_is_suspended_20260903_005705.sql`
+  （1,103,597 行含表头 / 33MB / sha256 `e2a4427855267de8`；含受影响行的
+  `id, ts_code, trade_date, is_suspended` 旧值，可定点还原）
+- 加 `amount > 0` 守卫而非无条件置 false：若真存在零成交行，它不会被动到而是留下暴露。
+  执行前重验 `will_fix=1103596 / zero_vol_untouched=0`，与预期精确一致。
+
+**before 基线（2026-09-03 00:2x CST，用于明日对比）**：
+
+| 项 | 值 |
+|---|---|
+| `/health` | `1.0.0`（无版本戳）|
+| 最近管线 | run 240 / 2026-09-02 / SUCCESS / sig=50 |
+| `candidate_pool` 9-02 | 69 行，`is_holding=6` |
+| `is_suspended` 9-02 | **818 / 5547** |
+| `is_suspended` 全表 | **1,103,596 / 6,662,108** |
+| `wx_pushed=true` | **0 / 6305**（微信从未成功推送过）|
+| `notification_degraded` ERROR / 24h | 53 |
+| 内存 | used 1561 MB |
+
+**观察重点（次日 17:30 管线后）**：universe 预计扩约 +17%（约 2276 → 2658），
+`composite_pct_in_market` 是相对 universe 的分位 → **每只股票分位全部重算**，
+买入清单会明显不同。这是预期内的，不是异常。另需看内存峰值（2GB 机余量薄）
+与 WxPusher 是否真发出（`wx_pushed=true` 首次出现）。
