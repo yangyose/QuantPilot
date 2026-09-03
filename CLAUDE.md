@@ -434,7 +434,7 @@ C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
   反序会让 `daily_ic_producer` Job 在 19:30 对积压逐日全 universe 评分，正是打挂生产的那条路径
 - **C1 策略约束与风险调整动量**：C1-1（约束落点统一，`ac069e5`）/ C1-2（风险调整动量，
   `85df015`）/ C1-3（价格窗口按交易日推导，`be6d6d6`）**已交付、面板对比已完成、2026-08-31
-  已上生产**（与 P0 退出修复同批，生产当前 = `2bab523`；观察期 ≥3 个交易日进行中）。
+  已上生产**（与 P0 退出修复同批）。**观察期 ≥3 交易日已收口（8-31 / 9-1 / 9-2 全过）**：`is_holding` 每日精确等于持仓数（7→4→6）、`pct_above_sell` 五年来首次触发且连续两日（其中 601869.SH 在**浮盈 +16.73%** 时退出，证伪了「系统无盈利出口」的旧断言）、无新 OOM。
   面板实测（2026-08-28，off/on 各 25 chunk 全绿，497 交易日 × 4 策略）：**C1-2 的改善方向为正
   但幅度微小**——占 65% 天数的主导状态 OSCILLATION 仅 +0.0007（`t_HAC=0.19`），momentum 三状态
   仍为显著负 IC。**故上线理由是 C1-1 + C1-3 两个缺陷修复，不是「C1-2 验证有效」**，后续策略扩展
@@ -446,6 +446,7 @@ C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
   决定「能不能卖」，在退出坏掉时部署一个改变选股的变更会放大风险。部署预案见 memory
   `c1_deployment_runbook`，体检报告 `docs/reviews/algo_framework_audit_2026-08-28.md`
 - C2~C5 待启动
+- **生产当前 = `a9b7378`**（2026-09-03 部署，`/health` 自报版本戳）。该批含：`is_suspended` 缺陷修复（`0869e1e`，见 §4.3 与 `docs/reviews/universe_suspension_defect_2026-09-02.md`；历史 110 万行已回补）/ 通知渠道未配置不再伪装成发送失败（`54aa3fd`）/ `NotificationService` 收敛到 ABC 契约（`c3c4943`）/ 版本戳（`397af23` + `a9b7378`）。同批配置变更：服务器 compose 与仓库**逐字节对齐**、WxPusher 凭证填入。**⚠️ 尚未验证**：`is_suspended` 修复使 universe 预计扩约 **+17%**（约 2276 → 2658），`composite_pct_in_market` 是相对 universe 的分位 → **每只股票分位全部重算、买入清单会明显不同，这是预期内**。首个受影响管线为 2026-09-03 17:30。before 基线与观察重点见 `docs/ops/deploy_log.md`
 
 > **运维红线（RC 验收期实证）**：① 生产 2GB 机**禁止一切「全 universe 评分」作业**——判据是代码路径是否调用 `score_universe_for_date` / `ScoringService.score_universe`，**不是功能叫什么名字**。已实证会打挂生产的两例：回测（单个 6 日任务拖垮 11 分钟 → `POST /backtest/run` 已 `backtest_enabled=false` 返 503）、日级 IC 回填（`scripts/backfill_daily_ic.py` **仅跑一个交易日** 即 RSS 1.58G 触发 OOM killer，2026-08-17 致站点 530 共 43 分钟）。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。**自 2026-08-26 起「本地算力中心」= 第二台 24h 常开机**（双活纪律与新机 runbook 见 `docs/guides/machine_migration.md`）：长任务须在该机 detached 起（`scripts/run_ic_panel.sh`），产出唯一权威；另一台的 5434 降级为可随时丢弃的 scratch，两台各跑一半会产生「谁都不完整、且无法判断某行出自哪台机/哪个配置」的状态。⚠️ `sync_local_backtest_db.sh` 会 DROP 重建 5434，其 `.last_restore` 标记**不足以充当保护**（钩子每天拉新备份 → 标记次日即失配，而面板要跑 31h、跨天必然）；2026-08-26 起脚本自带「库内已有 `ic_baseline_pre_c1` / `factor_ic_window_state` 数据则拒绝执行」，须显式 `--force-wipe` 才继续，而 `--force-wipe` 已被 `guard.py` 直接 **deny**（2026-08-27 起；不是 ask——见 §4.12 那条「ask 档在自动放行模式下不弹确认」），需要执行时由人在终端手敲。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。**双写的「仓库那一半」最容易漏，且漏了之后 printenv 照样通过**——服务器上就地手改 compose 能让行为立刻正确，于是没人发现 git 里那份是错的。实例：`BACKTEST_ENABLED`（防 4 次 OOM 宕机的那个开关）自 2026-06-29 起只存在于服务器的 compose，`3ffefcb` 没动仓库 compose，直到 2026-08-27 才发现——期间任何「按 git 重建一套生产」都会静默丢掉它、把回测重新打开。**判据：改完在仓库里 grep 一遍那个键名**；服务器上就地改过的任何配置都必须回写仓库，且生产专用开关的 compose 默认值取**失效方向**（如 `${BACKTEST_ENABLED:-false}`），漏配时保持关闭而不是打开。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
 
