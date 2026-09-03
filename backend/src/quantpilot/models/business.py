@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -445,5 +446,65 @@ class InAppNotification(Base):
             "created_at",
             postgresql_where=sa.text("account_id IS NOT NULL"),
             postgresql_ops={"created_at": "DESC"},
+        ),
+    )
+
+
+class FactorPanelStat(Base):
+    """V1.5-K K-6：因子级面板统计量（**研究数据**，非运行时）。
+
+    与 `factor_ic_window_state` 的切分依据是「**运行时 vs 研究**」，不是按指标类型：
+
+    - **运行时**：`factor_ic_window_state`（**不动**）——策略级 IC @ h=20 + ICIR
+      聚合行，每日增量，喂 ICIR 决定实盘权重
+    - **研究**：本表——K-2~K-6 全部统计量，整批重跑、可整批丢弃重来
+
+    v0.1 曾推荐 K-6 走现表（现表 `factor` 维度一直空着、形状匹配且零 migration），
+    展开 K-3 时发现该切分点是错的：K-3 要求同一因子在 4 个 horizon 上都出 IC，
+    按那个方案会把**同一个因子级 IC 按 horizon 劈成两处**（h=20 在现表、
+    h=5/10/40 在新表），没有语义依据，只会让后续分析每次 union、两处口径必然漂移。
+
+    采用长表（tidy）而非宽表：指标随方法学演进增减，宽表每加一个就要一次 migration。
+    """
+
+    __tablename__ = "factor_panel_stat"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # 重跑批次标识（配置 + 日期），令多次重跑并存可比而不必先删旧数据
+    panel_run: Mapped[str] = mapped_column(String(64), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 因子名；组合级指标（top5 超额 / 换手 / 成本）填 '__portfolio__'
+    factor: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 'raw' = 因子固有预测力（未经五步管线）/ 'z' = 真正进 composite 那一版；
+    # 组合级填 'n/a'。**两版之差 = 五步管线（Winsorize + 中性化 + 正交化）
+    # 到底提升还是损耗了预测力**——这套管线自 Phase 11 上线至今从未被量过。
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 前向交易日 5/10/20/40；无前向概念的指标（如 valid_ratio）填 0
+    horizon: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    # ic / valid_ratio / decile_fwd_return / top5_excess / turnover_jaccard / cost_drag
+    metric: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 十分位 1..10；不适用填 -1。
+    # ⚠️ **必须 NOT NULL**：PostgreSQL 的 UNIQUE 视 NULL 互不相等，可空 bucket
+    # 会让下面那个九列唯一键形同虚设、静默写入重复行（同 C0-7 撞车那一族）。
+    bucket: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default=sa.text("-1"),
+    )
+    value: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="NOW()"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "panel_run", "trade_date", "strategy", "factor",
+            "stage", "state", "horizon", "metric", "bucket",
+            name="uq_factor_panel_stat",
+        ),
+        Index(
+            "idx_factor_panel_stat_run_metric",
+            "panel_run", "metric", "trade_date",
         ),
     )
