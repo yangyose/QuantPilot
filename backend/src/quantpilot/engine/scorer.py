@@ -98,6 +98,12 @@ class CompositeScore:
     # P11 §6.2 lineage 用，aggregate 透传
     factor_winsorized: dict | None = field(default=None)
     factor_neutralized: dict | None = field(default=None)
+    # V1.5-K K-6：因子级 raw / z 两版，**仅 collect_factor_panel=True 时填充**
+    # （面板重跑用；生产每日管线保持 None，不多背两份 per-code 嵌套 dict 的内存）。
+    # raw = 未经五步管线的原始因子值；z = zscore 之后、进 composite 的那一版。
+    # 两者之差 = 五步管线到底提升还是损耗了预测力（设计文档 §2.2）。
+    factor_raw: dict | None = field(default=None)
+    factor_z: dict | None = field(default=None)
     factor_orthogonal: dict | None = field(default=None)
 
 
@@ -140,6 +146,7 @@ class Scorer:
         orthogonalize_order: list[str],
         hysteresis_status: str,
         single_strategy_mode: bool = False,
+        collect_factor_panel: bool = False,
     ) -> list[CompositeScore]:
         """5 步管线：Winsorize / 中性化 / Z-score / Gram-Schmidt + 再标准化 / 三层输出。
 
@@ -172,6 +179,11 @@ class Scorer:
         strategy_z_cols: dict[str, pd.Series] = {}
         winsorized_per_code: dict[str, dict[str, dict[str, float]]] = {}
         neutralized_per_code: dict[str, dict[str, dict[str, float]]] = {}
+        # V1.5-K K-6：默认不累积——aggregate 跑在生产 17:30 管线里，
+        # 2026-09-03 刚因内存打挂过一次，无条件多背两份 per-code 嵌套 dict
+        # 是拿生产冒险。只有面板重跑打开开关。
+        raw_per_code: dict[str, dict[str, dict[str, float]]] = {}
+        z_per_code: dict[str, dict[str, dict[str, float]]] = {}
         trade_date_repr = snapshot.get("trade_date") if isinstance(snapshot, dict) else None
         for s_name, df in strategy_factors.items():
             if df is None or df.empty:
@@ -208,6 +220,17 @@ class Scorer:
                         neutralized_per_code.setdefault(str(ts_code), {}).setdefault(
                             s_name, {}
                         )[col] = float(v)
+                if collect_factor_panel:
+                    for ts_code, v in raw.items():
+                        if pd.notna(v):
+                            raw_per_code.setdefault(str(ts_code), {}).setdefault(
+                                s_name, {}
+                            )[col] = float(v)
+                    for ts_code, v in z.items():
+                        if pd.notna(v):
+                            z_per_code.setdefault(str(ts_code), {}).setdefault(
+                                s_name, {}
+                            )[col] = float(v)
             if not col_zs:
                 continue
             # 策略内多因子合成：列向均值（V1.0 简化；P11-A2 §3.0.1 透传 V1.5+ 替换为
@@ -423,6 +446,8 @@ class Scorer:
                 # P12 评审 P1-4：5 步管线 Step 1/2/4b 中间产物每股快照
                 factor_winsorized=winsorized_per_code.get(ts_code_str) or None,
                 factor_neutralized=neutralized_per_code.get(ts_code_str) or None,
+                factor_raw=raw_per_code.get(ts_code_str) or None,
+                factor_z=z_per_code.get(ts_code_str) or None,
                 factor_orthogonal=factor_orth_dict or None,
             ))
 
