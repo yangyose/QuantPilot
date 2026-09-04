@@ -145,6 +145,14 @@ class DailyPipeline:
             await self._step6_expire_signals(run, trade_date)
             PIPELINE_DURATION.labels(step="step6").observe(time.perf_counter() - _t)
 
+            # Step7（V1.5-K 2026-09-04）：持仓私有信号复评。**必须在 Step4 盯市之后**
+            # ——盯市写入当日收盘价，之前触发读到的仍是前一交易日的价，等于没修。
+            # 与 18:30 兜底 Job 叠加不会重复通知（payload 含日期，24h 去重）。
+            await self._publish_progress(trade_date, "Step7", "started", 98)
+            _t = time.perf_counter()
+            await self._step7_private_signals(trade_date)
+            PIPELINE_DURATION.labels(step="step7").observe(time.perf_counter() - _t)
+
             run = await self._update_run_status(run.id, "SUCCESS")
             await self._publish_progress(trade_date, "pipeline", "completed", 100)
             PIPELINE_DURATION.labels(step="pipeline_total").observe(
@@ -452,6 +460,60 @@ class DailyPipeline:
         return list(signals)
 
     # ------------------------------------------------------------------ Step4
+
+    async def _step7_private_signals(self, trade_date: date) -> None:
+        """Step7：逐账户复评持仓私有信号并推送（best-effort）。
+
+        ## 为什么放在管线里，而不只靠 18:30 定时 Job
+
+        复评需要的是「盯市已完成」，不是「到某个时刻了」。把因果依赖编码成时间偏移
+        有实证代价：**2026-09-03 管线跑到 18:11 才被 OOM 杀死**——若只有 18:30 那个
+        Job，它会看到 `status=RUNNING` → 守卫跳过 → 那天根本没做止损检查，
+        而那天正是持仓跌到 −14.59% 的日子。守卫防住了「用错数据」，
+        防不住「根本没查」。
+
+        ⚠️ **顺序**：本步必须排在 `_step4_mark_to_market` 之后，
+        由 `tests/unit/test_private_signal_dispatch.py::TestPipelineOrdering` 钉死。
+
+        推送走 `services.private_signal_dispatch.notify_private_signals`——
+        与 15:05 前瞻预警、18:30 兜底 Job **三处同一实现**。
+
+        best-effort：任何失败只记 warning，不影响管线状态（与 Step4~6 同）。
+        """
+        from quantpilot.data.repository import MarketDataRepository
+        from quantpilot.services.account_service import AccountService
+        from quantpilot.services.config_service import ConfigService
+        from quantpilot.services.notification_service import NotificationService
+        from quantpilot.services.private_signal_dispatch import notify_private_signals
+        from quantpilot.services.signal_service import SignalService
+
+        sent = 0
+        try:
+            async with self._session_factory() as session:
+                account_service = AccountService(session)
+                cfg = ConfigService(session, self._redis)
+                signal_service = SignalService(
+                    MarketDataRepository(session), config_service=cfg
+                )
+                notifier = NotificationService(
+                    session, cfg, self._notification_channel
+                )
+                accounts = await account_service.list_active_user_accounts()
+                for account in accounts:
+                    positions = await account_service.get_positions(account.id)
+                    if not positions:
+                        continue
+                    sent += await notify_private_signals(
+                        signal_service, notifier, account, positions, trade_date
+                    )
+                await session.commit()
+            logger.info(
+                "step7_private_signals_done: trade_date=%s sent=%d", trade_date, sent
+            )
+        except Exception:
+            logger.warning(
+                "step7_private_signals_failed: trade_date=%s", trade_date, exc_info=True
+            )
 
     async def _step4_mark_to_market(self, run: PipelineRun, trade_date: date) -> None:
         """Step4：盯市 + daily_portfolio_value 快照（best-effort）。"""

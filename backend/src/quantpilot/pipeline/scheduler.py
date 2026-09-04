@@ -12,6 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 # 纯函数，模块级导入（其余重依赖仍在 job 函数内懒加载，保持既有约定）
 from quantpilot.services.factor_monitor_service import plan_catchup_dates
+from quantpilot.services.private_signal_dispatch import notify_private_signals
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis as AsyncRedis
@@ -387,63 +388,13 @@ async def _weekly_report_job(session_factory: async_sessionmaker) -> None:
             logger.exception("weekly_report_job_failed: week_end=%s", week_end)
 
 
-async def _notify_private_signals(
-    signal_service,
-    notifier,
-    account,
-    positions: list,
-    today: date,
-) -> int:
-    """评估并推送某账户的持仓私有信号，返回成功推送条数。
-
-    G-4d-3/4：`evaluate_private_signals` 复用 SignalGenerator（止损/加仓逻辑
-    **单一实现源**），返回持仓派生的私有 SELL（hard_stop_loss / 短中期因子翻转
-    → `notify_risk_warn`）+ 加仓 BUY（SDD §10.1 can_add，用户 2026-07-03 拍板
-    同路走 Job 通知 → `notify("SIGNAL_BUY")`）；共享 pct_above_sell 已排除（管线已产）。
-
-    由 15:05 `_stop_loss_warn_job` 与 18:30 `_private_signal_recheck_job` **共用**——
-    在任一处另写一份阈值判定都会产生第二实现源、迟早漂移。
-
-    去重：`payload` 含 `date`，同日两次评估被 NotificationService 的 24h 窗口挡住
-    （每个突破每天至多一条），跨日则各自成立。
-    """
-    sent = 0
-    try:
-        private = await signal_service.evaluate_private_signals(today, positions)
-    except Exception:
-        logger.warning(
-            "private_signal_eval_failed: account=%d", account.id, exc_info=True
-        )
-        return 0
-
-    for ps in private:
-        try:
-            if ps.signal_type == "BUY":
-                await notifier.notify(
-                    "SIGNAL_BUY",
-                    f"加仓提示：{ps.ts_code}",
-                    ps.reason or "持仓达买入条件且满足加仓规则",
-                    payload={
-                        "ts_code": ps.ts_code,
-                        "date": str(today),
-                        "kind": "add_position",
-                    },
-                    account_id=account.id,
-                )
-            else:
-                await notifier.notify_risk_warn(
-                    event_type=ps.trigger_reason or "private_sell",
-                    message=ps.reason,
-                    payload={"ts_code": ps.ts_code, "date": str(today)},
-                    account_id=account.id,
-                )
-            sent += 1
-        except Exception:
-            logger.warning(
-                "private_signal_notify_failed: account=%d ts_code=%s",
-                account.id, ps.ts_code, exc_info=True,
-            )
-    return sent
+# V1.5-K 后续修正（2026-09-04）：本函数已下沉到
+# `services/private_signal_dispatch.notify_private_signals`，由管线末尾（step7）、
+# 15:05 前瞻预警、18:30 兜底复评**三处共用**。此处保留同名别名，两个 Job 的调用点不变。
+#
+# 下沉的直接原因：管线需要在盯市之后立刻触发同一份逻辑，而 `scheduler` 已 import
+# `daily_pipeline`，反向 import 会成环。
+_notify_private_signals = notify_private_signals
 
 
 async def _todays_pipeline_succeeded(session, trade_date: date) -> bool:
