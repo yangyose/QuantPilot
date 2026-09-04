@@ -307,3 +307,27 @@ c7e5497 feat(v1.5-k): K-6 因子级 IC 与有效率计算 + §3 门槛 3 增设 
 f182e6a feat(v1.5-k): K-6 factor_panel_stat 建表（ORM + alembic 0026）
 76e8d31 feat(v1.5-k): K-1 HAC/子采样/配对检验入仓 + K-0 与 §6 状态回写
 ```
+
+## 2d2c93f — 2026-09-04T16:15:09Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `ad69278` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_2d2c93f_20260905_011318.tar.gz` |
+| delta | 11 个 commit |
+
+```
+2d2c93f fix(signal): 复评改由管线末尾触发（定时降为兜底）+ sent 只计真正落库的
+81b755b feat(ops): 历史 total_equity 回填脚本——F-4 净资产过滤此前在早期日期整段跳过
+74dde99 feat(v1.5-k): K-6 面板重跑驱动脚本——日历缓冲改为启动即校验
+666927d feat(v1.5-k): collect_factor_panel 开关贯通 ScoringService → Scorer.aggregate
+756fc9a feat(v1.5-k): K-7 holdout 纪律机制化——默认只给开发集，看 holdout 须显式解锁
+2f802c2 feat(v1.5-k): K-6 面板统计量组装与扇出——无前向概念的指标不得跟 horizon 循环
+fbe087a feat(v1.5-k): Scorer 导出因子级 raw/z 两版（默认关闭）+ 订正 §2.2 一处失实
+ebf56a2 feat(v1.5-k): K-5 换手成本拖累——1−J 不是换手率，会高估近一倍
+a295b9d feat(v1.5-k): K-4 top 5% 日间 Jaccard 换手代理 + 头部选取与 K-2 收敛到单一实现
+ebe88c6 feat(v1.5-k): K-3 多前向窗口解析——两种「不可用」必须可区分
+ab58c4d feat(v1.5-k): K-2 十分位收益阶梯 + top 5% 头部超额（组合口径）
+d2af940 feat(v1.5-k): K-6 写库方 upsert_factor_panel_stat_bulk（分批，≥2979 行才测得出）
+```
