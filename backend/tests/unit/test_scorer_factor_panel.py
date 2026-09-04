@@ -147,3 +147,52 @@ class TestBackwardCompatible:
         assert on.keys() == off.keys()
         for code in on:
             assert on[code] == pytest.approx(off[code])
+
+
+class TestFlagThreadedThroughScoringService:
+    """开关必须从 `score_universe_for_date` 一路穿到 `Scorer.aggregate`。
+
+    ⚠️ 按 §4.11「调用点是否真传参」——**只能在调用点上验证**。
+    构造 spy 再调用它是自证式的：链路断了照样绿（EXIT-05 第一版就这么写错过）。
+    故用 AST 逐段查源码里的关键字实参。
+    """
+
+    @staticmethod
+    def _kwargs_of(fn, callee: str) -> set[str]:
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(fn).lstrip())
+        out: set[str] = set()
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call):
+                continue
+            name = getattr(n.func, "attr", None) or getattr(n.func, "id", None)
+            if name == callee:
+                out |= {kw.arg for kw in n.keywords if kw.arg}
+        return out
+
+    def test_score_universe_passes_flag_to_aggregate(self) -> None:
+        from quantpilot.services.strategy_service import ScoringService
+
+        assert "collect_factor_panel" in self._kwargs_of(
+            ScoringService.score_universe, "aggregate"
+        ), "score_universe 未把开关传给 Scorer.aggregate"
+
+    def test_score_universe_for_date_passes_flag_down(self) -> None:
+        from quantpilot.services.strategy_service import ScoringService
+
+        assert "collect_factor_panel" in self._kwargs_of(
+            ScoringService.score_universe_for_date, "score_universe"
+        ), "score_universe_for_date 未把开关传给 score_universe"
+
+    def test_both_default_to_false(self) -> None:
+        """默认必须 False——生产每日管线走的正是这两个入口。"""
+        import inspect
+
+        from quantpilot.services.strategy_service import ScoringService
+
+        for fn in (ScoringService.score_universe, ScoringService.score_universe_for_date):
+            p = inspect.signature(fn).parameters.get("collect_factor_panel")
+            assert p is not None, f"{fn.__name__} 缺 collect_factor_panel 形参"
+            assert p.default is False, f"{fn.__name__} 的开关默认值必须是 False"

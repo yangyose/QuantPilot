@@ -421,7 +421,7 @@ class ScoringService:
     # =====================================================================
 
     async def score_universe_for_date(
-        self, trade_date: date,
+        self, trade_date: date, *, collect_factor_panel: bool = False,
     ) -> list[CompositeScore]:
         """Phase 14 §14-9 / Phase 11 §6.3：全 universe 评分，返回 full-universe
         composites，**不写 candidate_pool**。
@@ -495,7 +495,7 @@ class ScoringService:
 
         return await self.score_universe(
             self._repo.session, trade_date, list(universe), market_state,
-            breadth_weak=breadth_weak,
+            breadth_weak=breadth_weak, collect_factor_panel=collect_factor_panel,
         )
 
     async def _run_phase11_pipeline(
@@ -525,6 +525,10 @@ class ScoringService:
         universe: list[str],
         market_state: MarketStateEnum,
         breadth_weak: bool = False,
+        *,
+        # V1.5-K K-6：仅面板重跑开启；**默认 False**——生产每日管线走的正是本入口，
+        # 无条件多背两份 per-code 嵌套 dict 是拿生产冒险（2026-09-03 刚 OOM 过）。
+        collect_factor_panel: bool = False,
     ) -> list[CompositeScore]:
         """5 步评分管线编排（Phase 11 §3.4）：构建 MarketSnapshot → 各策略
         ``compute_strategy_factors`` → ``FactorMonitorService.get_active_weights`` →
@@ -595,6 +599,7 @@ class ScoringService:
             weights_source=weights_source,
             orthogonalize_order=order,
             hysteresis_status=hysteresis_status,
+            collect_factor_panel=collect_factor_panel,
             single_strategy_mode=False,
         )
         logger.info(
