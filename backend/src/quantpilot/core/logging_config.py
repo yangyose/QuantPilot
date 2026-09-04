@@ -26,6 +26,21 @@ _SECRET_PATTERNS = [
     re.compile(r"UID_[A-Za-z0-9]{16,}"),
 ]
 
+# 凭证 URL 按**形状**脱敏，而非按键名（V1.5-K，2026-09-03 生产实证）。
+#
+# 上面那组 `_SECRET_PATTERNS` 匹配的是字面量键名（`REDIS_URL=...`），而 `main.py`
+# 真正打的是 `redis_connected url=redis://:<pw>@redis:6379/0`——键名是 `url`，
+# 于是过滤器四个月来一直"在岗"却从未拦住，生产日志里 Redis 密码全程明文。
+# 按键名匹配的护栏，只能挡住恰好用了那个键名的调用点；下一个人换个措辞就漏。
+#
+# 故改按 URL 自身的形状识别 `scheme://[user]:password@host`，与日志措辞无关。
+# 只替换密码段、**保留 host:port**——整段 ***REDACTED*** 会把"连的是哪个实例"
+# 一起抹掉，运维排障就没得看了，那是另一种形式的失效。
+_CREDENTIAL_URL_RE = re.compile(
+    r"(?P<prefix>[a-zA-Z][a-zA-Z0-9+.\-]*://)(?P<user>[^\s:/@]*):(?P<pw>[^\s@/]+)@"
+)
+_CREDENTIAL_URL_SUB = r"\g<prefix>\g<user>:***@"
+
 
 # 标准 LogRecord 属性集合——SecretFilter 扫描 record.__dict__ 时跳过这些，
 # 仅对 structured logging 经 extra={...} 注入的自定义字符串字段脱敏
@@ -46,6 +61,8 @@ class SecretFilter(logging.Filter):
 
     @staticmethod
     def _scrub(text: str) -> str:
+        # 先做形状脱敏：即使整行没有任何已知键名，凭证也不会漏出去。
+        text = _CREDENTIAL_URL_RE.sub(_CREDENTIAL_URL_SUB, text)
         for pat in _SECRET_PATTERNS:
             text = pat.sub("***REDACTED***", text)
         return text

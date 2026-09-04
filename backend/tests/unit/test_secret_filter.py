@@ -143,3 +143,83 @@ def test_a4_secret_filter_extra_ignores_non_str_and_standard_attrs() -> None:
     # 标准属性（levelname/name 等）保持不变
     assert rec.levelname == "INFO"
     assert rec.name == "quantpilot.test"
+
+
+# ── V1.5-K：凭证 URL 按「形状」脱敏，而不是按键名 ──────────────────────────────
+#
+# 2026-09-03 生产实证：`SecretFilter` 的 docstring 宣称覆盖 REDIS_URL，实际四个月
+# 从未拦住过——生产日志里 Redis 密码一直是明文。
+#
+# 根因不在过滤器，在**测试输入**：`_SECRET_PATTERNS` 匹配的是字面量键名
+# `REDIS_URL=...`，而 `main.py` 真正打的是 `redis_connected url=redis://:<pw>@...`
+# ——键名是 `url`。UT-P13-C-01 喂的 `"config REDIS_URL=redis://:secret@..."`
+# 是**自己造的、恰好能匹配**的串，不是应用真正输出的那一行，于是全绿而缺陷仍在。
+#
+# 这是 CLAUDE.md §4.11「接了但没生效」一族的又一实例，载体是**测试输入**：
+# 替身/输入比现实更配合 → 现实中的那条分支在测试世界里不可表达 → 无人写它。
+#
+# 判据因此改为：**用 main.py 逐字打出的那行真实格式**，且断言密码子串不出现，
+# 而不是断言出现了 ***REDACTED***（后者在「整行没匹配上」时同样可以为真）。
+
+
+class TestCredentialUrlRedaction:
+    def test_real_main_py_log_line_is_redacted(self) -> None:
+        """`main.py:72` 逐字格式：键名是 url，不含 REDIS_URL 字样。
+
+        这条是本次缺陷的回归守卫——把形状匹配去掉，它立刻红。
+        """
+        f = SecretFilter()
+        rec = _make_record("redis_connected url=redis://:s3cr3t%23pw@redis:6379/0")
+        assert f.filter(rec) is True
+        out = rec.getMessage()
+        assert "s3cr3t%23pw" not in out, f"密码泄漏在日志里：{out}"
+
+    def test_failure_branch_also_redacted(self) -> None:
+        """`main.py:74` 的失败分支同样带 url，且还拼了 reason。"""
+        f = SecretFilter()
+        rec = _make_record(
+            "redis_connect_failed url=redis://:s3cr3t@redis:6379/0 reason=timeout"
+        )
+        f.filter(rec)
+        assert "s3cr3t" not in rec.getMessage()
+
+    def test_database_dsn_redacted(self) -> None:
+        """DSN 同形状——今天没人打它，但打了就该拦住。"""
+        f = SecretFilter()
+        rec = _make_record(
+            "db connect postgresql+asyncpg://qp:pgpassword@db:5432/quantpilot"
+        )
+        f.filter(rec)
+        assert "pgpassword" not in rec.getMessage()
+
+    def test_password_hidden_even_when_username_present(self) -> None:
+        f = SecretFilter()
+        rec = _make_record("conn amqp://alice:hunter2@mq:5672/")
+        f.filter(rec)
+        out = rec.getMessage()
+        assert "hunter2" not in out
+
+    def test_host_survives_so_the_line_stays_useful(self) -> None:
+        """脱敏不能把整行变成 ***REDACTED***——运维还要靠 host/port 排障。
+
+        整段替换会让「连的是哪个 redis」这个信息一起消失，日志就没用了。
+        """
+        f = SecretFilter()
+        rec = _make_record("redis_connected url=redis://:pw@redis:6379/0")
+        f.filter(rec)
+        out = rec.getMessage()
+        assert "redis:6379" in out, f"host:port 不该被抹掉：{out}"
+        assert "redis_connected" in out
+
+    def test_url_without_credentials_untouched(self) -> None:
+        """无凭证的 URL 原样保留，避免误杀。"""
+        f = SecretFilter()
+        rec = _make_record("fetch https://api.tushare.pro/data?x=1")
+        f.filter(rec)
+        assert rec.getMessage() == "fetch https://api.tushare.pro/data?x=1"
+
+    def test_scheme_relative_or_malformed_does_not_raise(self) -> None:
+        f = SecretFilter()
+        for bad in ("://@", "redis://@host", "not a url at all", "a://b:@c"):
+            rec = _make_record(bad)
+            assert f.filter(rec) is True
