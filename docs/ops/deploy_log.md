@@ -288,3 +288,22 @@ NULL、并列值、五年跨度极值，合成用例编不全。
 
 > 方法：只读脚本，不写任何表、不跑 alembic、不跑 pytest（5434 装着
 > `ic_baseline_pre_c1`，`--force-wipe` 已被 `guard.py` deny）。
+
+## ad69278 — 2026-09-04T06:04:09Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `a9b7378` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_ad69278_20260904_150149.tar.gz` |
+| delta | 6 个 commit |
+
+```
+b76f3d0 perf(scoring): PE/PB 历史分位下推 PostgreSQL——每日管线不再拉 380 万行
+8bfa66a test(value): PE/PB 历史分位数值语义特征测试（SQL 下推前置件）
+39bc484 fix(signal): 收盘后复评持仓私有信号——修硬止损的一个交易日延迟
+c736a72 fix(notify): SecretFilter 按 URL 形状脱敏——按键名匹配 4 个月从未生效
+c7e5497 feat(v1.5-k): K-6 因子级 IC 与有效率计算 + §3 门槛 3 增设 valid_ratio 例外
+f182e6a feat(v1.5-k): K-6 factor_panel_stat 建表（ORM + alembic 0026）
+76e8d31 feat(v1.5-k): K-1 HAC/子采样/配对检验入仓 + K-0 与 §6 状态回写
+```

@@ -211,5 +211,5 @@ cat <<EOF
     回滚：ssh $SSH_HOST 'cd /home/ubuntu && tar xzf $BACKUP' 然后重跑 [6][7] 两步。
 
     观察期 ≥ 3 个交易日（设计文档 §8 DoD）：每日看 run SUCCESS / signal_count /
-    candidate_pool 行数 / backend 内存峰值（2GB 机余量薄）。
+    candidate_pool 行数 / backend 内存峰值（生产 2026-09-03 起为 2C4G，红线①仍然有效）。
 EOF
