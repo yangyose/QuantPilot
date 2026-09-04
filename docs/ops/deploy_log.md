@@ -156,3 +156,93 @@ UPDATE daily_quote SET is_suspended = false WHERE is_suspended AND amount > 0;
 `composite_pct_in_market` 是相对 universe 的分位 → **每只股票分位全部重算**，
 买入清单会明显不同。这是预期内的，不是异常。另需看内存峰值（2GB 机余量薄）
 与 WxPusher 是否真发出（`wx_pushed=true` 首次出现）。
+
+---
+
+## 2026-09-03（傍晚）：首个受 `is_suspended` 修复影响的管线 → OOM → 机器升配 → 补跑成功
+
+上一节「观察重点」的结论。**没有部署任何 commit**，本节记的是运行时事件与一次机器变更。
+
+### 1. 17:30 管线被 OOM killer 杀死
+
+| 时刻（CST）| 事件 |
+|---|---|
+| 17:30:00 | run 241 启动 |
+| 17:33:55 | cp1 完成，耗时 **3m55s**（9/2 是 1m20s、9/1 是 1m11s）|
+| 17:34:26 | `scoring_universe_phase11: size=3212` |
+| 17:45~18:11 | swap 从 1036MB 涨到 **1987/1987MB（顶满）**，可用内存 108~197MB 区间震荡 |
+| **18:11:45** | `Out of memory: Killed process 677827 (uvicorn) anon-rss:1409308kB` |
+| 18:12:16 | 容器自动重启完成（`RestartCount=1`），站点中断约 **31 秒** |
+
+`pipeline_run` 停在 `RUNNING` / `cp2_scoring_done=false` → 当日 0 信号。
+
+⚠️ 本次 OOM 触发在 anon-rss **1.34 GiB**（1409308 kB），明显低于 7 月那批的 **1.55~1.58 GiB**（1626516~1658356 kB）——
+因为 swap 先被吃光，内核已无腾挪空间。**「上次 1.6G 才死」不能当安全线用。**
+
+### 2. universe 实测 3212，此前预估 2658 是错的
+
+`universe_suspension_defect_2026-09-02.md` §3.3 估「2276 → 2658（+16.8%）」，实测 **3212**。
+
+成因：该估算用 SQL 近似复算 F-1/F-5/F-6/F-7，而报告中**已自行标注**
+「F-5 的 PIT 两期逻辑无法在 SQL 中精确复现」。近似比真实过滤严，
+于是基线与增量**同时被低估**。方向和量级对，绝对值不对。
+
+⚠️ **无法实证「扩大了百分之几」**：生产没有任何表持久化每日 universe 规模，
+容器重启后日志只剩当日一行。这是一个可观测性缺口——
+「机制生效时会留下的痕迹」在这里恰好不存在（CLAUDE.md §4.11 元判据）。
+
+### 3. 机器升配 2C2G → 2C4G
+
+轻量应用服务器套餐升级（**不支持降级，单向门**）。实例 `ins-qv317jjc` /
+`ap-singapore-3` / `POSTPAID_BY_HOUR`。IP、防火墙、密钥、快照均不受影响。
+
+操作前：`docker compose ... stop`（用 `stop` 不用 `down`，保留 `pg_data` 卷）。
+PostgreSQL 干净关闭——`checkpoint complete` → `database system is shut down`，
+`quantpilot-db-1` 退出码 **0**，无需 WAL 恢复。
+
+| 项 | 前 | 后 |
+|---|---|---|
+| 内存 | 1967 MB | **3723 MB** |
+| 可用 | 121~250 MB | **3178 MB** |
+| 磁盘 | 50G / 79% | **60G**（分区自动扩容）/ 66% |
+| CPU | 2 核 | 2 核（不变）|
+
+⚠️ 开机后容器**不会自启**——`docker compose stop` 是显式停止，
+`restart: unless-stopped` 按定义不覆盖它。需手动 `docker compose ... start`。
+
+### 4. 补跑当日管线（实证升配有效）
+
+`pipeline/trigger` 需 JWT 且前端无调用入口，故在容器内直接调
+`scheduler._daily_pipeline_job`——**与 17:30 定时任务同一代码路径**，不自建编排。
+
+`_get_or_create_run` 按 `trade_date` 复用 run 241 →
+`pipeline_resume: cp1=True cp2=False cp3=False` → **CP1 跳过，从 CP2 续跑**。
+故未重打 Tushare、未重写行情。孤儿 run 不需要标 FAILED，resume 是设计内路径。
+
+| 项 | 结果 |
+|---|---|
+| 状态 | `SUCCESS`，signal_count = **52**（50 BUY + 2 SELL）|
+| CP2 耗时 | **3 分 09 秒**（同一步此前 thrash 37 分钟后被杀）|
+| 内存峰值 | 可用 2246M → 996M，swap 仅动 400M → 评分峰值约 **1.65 GB**（差值推算，非 RSS 直读）|
+
+那个 1.65 GB 正解释了旧机必死：2GB 机扣掉 PG/redis/nginx/系统后仅约 1.4 GB 可用，**差约 250 MB**。
+
+### 5. 对照 before 基线
+
+| 项 | before（9-02）| after（9-03）| 判定 |
+|---|---|---|---|
+| universe | ~2600（无留痕）| **3212** | 扩大，幅度大于预估 |
+| `is_suspended` 当日 | 818 / 5547 | **0 / 5549** | 修复生效 |
+| `candidate_pool` | 69 行 / `is_holding=6` | 67 行 / **`is_holding=6`** | C1 修复在扩大 universe 上仍正常 |
+| SELL 信号 | 0（9-02）| **2** | P0 退出修复仍正常 |
+| `wx_pushed=true` | **0 / 6305**（历史全部）| **55 / 55，err=0** | 微信推送**首次真正成功** |
+
+`in_app_notification` 逐日：08-28 `0/51`、08-31 `0/59`、09-01 `0/52`、09-02 `0/53`，
+**09-03 `55/55`**。此前每条都带「重试 3 次均失败」的假消息（实为从未配置）。
+
+### 6. 遗留
+
+- **`get_pe_pb_history_bulk` 拉约 380 万行只为算 3212 个分位数**（5 年窗口 ×
+  universe）。它是峰值内存的主项，升配只是买到余量、没有抬高地板；
+  universe 与 5 年窗口都会继续长。SQL 下推是真正的修法，**尚未实施**。
+- 运维红线①的措辞写死「生产 2GB 机」，已与现实脱节，需随本次变更修订。
