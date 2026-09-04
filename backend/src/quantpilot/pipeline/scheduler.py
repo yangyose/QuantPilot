@@ -104,6 +104,18 @@ def create_scheduler(
         misfire_grace_time=1800,
     )
 
+    # 收盘后复评持仓私有信号（每日 18:30）：修复 hard_stop_loss 的一日延迟。
+    # ⚠️ 必须晚于 daily_pipeline（17:30）——它依赖管线 step4 盯市写入的当日收盘价。
+    # misfire_grace_time 给足 1h：管线偶有跑长，宁可晚跑也不要错过整晚。
+    scheduler.add_job(
+        _private_signal_recheck_job,
+        trigger=CronTrigger(hour=18, minute=30, timezone="Asia/Shanghai"),
+        args=[session_factory, calendar, redis, notification_channel],
+        id="private_signal_recheck",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     # 交易日历月度刷新 Job（每月 1 日 06:00）：向前滚动窗口刷新 trade_calendar，
     # 让次年日历发布后自动落库，保持 DB 优先日历常新（不依赖重启）。
     scheduler.add_job(
@@ -375,6 +387,159 @@ async def _weekly_report_job(session_factory: async_sessionmaker) -> None:
             logger.exception("weekly_report_job_failed: week_end=%s", week_end)
 
 
+async def _notify_private_signals(
+    signal_service,
+    notifier,
+    account,
+    positions: list,
+    today: date,
+) -> int:
+    """评估并推送某账户的持仓私有信号，返回成功推送条数。
+
+    G-4d-3/4：`evaluate_private_signals` 复用 SignalGenerator（止损/加仓逻辑
+    **单一实现源**），返回持仓派生的私有 SELL（hard_stop_loss / 短中期因子翻转
+    → `notify_risk_warn`）+ 加仓 BUY（SDD §10.1 can_add，用户 2026-07-03 拍板
+    同路走 Job 通知 → `notify("SIGNAL_BUY")`）；共享 pct_above_sell 已排除（管线已产）。
+
+    由 15:05 `_stop_loss_warn_job` 与 18:30 `_private_signal_recheck_job` **共用**——
+    在任一处另写一份阈值判定都会产生第二实现源、迟早漂移。
+
+    去重：`payload` 含 `date`，同日两次评估被 NotificationService 的 24h 窗口挡住
+    （每个突破每天至多一条），跨日则各自成立。
+    """
+    sent = 0
+    try:
+        private = await signal_service.evaluate_private_signals(today, positions)
+    except Exception:
+        logger.warning(
+            "private_signal_eval_failed: account=%d", account.id, exc_info=True
+        )
+        return 0
+
+    for ps in private:
+        try:
+            if ps.signal_type == "BUY":
+                await notifier.notify(
+                    "SIGNAL_BUY",
+                    f"加仓提示：{ps.ts_code}",
+                    ps.reason or "持仓达买入条件且满足加仓规则",
+                    payload={
+                        "ts_code": ps.ts_code,
+                        "date": str(today),
+                        "kind": "add_position",
+                    },
+                    account_id=account.id,
+                )
+            else:
+                await notifier.notify_risk_warn(
+                    event_type=ps.trigger_reason or "private_sell",
+                    message=ps.reason,
+                    payload={"ts_code": ps.ts_code, "date": str(today)},
+                    account_id=account.id,
+                )
+            sent += 1
+        except Exception:
+            logger.warning(
+                "private_signal_notify_failed: account=%d ts_code=%s",
+                account.id, ps.ts_code, exc_info=True,
+            )
+    return sent
+
+
+async def _todays_pipeline_succeeded(session, trade_date: date) -> bool:
+    """当日管线是否已跑完（= step4 盯市已把当日收盘价写进 position）。
+
+    收盘后复评的**新鲜度前提**。SUCCESS 是在 step4/5/6 全部完成后才写的，
+    故它成立即意味着 `position.current_price` 已是当日收盘价。
+    """
+    from sqlalchemy import select
+
+    from quantpilot.models.system import PipelineRun
+
+    status = (
+        await session.execute(
+            select(PipelineRun.status).where(PipelineRun.trade_date == trade_date)
+        )
+    ).scalar_one_or_none()
+    return status == "SUCCESS"
+
+
+async def _private_signal_recheck_job(
+    session_factory: async_sessionmaker,
+    calendar: TradingCalendar,
+    redis: AsyncRedis | None,
+    notification_channel: NotificationChannel | None,
+) -> None:
+    """收盘后复评持仓私有信号（硬止损一日延迟修复，2026-09-04）。
+
+    ## 为什么必须有这个 Job
+
+    `hard_stop_loss` 此前**唯一**的评估点是 15:05 的 `_stop_loss_warn_job`，
+    而它读的 `position.current_price` 由 **17:30 管线 step4 盯市**写入
+    → 15:05 看到的永远是**前一交易日**收盘价，当日收盘价入库后再无人复评。
+
+    实证（001258.SZ，cost 13.594）：9/3 15:05 按 9/2 收盘算得 −7.90%（不触发，
+    按当时数据正确）→ 9/3 18:43 盯市后实为 **−14.59%** → 却要等 9/4 15:05 才通知。
+    A 股 15:00 已收盘，用户最早次日开盘才能卖，从「数据可知」到「可执行」约 2 个交易日。
+    旁证：`RISK_WARN` 71 条中 `hard_stop_loss` **0 条**，机制上线以来从未发出过。
+
+    ⚠️ 本 Job 与 15:05 那条**互补而非替代**：15:05 用昨收算「距止损 ≤2%」是面向
+    次日的**前瞻预警**，本 Job 用当日收盘算「已经破了」的**事后止损**。
+
+    ⚠️ 排程时刻必须晚于 daily_pipeline——排在它之前则读到的仍是昨日价，
+    等于没修。该不变量由 `tests/unit/test_private_signal_recheck_job.py` 钉死
+    （断言的是两个 Job 的**相对顺序**，不是写死 18:30）。
+    """
+    from quantpilot.data.repository import MarketDataRepository
+    from quantpilot.services.account_service import AccountService
+    from quantpilot.services.config_service import ConfigService
+    from quantpilot.services.notification_service import NotificationService
+    from quantpilot.services.signal_service import SignalService
+
+    today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
+    if not calendar.is_trade_date(today):
+        logger.info("private_signal_recheck_skipped_non_trade_date: date=%s", today)
+        return
+
+    sent = 0
+    accounts: list = []
+    try:
+        async with session_factory() as session:
+            # 新鲜度守卫：盯市没跑就不评估。用昨日价评估会产出一条 payload 带今日
+            # 日期的通知，把 24h 去重窗口占掉 → 次日那条**正确**的反而被挡住，
+            # 比不评估更糟。故此处宁可跳过，且必须留 WARNING（C-4 不静默）。
+            if not await _todays_pipeline_succeeded(session, today):
+                logger.warning(
+                    "private_signal_recheck_skipped: date=%s reason=当日管线未成功完成"
+                    "（盯市未写入当日收盘价），本次不评估以免用陈旧价占用去重窗口",
+                    today,
+                )
+                return
+
+            account_service = AccountService(session)
+            cfg = ConfigService(session, redis)
+            signal_service = SignalService(
+                MarketDataRepository(session), config_service=cfg
+            )
+            notifier = NotificationService(session, cfg, notification_channel)
+
+            accounts = await account_service.list_active_user_accounts()
+            for account in accounts:
+                positions = await account_service.get_positions(account.id)
+                if not positions:
+                    continue
+                sent += await _notify_private_signals(
+                    signal_service, notifier, account, positions, today
+                )
+            await session.commit()
+        logger.info(
+            "private_signal_recheck_done: date=%s accounts=%d sent=%d",
+            today, len(accounts), sent,
+        )
+    except Exception:
+        logger.exception("private_signal_recheck_job_failed: date=%s", today)
+
+
 async def _stop_loss_warn_job(
     session_factory: async_sessionmaker,
     calendar: TradingCalendar,
@@ -476,46 +641,11 @@ async def _stop_loss_warn_job(
                     )
 
                 # ── G-4d-3/4：持仓私有信号主动推送 ──────────────────────────────
-                # evaluate_private_signals 复用 SignalGenerator（止损/加仓逻辑单一
-                # 实现源），返回持仓派生的私有 SELL（hard_stop_loss / 短中期因子翻转
-                # → notify_risk_warn）+ 加仓 BUY（SDD §10.1 can_add，用户 2026-07-03
-                # 拍板同路走 Job 通知 → notify("SIGNAL_BUY")）；共享 pct_above_sell
-                # 已排除（管线已产）。
-                try:
-                    private = await signal_service.evaluate_private_signals(
-                        today, positions
-                    )
-                    for ps in private:
-                        try:
-                            if ps.signal_type == "BUY":
-                                await notifier.notify(
-                                    "SIGNAL_BUY",
-                                    f"加仓提示：{ps.ts_code}",
-                                    ps.reason or "持仓达买入条件且满足加仓规则",
-                                    payload={
-                                        "ts_code": ps.ts_code,
-                                        "date": str(today),
-                                        "kind": "add_position",
-                                    },
-                                    account_id=account.id,
-                                )
-                            else:
-                                await notifier.notify_risk_warn(
-                                    event_type=ps.trigger_reason or "private_sell",
-                                    message=ps.reason,
-                                    payload={"ts_code": ps.ts_code, "date": str(today)},
-                                    account_id=account.id,
-                                )
-                            warned += 1
-                        except Exception:
-                            logger.warning(
-                                "private_signal_notify_failed: account=%d ts_code=%s",
-                                account.id, ps.ts_code, exc_info=True,
-                            )
-                except Exception:
-                    logger.warning(
-                        "private_signal_eval_failed: account=%d", account.id, exc_info=True
-                    )
+                # 提取为 _notify_private_signals 后由本 Job 与 18:30 收盘后复评
+                # 共用（单一实现源）。
+                warned += await _notify_private_signals(
+                    signal_service, notifier, account, positions, today
+                )
             await session.commit()
         logger.info(
             "stop_loss_warn_done: date=%s accounts=%d scanned=%d warned=%d",

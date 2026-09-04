@@ -457,9 +457,17 @@ class SignalService:
         """从 candidate_pool 快照生成当日**共享**信号（Pipeline CP3 调用路径）。
 
         V1.5-G G-4d-1（§2 管线与账户解耦）：本函数**不再读账户**，产出账户无关的
-        共享信号（BUY 候选 + 客观 pct_above_sell SELL）。仓位建议 / 集中度 BLOCK /
-        持仓私有 SELL / 回撤 RISK_WARN 移 API 请求期按用户账户叠加（G-4d-2）+
-        每日 Job（G-4d-3）。
+        共享信号（BUY 候选 + 客观 pct_above_sell SELL）。
+
+        ⚠️ 各部分的**实际去向**（2026-09-04 核实并订正——原文写「持仓私有 SELL 移
+        API 请求期叠加（G-4d-2）」，但 `SignalViewService` 只叠加 `is_holding` +
+        `suggested_pct`，**不产任何 SELL**；该措辞让人误以为存在实时兜底）：
+
+        - 仓位建议 `suggested_pct` / `is_holding` → API 请求期（G-4d-2 SignalViewService）
+        - **持仓私有 SELL（hard_stop_loss / 短中期翻转）+ 加仓 BUY / 回撤 RISK_WARN**
+          → **只**经每日 Job（G-4d-3）：15:05 `_stop_loss_warn_job`（前瞻，用昨收）
+          与 18:30 `_private_signal_recheck_job`（事后止损，用当日收盘）。
+          它们不落 `signal` 表、也不出现在信号页，仅以通知形态存在。
 
         数据流：
         1. 读取 candidate_pool（按 composite_score DESC），为空直接返回 []
