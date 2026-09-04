@@ -31,7 +31,11 @@ import pandas as pd
 from quantpilot.engine.diagnostics.factor_ic import PanelStatPoint
 from quantpilot.engine.diagnostics.ic_aggregator import _DAILY_IC_MIN_XS
 
-__all__ = ["compute_decile_forward_return", "compute_top_pct_excess"]
+__all__ = [
+    "compute_decile_forward_return",
+    "compute_top_pct_excess",
+    "select_top_pct",
+]
 
 _N_DECILES = 10
 _TOP_PCT = 0.05
@@ -50,6 +54,40 @@ def _aligned(factor: pd.Series, forward_returns: pd.Series) -> pd.DataFrame:
         ["f", "_code"], kind="mergesort"
     )
     return df.drop(columns="_code")
+
+
+def select_top_pct(
+    factor: pd.Series, *, pct: float = _TOP_PCT, min_xs: int | None = None
+) -> list[str] | None:
+    """按名次取因子值最高的 `int(n * pct)`（floor）只，返回 ts_code 列表。
+
+    **K-2 头部超额与 K-4 换手 Jaccard 共用本函数**——各写一份就可能选出不同的股票，
+    于是「测了超额的那个头部」和「测了换手的那个头部」变成两回事，
+    而这种不一致在数字上完全看不出来。
+
+    ⚠️ 不用 `quantile(1-pct)` 阈值（CLAUDE.md §4.4）：小样本被线性插值支配，
+    且切点并列时 `>=` 会把并列的整批圈进来让头部膨胀。
+
+    Returns:
+        ts_code 列表（按因子值升序，末尾为最高）；下列情形返回 **None**：
+        NaN 剔除后为空 / 不足 `min_xs` / 横截面无离散度 / `int(n*pct) < 1`。
+        None 与「空列表」不同——前者是「取不出头部」，后者会被误读为「头部为空」。
+    """
+    s = pd.Series(factor).dropna()
+    n = len(s)
+    if n == 0:
+        return None
+    if min_xs is not None and n < min_xs:
+        return None
+    if s.nunique() <= 1:
+        return None
+    n_head = int(n * pct)          # floor
+    if n_head < 1:
+        return None
+    ordered = s.to_frame("f").assign(_code=lambda d: d.index.astype(str)).sort_values(
+        ["f", "_code"], kind="mergesort"
+    )
+    return [str(c) for c in ordered.index[-n_head:]]
 
 
 def compute_decile_forward_return(
@@ -127,19 +165,16 @@ def compute_top_pct_excess(
     for strategy, factors in factor_values.items():
         for factor, series in factors.items():
             df = _aligned(series, forward_returns)
-            n = len(df)
-            if n < min_xs:
+            # 头部选取走共用的 select_top_pct——K-4 换手用的是同一份，
+            # 各写一份就会选出不同的股票，而那种不一致在数字上看不出来。
+            head = select_top_pct(df["f"], pct=pct, min_xs=min_xs)
+            if head is None:
                 continue
-            if df["f"].nunique() <= 1:
-                continue
-            n_head = int(n * pct)             # floor
-            if n_head < 1:
-                continue
-            head_mean = float(df["r"].iloc[-n_head:].mean())
+            head_mean = float(df["r"].reindex(head).mean())
             all_mean = float(df["r"].mean())
             out.append(PanelStatPoint(
                 strategy=str(strategy), factor=str(factor), stage=stage,
                 state=state, horizon=int(horizon), metric="top5_excess",
-                value=head_mean - all_mean, sample_size=n_head,
+                value=head_mean - all_mean, sample_size=len(head),
             ))
     return out
