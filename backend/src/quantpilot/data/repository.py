@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 
 import pandas as pd
@@ -9,10 +9,12 @@ from sqlalchemy import func, nullslast, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.engine.diagnostics.factor_ic import PanelStatPoint
 from quantpilot.engine.market_state import MarketStateRecord
 from quantpilot.models.account import Account, Position
 from quantpilot.models.business import (
     CandidatePool,
+    FactorPanelStat,
     MarketStateHistory,
     Signal,
     SignalScoreSnapshot,
@@ -559,6 +561,72 @@ class MarketDataRepository:
             {str(r.ts_code): float(r.pct_rank) for r in rows}, dtype=float
         )
         return (1.0 - pct).reindex(index)
+
+    async def upsert_factor_panel_stat_bulk(
+        self,
+        panel_run: str,
+        trade_date: date,
+        points: Sequence[PanelStatPoint],
+        *,
+        batch_size: int = _BATCH_SIZE,
+    ) -> int:
+        """批量 upsert `factor_panel_stat`（V1.5-K K-6 研究数据落点）。
+
+        ⚠️ **必须分批**：本表 11 个业务列，asyncpg 二进制协议 16-bit 占位符上限
+        32767 → 单条 SQL 最多 `32767 / 11 = 2978` 行。而面板重跑一次要写
+        497 交易日 × 4 策略 × 多因子 × 2 stage × 4 horizon × 2 metric，
+        轻易上十万行。这个缺陷**合成小数据测不出来**——100 行、1000 行都能过，
+        只有 ≥ 2979 行才触发（§4.1），故回归用例用 3200 行钉死。
+
+        `panel_run` / `trade_date` 是**批次维度**，由本方法统一盖章——
+        `PanelStatPoint` 刻意不带它们，避免在计算侧逐点重复填写造成口径漂移。
+
+        冲突处理：命中九元组唯一键则覆盖 `value` / `sample_size`，令整批重跑可重入。
+
+        ⚠️ `value` 的 NaN 必须转 None：pandas/numpy 的 NaN 经 asyncpg 会原样写成
+        PostgreSQL NUMERIC 的特殊值 `'NaN'`（**≠ NULL**）→ 下游 `IS NOT NULL`
+        误判、数值过滤失效（§4.1 同族陷阱）。
+
+        Returns:
+            实际写入（含覆盖）的行数。
+        """
+        if not points:
+            return 0
+
+        rows: list[dict] = []
+        for pt in points:
+            v = pt.value
+            if v is not None and math.isnan(float(v)):
+                v = None
+            rows.append({
+                "panel_run": panel_run,
+                "trade_date": trade_date,
+                "strategy": pt.strategy,
+                "factor": pt.factor,
+                "stage": pt.stage,
+                "state": pt.state,
+                "horizon": int(pt.horizon),
+                "metric": pt.metric,
+                "bucket": int(pt.bucket),
+                "value": None if v is None else float(v),
+                "sample_size": int(pt.sample_size),
+            })
+
+        written = 0
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i : i + batch_size]
+            stmt = pg_insert(FactorPanelStat).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_factor_panel_stat",
+                set_={
+                    "value": stmt.excluded.value,
+                    "sample_size": stmt.excluded.sample_size,
+                },
+            )
+            await self._session.execute(stmt)
+            written += len(batch)
+        await self._session.flush()
+        return written
 
     # ── financial_data ─────────────────────────────────────────────────────────
 
