@@ -296,7 +296,7 @@ NULL、并列值、五年跨度极值，合成用例编不全。
 | 分支 | `main` |
 | 基线（部署前） | `a9b7378` |
 | 回滚点 | `/home/ubuntu/backups/backend_pre_ad69278_20260904_150149.tar.gz` |
-| delta | 6 个 commit |
+| delta | 7 个 commit |
 
 ```
 b76f3d0 perf(scoring): PE/PB 历史分位下推 PostgreSQL——每日管线不再拉 380 万行

@@ -695,8 +695,8 @@ CREATE TABLE factor_panel_stat (
     CONSTRAINT uq_factor_panel_stat UNIQUE
         (panel_run, trade_date, strategy, factor, stage, state, horizon, metric, bucket)
 );
-CREATE INDEX idx_factor_panel_stat_lookup
-    ON factor_panel_stat(panel_run, metric, trade_date DESC);
+CREATE INDEX idx_factor_panel_stat_run_metric
+    ON factor_panel_stat(panel_run, metric, trade_date);
 
 -- 报告存储（SDD §12.5）
 CREATE TABLE report (
