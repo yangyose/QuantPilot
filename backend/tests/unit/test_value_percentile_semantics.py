@@ -135,3 +135,102 @@ class TestPerStockIsolation:
         assert out["B.SZ"] == pytest.approx(1.0 / 3.0)
         # 若两股历史被混算，A 的 curr=2.5 在 6 个值里只小于 1.0 → 1/6 → inverse 5/6
         assert out["A.SZ"] != pytest.approx(5.0 / 6.0)
+
+
+class TestPrecomputedPercentileOverride:
+    """ValueStrategy 优先消费 Service 预计算的分位（SQL 下推产物）。
+
+    ## 为什么保留回退而不是直接替换
+
+    `pe_pb_history` 路径**回测引擎还在用**（`backtest/engine.py` 自建 MarketSnapshot
+    并做 PIT 切片）。直接换掉契约会连带改回测，blast radius 远超这次性能修复的范围。
+    故加可选键：Service 传预计算值走下推、回测不传则走原路，两条路**必须等价**——
+    最后一条用例就是钉这个等价性的，它一红就说明两条路开始漂移了。
+    """
+
+    @staticmethod
+    def _snapshot(hist_vals, curr, *, precomputed=None):
+        universe = pd.Index(["A.SZ"], name="ts_code")
+        snap = {
+            "daily_quotes": pd.DataFrame({"pe_ttm": [curr], "pb": [curr]}, index=universe),
+            "financials": pd.DataFrame({"roe": [10.0]}, index=universe),
+            "pe_pb_history": _hist(hist_vals).assign(pb=lambda d: d["pe_ttm"]),
+        }
+        if precomputed is not None:
+            snap["pe_percentile"] = pd.Series(precomputed, index=universe)
+            snap["pb_percentile"] = pd.Series(precomputed, index=universe)
+        return universe, snap
+
+    def test_precomputed_is_used_verbatim(self) -> None:
+        """给一个与历史算出来**明显不同**的值，输出必须等于它。
+
+        若实现忽略了这个键（"接了但没生效"最常见的形态），输出会是 2/3 而非 0.123。
+        """
+        from quantpilot.engine.strategies.value import ValueStrategy
+
+        universe, snap = self._snapshot([5.0, 10.0, 15.0], 10.0, precomputed=0.123)
+        df = ValueStrategy().compute_raw_factors(universe, snap)  # type: ignore[arg-type]
+        assert df.loc["A.SZ", "pe_percentile"] == pytest.approx(0.123)
+        assert df.loc["A.SZ", "pb_percentile"] == pytest.approx(0.123)
+
+    def test_falls_back_to_history_when_absent(self) -> None:
+        """不传预计算值 → 走原 pe_pb_history 路径（回测就是这条）。"""
+        from quantpilot.engine.strategies.value import ValueStrategy
+
+        universe, snap = self._snapshot([5.0, 10.0, 15.0], 10.0)
+        df = ValueStrategy().compute_raw_factors(universe, snap)  # type: ignore[arg-type]
+        assert df.loc["A.SZ", "pe_percentile"] == pytest.approx(2.0 / 3.0)
+
+    def test_two_paths_agree_on_same_data(self) -> None:
+        """同一批数据下两条路必须给出相同结果——漂移守卫。"""
+        from quantpilot.engine.strategies.value import ValueStrategy
+
+        hist, curr = [5.0, 10.0, 15.0, 20.0], 12.0
+        universe, snap_fallback = self._snapshot(hist, curr)
+        via_history = ValueStrategy().compute_raw_factors(
+            universe, snap_fallback  # type: ignore[arg-type]
+        ).loc["A.SZ", "pe_percentile"]
+
+        _, snap_pre = self._snapshot(hist, curr, precomputed=via_history)
+        via_precomputed = ValueStrategy().compute_raw_factors(
+            universe, snap_pre  # type: ignore[arg-type]
+        ).loc["A.SZ", "pe_percentile"]
+        assert via_precomputed == pytest.approx(via_history)
+
+
+class TestServiceActuallyPushesDown:
+    """在**调用点**上验证下推真的接上了（§4.11「调用点是否真传参」）。
+
+    ⚠️ 判据必须查源码，不能"构造 spy 再调用它"——那是自证式的，缺陷仍在时照样绿。
+    """
+
+    @staticmethod
+    def _calls(fn) -> set[str]:
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(fn).lstrip())
+        return {
+            n.func.attr for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        }
+
+    def test_snapshot_builder_uses_pushdown(self) -> None:
+        from quantpilot.services.strategy_service import ScoringService
+
+        assert "get_pe_pb_percentile_bulk" in self._calls(
+            ScoringService._build_market_snapshot
+        )
+
+    def test_snapshot_builder_no_longer_loads_five_years_of_history(self) -> None:
+        """这条才是省内存的**全部意义**。
+
+        若有人"保险起见"把 `get_pe_pb_history_bulk` 加回去，分位仍然正确、
+        测试仍然全绿，但那 380 万行又回到内存里——省内存的效果**静默蒸发**。
+        没有任何功能测试会发现，只有这条会。
+        """
+        from quantpilot.services.strategy_service import ScoringService
+
+        assert "get_pe_pb_history_bulk" not in self._calls(
+            ScoringService._build_market_snapshot
+        ), "每日管线不应再整批拉取 5 年 pe/pb 历史"

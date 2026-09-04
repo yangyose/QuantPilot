@@ -311,7 +311,6 @@ class ScoringService:
             adj_prices,
             snapshot_quotes,
             financials,
-            pe_pb_history,
             index_history,
             market_cap_series,
             forecast,
@@ -319,7 +318,6 @@ class ScoringService:
             self._repo.get_adj_prices_bulk(ts_codes, start_prices, trade_date),
             self._repo.get_snapshot_quotes(ts_codes, trade_date),
             self._repo.get_latest_financial(ts_codes, trade_date),
-            self._repo.get_pe_pb_history_bulk(ts_codes, start_pepb, trade_date),
             self._repo.get_index_history(_BENCHMARK_INDEX, start_prices, trade_date),
             self._repo.get_market_cap_pit(ts_codes, trade_date),
             self._repo.get_latest_forecast(ts_codes, trade_date),
@@ -346,6 +344,38 @@ class ScoringService:
             daily_quotes = snapshot_quotes.join(fin_pepb, how="left")
         else:
             daily_quotes = snapshot_quotes
+
+        # ── PE/PB 历史分位：在 PostgreSQL 内算，不再把 5 年历史拉进内存 ──────────
+        # 旧路径 `get_pe_pb_history_bulk` 为算约 3212 个分位数要拉约 **380 万行**，
+        # 且 `result.all()` 先把它们实例化成 SQLAlchemy Row（内含 Decimal）再转
+        # DataFrame——每日管线内存峰值的主项，2026-09-03 生产 OOM 的直接推手
+        # （见 `docs/ops/deploy_log.md`「2026-09-03（傍晚）」节）。下推后返回约 3212 行。
+        #
+        # ⚠️ 当前值取自上面刚 join 好的 `daily_quotes`（= `get_latest_financial` 的
+        # 日频段），**由本层传给 SQL 而不是让 SQL 自己再挑一次"最新行"**——两处挑法
+        # 只要有一丁点出入，分位就会静默偏移且无从发现。故必须在 gather 之后串行。
+        #
+        # `pe_pb_history` 保留为空 DataFrame：ValueStrategy 见到预计算分位就不再读它，
+        # 而回测引擎自建 MarketSnapshot 时仍走历史路径（两条路等价性有单测钉死）。
+        pe_percentile: pd.Series | None = None
+        pb_percentile: pd.Series | None = None
+        if not daily_quotes.empty:
+            for _col, _key in (("pe_ttm", "pe"), ("pb", "pb")):
+                if _col not in daily_quotes.columns:
+                    continue
+                _curr = {
+                    str(code): float(v)
+                    for code, v in daily_quotes[_col].items()
+                    if v is not None and not pd.isna(v)
+                }
+                _pct = await self._repo.get_pe_pb_percentile_bulk(
+                    _curr, start_pepb, trade_date, _col
+                )
+                if _key == "pe":
+                    pe_percentile = _pct
+                else:
+                    pb_percentile = _pct
+        pe_pb_history = pd.DataFrame()
 
         # 将 financials 与 stock_info sw_industry_l1 合并（MomentumStrategy 行业相对强度用）
         has_sw = "sw_industry_l1" in snapshot_quotes.columns
@@ -375,7 +405,9 @@ class ScoringService:
             "adj_prices": adj_prices,
             "daily_quotes": daily_quotes,
             "financials": financials,
-            "pe_pb_history": pe_pb_history,
+            "pe_pb_history": pe_pb_history,   # 已下推，恒为空；见上方说明
+            "pe_percentile": pe_percentile,
+            "pb_percentile": pb_percentile,
             "index_adj_prices": index_adj_prices,
             "industry": industry,
             "market_cap": market_cap,

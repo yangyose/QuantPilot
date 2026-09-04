@@ -43,11 +43,19 @@ class ValueStrategy(BaseStrategy):
         pe_ttm = daily_quotes["pe_ttm"] if "pe_ttm" in daily_quotes.columns else nan_series
         pb = daily_quotes["pb"] if "pb" in daily_quotes.columns else nan_series
 
-        pe_percentile = _compute_historical_percentile(
-            universe, pe_ttm, pe_pb_history, "pe_ttm", inverse=True
+        # V1.5-K 性能：Service 若已在 PostgreSQL 内算好分位（`get_pe_pb_percentile_bulk`）
+        # 就直接用，不再要求 `pe_pb_history`——后者为算约 3212 个分位数要拉约 380 万行，
+        # 是每日管线内存峰值的主项（2026-09-03 生产 OOM 的直接推手）。
+        #
+        # ⚠️ 保留回退而非直接替换：**回测引擎仍走 `pe_pb_history`**
+        # （`backtest/engine.py` 自建 MarketSnapshot 并做 PIT 切片）。两条路必须等价，
+        # 由 `tests/unit/test_value_percentile_semantics.py::test_two_paths_agree_on_same_data`
+        # 钉死；一旦漂移那条立刻红。
+        pe_percentile = _resolve_percentile(
+            market_data, "pe_percentile", universe, pe_ttm, pe_pb_history, "pe_ttm"
         )
-        pb_percentile = _compute_historical_percentile(
-            universe, pb, pe_pb_history, "pb", inverse=True
+        pb_percentile = _resolve_percentile(
+            market_data, "pb_percentile", universe, pb, pe_pb_history, "pb"
         )
 
         # ── ROE 质量（横截面 rank，需 TD-1 修复）────────────────────────────────
@@ -126,6 +134,27 @@ class ValueStrategy(BaseStrategy):
             f"PB历史分位={actual_pb_pct:.0f}%，"
             f"ROE={roe:.1f}%。"
         )
+
+
+def _resolve_percentile(
+    market_data: MarketSnapshot,
+    key: str,
+    universe: pd.Index,
+    current_values: pd.Series,
+    pe_pb_history: pd.DataFrame,
+    col: str,
+) -> pd.Series:
+    """优先取 Service 预计算的分位；缺失则回退到从历史现算。
+
+    预计算值来自 `MarketDataRepository.get_pe_pb_percentile_bulk`（SQL 下推），
+    语义与 `_compute_historical_percentile` 逐股相等（集成测试逐股对照钉死）。
+    """
+    pre = market_data.get(key)  # type: ignore[attr-defined]
+    if pre is not None:
+        return pd.Series(pre).reindex(universe).astype(float)
+    return _compute_historical_percentile(
+        universe, current_values, pe_pb_history, col, inverse=True
+    )
 
 
 def _compute_historical_percentile(

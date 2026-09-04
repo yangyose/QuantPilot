@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from datetime import date, timedelta
 
 import pandas as pd
-from sqlalchemy import func, nullslast, or_, select
+from sqlalchemy import func, nullslast, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -457,6 +459,106 @@ class MarketDataRepository:
         df = df.set_index(["ts_code", "trade_date"])
         df.index.names = ["ts_code", "trade_date"]
         return df
+
+    # PE/PB 历史分位可下推的列白名单——列名要拼进 SQL（不能走 bind 参数），
+    # 不白名单就是注入面。
+    _PERCENTILE_COLS = frozenset({"pe_ttm", "pb"})
+
+    async def get_pe_pb_percentile_bulk(
+        self,
+        current_values: Mapping[str, float],
+        start_date: date,
+        end_date: date,
+        col: str,
+    ) -> pd.Series:
+        """在 PostgreSQL 内算「当前值在该股自身历史中的分位」，返回 1 - pct_rank。
+
+        ## 为什么下推
+
+        `get_pe_pb_history_bulk` 为算约 3212 个分位数要拉约 **380 万行**
+        （5 年窗口 × universe），且 `result.all()` 先把它们实例化成 SQLAlchemy Row
+        （内含 Decimal）再转 DataFrame——每日管线内存峰值的主项，
+        2026-09-03 生产 OOM 的直接推手。下推后返回约 3212 行，降三个数量级。
+
+        ## 当前值为什么由调用方传入，而不在 SQL 里重算
+
+        当前 pe/pb 出自 `get_latest_financial` 的日频段
+        （`DISTINCT ON (ts_code) ORDER BY publish_date DESC`）。若这里另写一份
+        「取最新行」的 SQL，两边只要有一丁点出入，分位就会**静默偏移**且无从发现。
+        传入之后本方法只负责分位算术一件事，可验证面随之收窄。
+
+        ## 语义必须与 `value._compute_historical_percentile` 逐股相等
+
+        - 严格 `<`（非 `<=`）；等值样本不计入分子
+        - 分母 = 窗口内**非 NULL** 条数（`WHERE col IS NOT NULL` 后的 `count(*)`）
+        - 返回 `1 - pct_rank`：低估 → 高值 → 横截面 rank 后高分
+        - 无历史 / 当前值缺失 → **NaN 而非 0**（0 意味着「算出来就是最贵」）
+        由 `tests/integration/test_int_pe_pb_percentile_pushdown.py` 逐股对照钉死。
+
+        Args:
+            current_values: ts_code → 当前 pe_ttm/pb。NaN 项跳过（结果为 NaN）。
+            start_date/end_date: `publish_date` 闭区间窗口。
+            col: ``'pe_ttm'`` 或 ``'pb'``。
+
+        Returns:
+            index = `current_values` 的全部 key（缺历史者为 NaN）的 float Series。
+
+        Raises:
+            ValueError: `col` 不在白名单内。
+        """
+        if col not in self._PERCENTILE_COLS:
+            raise ValueError(
+                f"col 必须是 {sorted(self._PERCENTILE_COLS)} 之一，实得 {col!r}"
+            )
+
+        index = pd.Index(list(current_values.keys()), name="ts_code")
+        codes: list[str] = []
+        vals: list[float] = []
+        for ts_code, v in current_values.items():
+            if v is None:
+                continue
+            fv = float(v)
+            if math.isnan(fv):
+                continue
+            codes.append(str(ts_code))
+            vals.append(fv)
+        if not codes:
+            return pd.Series(float("nan"), index=index, dtype=float)
+
+        # unnest(text[], float8[]) 而非 VALUES 列表：**两个数组参数**，与股票数无关，
+        # 直接绕开 asyncpg 单 SQL 32767 占位符上限（§4.1），无需分批。
+        # col 已过白名单，可安全内插。
+        stmt = text(
+            f"""
+            SELECT f.ts_code AS ts_code,
+                   (count(*) FILTER (WHERE f.{col}::float8 < c.v))::float8
+                       / count(*)::float8 AS pct_rank
+            FROM financial_data f
+            JOIN unnest(CAST(:codes AS text[]), CAST(:vals AS float8[]))
+                 AS c(ts_code, v)
+              ON c.ts_code = f.ts_code
+            WHERE f.publish_date >= :start_date
+              AND f.publish_date <= :end_date
+              AND f.{col} IS NOT NULL
+            GROUP BY f.ts_code
+            """
+        )
+        rows = (
+            await self._session.execute(
+                stmt,
+                {
+                    "codes": codes, "vals": vals,
+                    "start_date": start_date, "end_date": end_date,
+                },
+            )
+        ).all()
+        if not rows:
+            return pd.Series(float("nan"), index=index, dtype=float)
+
+        pct = pd.Series(
+            {str(r.ts_code): float(r.pct_rank) for r in rows}, dtype=float
+        )
+        return (1.0 - pct).reindex(index)
 
     # ── financial_data ─────────────────────────────────────────────────────────
 

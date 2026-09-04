@@ -25,6 +25,12 @@ class MarketSnapshot(TypedDict, total=False):
     daily_quotes: pd.DataFrame     # index=ts_code，最新一日行情（含 pe_ttm/pb/amount/vol/limit_up）
     financials: pd.DataFrame       # index=ts_code，最新一期财务数据（PIT）
     pe_pb_history: pd.DataFrame    # index=(ts_code, trade_date)，universe 过滤后近5年 pe_ttm/pb
+    # V1.5-K：Service 在 SQL 内算好的历史分位（1 - pct_rank）。给了就用、不给则由
+    # ValueStrategy 从 pe_pb_history 现算——**回测引擎走的正是后者**。两条路等价性由
+    # tests/unit/test_value_percentile_semantics.py 钉死。下推的理由是内存：
+    # pe_pb_history 为算约 3212 个分位数要拉约 380 万行（2026-09-03 生产 OOM 主因）。
+    pe_percentile: pd.Series | None
+    pb_percentile: pd.Series | None
     # index=index_code，columns=trade_date，Wide 格式（与 adj_prices 结构一致）
     index_adj_prices: pd.DataFrame
 
