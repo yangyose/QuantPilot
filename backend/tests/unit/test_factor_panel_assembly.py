@@ -87,10 +87,12 @@ class TestBuildMatrices:
 
 class TestFanOut:
     def test_both_stages_present(self) -> None:
+        """因子级两 stage 必须都在；组合级另用 'n/a'（见 TestPortfolioLevel）。"""
         pts = compute_panel_stats_for_date(
             _composites(), _forwards(), state="OSCILLATION", universe_size=_N
         )
-        assert {p.stage for p in pts} == {"raw", "z"}
+        factor_stages = {p.stage for p in pts if p.strategy != "__portfolio__"}
+        assert factor_stages == {"raw", "z"}
 
     def test_forward_metrics_emitted_per_horizon(self) -> None:
         pts = compute_panel_stats_for_date(
@@ -172,3 +174,102 @@ class TestStateAndUniversePropagate:
         vr = next(p for p in pts if p.metric == "valid_ratio")
         assert vr.sample_size == 120
         assert vr.value == 0.5, "60 个有效值 / universe 120"
+
+
+class TestPortfolioLevel:
+    """组合级（composite）统计量——回答「系统实际买的那 5% 处在什么位置」。
+
+    ## 为什么必须单独有这一层
+
+    2026-09-05 首份面板分析发现：多个因子 IC 显著为正，**头部 5% 超额却为负**，
+    十分位阶梯呈驼峰形（第 6~8 档见顶、第 10 档回落）。但那是**因子级**结论，
+    而系统买的是 **composite 排名前 5%**——composite 是四策略正交化后的合成，
+    它的形态无法从单因子推断。
+
+    没有这一层就只能说「这些因子各自的头部不是最优档」，
+    **不能说**「系统的买入清单有问题」。
+
+    ## 口径（设计 §2.1 DDL 注释已定）
+
+    `strategy = factor = '__portfolio__'`、`stage = 'n/a'`——组合级无 raw/z 之分
+    （composite 本身就是管线产物，不存在「未加工版」）。
+    """
+
+    @staticmethod
+    def _composites_with_z(n: int = 60):
+        out = []
+        for i in range(n):
+            c = _composite(i)
+            c = type(c)(**{**c.__dict__, "composite_z": float(i)})
+            out.append(c)
+        return out
+
+    def test_portfolio_rows_emitted(self) -> None:
+        pts = compute_panel_stats_for_date(
+            self._composites_with_z(), _forwards(),
+            state="OSCILLATION", universe_size=_N,
+        )
+        pf = [p for p in pts if p.strategy == "__portfolio__"]
+        assert pf, "未产出组合级行"
+        assert {p.factor for p in pf} == {"__portfolio__"}
+        assert {p.stage for p in pf} == {"n/a"}, "组合级 stage 应为 n/a（无 raw/z 之分）"
+
+    def test_portfolio_decile_and_top5_present(self) -> None:
+        pts = compute_panel_stats_for_date(
+            self._composites_with_z(), _forwards(),
+            state="OSCILLATION", universe_size=_N,
+        )
+        pf = [p for p in pts if p.strategy == "__portfolio__"]
+        metrics = {p.metric for p in pf}
+        assert {"ic", "decile_fwd_return", "top5_excess"} <= metrics
+        for h in (5, 10, 20, 40):
+            b = sorted(
+                p.bucket for p in pf
+                if p.metric == "decile_fwd_return" and p.horizon == h
+            )
+            assert b == list(range(1, 11)), f"h={h} 组合级十档不全"
+
+    def test_portfolio_ranked_by_composite_z_not_by_factor(self) -> None:
+        """必须按 composite_z 排序——用某个因子代替会答非所问。
+
+        构造：composite_z 与 rs_6m **反向**。若实现误用因子值，
+        十档阶梯方向会翻转。
+        """
+        base = _composites_with_reversed_z()
+        pts = compute_panel_stats_for_date(
+            base, _forwards(), state="OSCILLATION", universe_size=_N
+        )
+        by_b = {
+            p.bucket: p.value for p in pts
+            if p.strategy == "__portfolio__" and p.metric == "decile_fwd_return"
+            and p.horizon == 20
+        }
+        # 前向收益随序号递增；composite_z 反向 → bucket 1（z 最低）对应高收益
+        assert by_b[1] > by_b[10], "组合级排序未使用 composite_z"
+
+    def test_missing_composite_z_skips_portfolio(self) -> None:
+        """composite_z 为 None（旧路径 aggregate_legacy）→ 跳过组合级，不炸。"""
+        no_z = [
+            type(c)(**{**c.__dict__, "composite_z": None}) for c in _composites()
+        ]
+        pts = compute_panel_stats_for_date(
+            no_z, _forwards(), state="OSCILLATION", universe_size=_N
+        )
+        assert not [p for p in pts if p.strategy == "__portfolio__"]
+
+    def test_portfolio_turnover_and_cost_with_prev(self) -> None:
+        cur = self._composites_with_z()
+        pts = compute_panel_stats_for_date(
+            cur, _forwards(), state="OSCILLATION", universe_size=_N,
+            prev_composites=cur,
+        )
+        pf = {p.metric for p in pts if p.strategy == "__portfolio__"}
+        assert {"turnover_jaccard", "cost_drag"} <= pf
+
+
+def _composites_with_reversed_z():
+    out = []
+    for i in range(_N):
+        c = _composite(i)
+        out.append(type(c)(**{**c.__dict__, "composite_z": float(_N - i)}))
+    return out

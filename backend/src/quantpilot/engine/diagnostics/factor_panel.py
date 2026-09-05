@@ -44,9 +44,20 @@ if TYPE_CHECKING:
     from quantpilot.engine.diagnostics.multi_horizon import HorizonForward
     from quantpilot.engine.scorer import CompositeScore
 
-__all__ = ["STAGES", "build_factor_matrices", "compute_panel_stats_for_date"]
+__all__ = [
+    "PORTFOLIO_KEY",
+    "PORTFOLIO_STAGE",
+    "STAGES",
+    "build_factor_matrices",
+    "compute_panel_stats_for_date",
+]
 
 STAGES: tuple[str, str] = ("raw", "z")
+# 组合级（composite）口径，设计 §2.1 DDL 注释已定：
+# `factor='__portfolio__'`，`stage='n/a'`——composite 本身就是管线产物，
+# 不存在「未加工版」，故无 raw/z 之分。
+PORTFOLIO_KEY = "__portfolio__"
+PORTFOLIO_STAGE = "n/a"
 _STAGE_ATTR = {"raw": "factor_raw", "z": "factor_z"}
 
 
@@ -142,4 +153,67 @@ def compute_panel_stats_for_date(
                 out.extend(compute_cost_drag(
                     prev_matrices, matrices, stage=stage, state=state, cost=cost,
                 ))
+
+    # ── 组合级：按 composite_z 排序，回答「系统实际买的那 5% 处在什么位置」 ──
+    #
+    # 单因子的结论推不出组合的结论：composite 是四策略正交化后的合成。
+    # 2026-09-05 首份分析发现多个因子「IC 正、头部超额负、十档驼峰」，
+    # 但那是因子级；没有本层就只能说「这些因子各自的头部不是最优档」，
+    # **不能说**「系统的买入清单有问题」。
+    out.extend(_portfolio_stats(
+        composites, forwards, state=state, universe_size=universe_size,
+        prev_composites=prev_composites, cost=cost,
+    ))
+    return out
+
+
+def _composite_series(composites: list[CompositeScore]) -> pd.Series:
+    """取 `composite_z` 构成 index=ts_code 的 Series；旧路径无该字段则返回空。"""
+    vals = {
+        str(c.ts_code): float(c.composite_z)
+        for c in composites
+        if getattr(c, "composite_z", None) is not None
+    }
+    return pd.Series(vals, dtype=float)
+
+
+def _portfolio_stats(
+    composites: list[CompositeScore],
+    forwards: list[HorizonForward],
+    *,
+    state: str,
+    universe_size: int,
+    prev_composites: list[CompositeScore] | None,
+    cost: CostParams | None,
+) -> list[PanelStatPoint]:
+    """组合级统计量。排序键必须是 `composite_z`——用任何单因子代替都会答非所问。"""
+    cur = _composite_series(composites)
+    if cur.empty:
+        return []                      # aggregate_legacy 旧路径无 composite_z，跳过
+
+    m = {PORTFOLIO_KEY: {PORTFOLIO_KEY: cur}}
+    out: list[PanelStatPoint] = []
+    for fwd in forwards:
+        out.extend(compute_factor_ic(
+            m, fwd.returns, stage=PORTFOLIO_STAGE, horizon=fwd.horizon, state=state,
+        ))
+        out.extend(compute_decile_forward_return(
+            m, fwd.returns, stage=PORTFOLIO_STAGE, horizon=fwd.horizon, state=state,
+        ))
+        out.extend(compute_top_pct_excess(
+            m, fwd.returns, stage=PORTFOLIO_STAGE, horizon=fwd.horizon, state=state,
+        ))
+    out.extend(compute_factor_valid_ratio(
+        m, universe_size, stage=PORTFOLIO_STAGE, state=state,
+    ))
+    if prev_composites:
+        prev = _composite_series(prev_composites)
+        if not prev.empty:
+            pm = {PORTFOLIO_KEY: {PORTFOLIO_KEY: prev}}
+            out.extend(compute_turnover_jaccard(
+                pm, m, stage=PORTFOLIO_STAGE, state=state,
+            ))
+            out.extend(compute_cost_drag(
+                pm, m, stage=PORTFOLIO_STAGE, state=state, cost=cost,
+            ))
     return out
