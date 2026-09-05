@@ -44,7 +44,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "src"))
 
@@ -59,6 +59,7 @@ from quantpilot.engine.diagnostics.multi_horizon import (  # noqa: E402
     resolve_forward_returns,
 )
 from quantpilot.models.business import FactorPanelStat  # noqa: E402
+from quantpilot.models.market import DailyQuote  # noqa: E402
 from quantpilot.services.scoring_factory import build_default_scoring_service  # noqa: E402
 
 logger = logging.getLogger("run_factor_panel")
@@ -103,6 +104,43 @@ def _assert_calendar_covers(
             f"h={max(HORIZONS)} 的前向收益无从计算。请确认窗口末端与 trade_calendar "
             f"覆盖范围（设计 §2.5：末端按 h=40 可达性定为 2026-06-30）。原始错误：{exc}"
         ) from exc
+
+
+async def _assert_price_history_covers(calendar: TradingCalendar, first_day: date) -> None:
+    """验**行情数据**在 `first_day` 之前有足够历史，不够就当场失败。
+
+    ⚠️ 这与 `_assert_calendar_covers` **不是同一件事**，2026-09-05 起跑时踩到：
+    `trade_calendar` 表覆盖范围远大于 `daily_quote`（日历含未来前瞻、且回溯更早），
+    所以「日历够」时「价格仍可能不够」——守卫照样放行，而 momentum/trend/reversion
+    三个策略的因子会**静默全 NaN**（`Scorer.aggregate` 见 df 全 NaN 即跳过该策略），
+    面板前段只剩 value 一个策略，每日行数 1224 → 306 却不报任何错。
+
+    这正是 CLAUDE.md §4.4 C1-3 那一族：价格窗口深度不足 → 因子静默残缺。
+    **窗口起点必须由「行情最早日 + 所需回看交易日数」推出，
+    不能拿「行情最早日」直接当因子日起点**——中间少了一整段历史。
+    """
+    async with AsyncSessionLocal() as s:
+        first_price = (
+            await s.execute(select(func.min(DailyQuote.trade_date)))
+        ).scalar_one_or_none()
+    if first_price is None:
+        raise SystemExit("daily_quote 为空，无法跑面板")
+
+    have = calendar.count_trade_days(first_price, first_day) - 1  # 不含 first_day 自身
+    if have < _REQUIRED_BACK_TRADING_DAYS:
+        try:
+            earliest_ok = calendar.get_next_trade_date(
+                first_price, _REQUIRED_BACK_TRADING_DAYS
+            )
+        except ValueError:
+            earliest_ok = None
+        raise SystemExit(
+            f"行情历史不足：{first_day} 之前只有 {have} 个交易日的行情"
+            f"（daily_quote 最早 {first_price}），需要 {_REQUIRED_BACK_TRADING_DAYS} 个。"
+            f"不足时 momentum/trend/mean_reversion 的因子会**静默全 NaN**、"
+            f"面板前段只剩 value 一个策略且不报错。"
+            + (f" 最早可用的因子日是 {earliest_ok}。" if earliest_ok else "")
+        )
 
 
 async def _done_dates(session, panel_run: str) -> set[date]:
@@ -207,6 +245,7 @@ async def main() -> int:
         return 0
     # 前置校验：两端都够用才开跑。13h 的作业不该在第 3 天才发现日历不够。
     _assert_calendar_covers(calendar, todo[0], todo[-1])
+    await _assert_price_history_covers(calendar, todo[0])
     logger.info(
         "panel_start run=%s window=[%s, %s] todo=%d skipped_done=%d",
         args.panel_run, start, end, len(todo), len(done),
