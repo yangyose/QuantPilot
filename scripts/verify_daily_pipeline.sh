@@ -14,6 +14,16 @@ SSH_HOST="${QP_SSH_HOST:-qp-tencent}"
 DAY="${1:-$(date +%F)}"
 PSQL="docker exec quantpilot-db-1 psql -U quantpilot -d quantpilot -v ON_ERROR_STOP=1"
 
+# ⚠️ 本机（JST）比生产（CST）快 1 小时——2026-09-07 因此把「17:30 管线」
+# 按本机钟读成了 17:30，实际那时服务器才 16:30。判断管线该不该跑完，
+# **只看服务器钟**。故这里两个都打出来，不给记错的机会。
+echo "==> 时钟（判断管线时点只认服务器钟）"
+printf '    本机     %s
+' "$(date '+%F %T %Z')"
+printf '    服务器   %s
+' "$(ssh "$SSH_HOST" "date '+%F %T %Z'")"
+
+echo
 echo "==> 生产版本"
 curl -s --max-time 15 "${QP_HEALTH_URL:-https://quant.portableagi.com/health}"; echo
 

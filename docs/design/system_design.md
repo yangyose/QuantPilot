@@ -1,6 +1,6 @@
 # QuantPilot 系统设计文档
 
-> **版本：** v1.15
+> **版本：** v1.16
 > **基线依据：** QuantPilot_SDD（规范文档，专家审定版）
 > **日期：** 2026-09-01
 > **说明：** 本文档为顶层架构基线，保持稳定。各开发阶段的详细设计见 `docs/design/phases/` 目录，按需创建。
@@ -30,6 +30,7 @@
 | **v1.13** | 2026-07-29 | **V1.5-A 实施回写（回测深化 + 监控 + 市场宽度 + 财务 PIT）**：§2.6 市场状态叠加 NH-NL 市场宽度弱势修正（UPTREND 且 NH-NL≤0 → breadth_weak，评分按 OSCILLATION 查权重压制趋势，"权重承载方案(a)"，A3/SDD-EXT-07）；§4.1 新增 `financial_forecast` 表（业绩预告/快报 PIT，A5/SDD-EXT-03，alembic 0023）；§4.2 `market_state_history` 加 `breadth_weak` 列（alembic 0021）；§5.8 `BacktestConfig.slippage_scenarios`（滑点情景 A1b）+ `BacktestDataBundle.forecast`（回测前瞻 ROE 覆盖 A5b）+ `run(position_sink=…)` 流式持仓落库（A1a/S6-GAP-02）+ `BacktestResult.daily_positions` 由"不持久化"更正为持久化到 `backtest_daily_position` 表（alembic 0022，表定义见 `phases/v1_5_a_backtest_monitoring.md`）；§6 新增 `POST /backtest/import` 行 + `/backtest/{id}/result` daily_positions 分页注记。涨停成交（A2/SDD-EXT-02s）与监控增强（A4）为引擎/运维内部实现，无 §3-6 结构变更。权威见 `phases/v1_5_a_backtest_monitoring.md` |
 | **v1.14** | 2026-08-07 | **财务 PIT 缺陷修复（get_latest_financial 基本面 LOCF + refresh_financials_full arity）**——2026-08 管线验证挖出，A5b 落地缺陷：§4.1 financial_data 表补「最新财务解析」行为规范——拆日频段（pe/pb/dividend_yield 取最新交易日）与报告期基本面段（roe/yoy/total_equity 走 LOCF 取最近有值报告期，`GROUP BY(ts_code,report_period)+max` 跨行合并 roe[日频行] 与 total_equity[balancesheet 公告日行]，450 日回看窗，2GB 机 EXPLAIN 实测 2.7s，无窗 10.5s），返回 `report_period=基本面所属期`以支撑 A5b 真空判定。根因：旧「取最新 publish_date 行」使跨季度末真空期 roe/total_equity 恒 NULL（生产实证 latest 行 roe 非空 2.4%/total_equity 0%）→ 价值因子季节性退化 + F-4/A5b 失效；叠加 `refresh_financials_full` arity bug（逐股调批量方法缺 2 个 date 参，生产 06-30 success=0 fail=5515）使 total_equity 全市场恒 NULL。均无 §3/§5/§6 结构变更（仅取数语义 + 采集调用修复）。V1.5-A scope 权威登记见 `v1_post_release_roadmap §6 V1.5-A`；生产 total_equity 回填为独立 C-1 生产写 |
 | **v1.15** | 2026-09-01 | **V1.5-K 新增研究表 `factor_panel_stat`（C-5 先回写后实施）**：§4.2 新增建表 DDL——因子验证面板统计量，与运行时 `factor_ic_window_state` **分离**，切分依据是「运行时 vs 研究」：前者每日增量、喂 ICIR 决定实盘权重，本次一个字节都不动；后者整批重跑产出、可整批丢弃重来。长表(tidy)形态承载 K-2~K-6 全部指标（ic / valid_ratio / decile_fwd_return / top5_excess / turnover_jaccard / cost_drag），`bucket` 取 NOT NULL DEFAULT -1 而非可空——PG 的 UNIQUE 视 NULL 互不相等，可空维度会让唯一键形同虚设、静默写入重复行（与 C0-7 唯一约束撞车同族）。本主题不新增 API 端点，§3/§5/§6 无变更。**另标注两处 §4 既存问题**：`factor_ic_history` 已于 Phase 15 §15-7 归并 DROP、生产不存在，定义仅留历史追溯；§4 尚缺 10 张已上线表的定义，已登记 roadmap V1.5-J 文档同步。设计见 `phases/v1_5_k_factor_validation.md` §2.1 |
+| **v1.16** | 2026-09-07 | **新增可观测表 `universe_daily_stat`（C-5 回写；本次是 alembic 0027 已落地后补写，属流程倒序，记录在案）**：§4.2 新增建表 DDL——每日 universe 规模 + 逐条规则的**边际**剔除数。动机是生产此前没有任何表持久化选股面规模，容器重启后日志只剩当日一行，每次改动都无法回溯度量。`excluded` 取边际而非累计（`sum == total_in - total_out` 恒成立），且**剔除 0 的规则必须显式记 0**——否则「规则生效但没命中」与「规则整条静默失效」在数据里无法区分，而后者真实发生过。写入由 `ScoringService` 在两条评分路径上完成，**套 SAVEPOINT 隔离**：`except` 不够，PG 里一条语句失败会把整个事务置为 aborted（真机踩到）。回测**不写**本表（一次 5 年回测会整片覆盖），该不变量由 AST 测试钉住。本次不新增 API 端点，§3/§5/§6 无变更。 |
 
 ---
 
@@ -697,6 +698,24 @@ CREATE TABLE factor_panel_stat (
 );
 CREATE INDEX idx_factor_panel_stat_run_metric
     ON factor_panel_stat(panel_run, metric, trade_date);
+
+-- 每日选股面规模与逐条规则剔除数（可观测性，alembic 0027）
+-- 生产此前没有任何表持久化每日 universe 规模，容器重启后日志只剩当日一行 →
+-- 每次改动选股面都无法回溯度量（2026-09-03 is_suspended 修复后「扩大了百分之几」
+-- 答不出来，事前预估 2276→2658 被真机 3212 证伪）。
+-- ⚠️ 只记总数不够：那样「某条规则生效但没命中」与「该规则整条静默失效」
+-- 在数据里长得一模一样，而后者真实发生过（F-4 在约半数交易日实质未生效）。
+CREATE TABLE universe_daily_stat (
+    trade_date      DATE PRIMARY KEY,
+    total_in        INTEGER NOT NULL,            -- PIT 活股数（进入 F-1~F-8 之前）
+    total_out       INTEGER NOT NULL,            -- 通过全部 F-1~F-8 之后
+    after_blacklist INTEGER,                     -- 黑名单剔除后（黑名单在 Service 层）
+    -- {"F-1": n, ..., "F-8": n}；**边际**计数（同一只违反多条只记先执行的那条），
+    -- 故 sum(excluded) == total_in - total_out 恒成立；剔除 0 的规则**必须显式记 0**
+    excluded        JSONB NOT NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- 报告存储（SDD §12.5）
 CREATE TABLE report (
