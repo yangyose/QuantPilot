@@ -122,6 +122,10 @@ async def test_adp_05_roe_to_decimal(adapter: TushareAdapter) -> None:
         {
             "ts_code": ["000001.SZ"],
             "end_date": ["20250930"],
+            # ann_date 是真实 fina_indicator 必返字段；2026-09-07 起适配器
+            # 按它做 PIT 截断（未公告即丢弃）。替身缺这个字段会走 fail-closed，
+            # 那正是「测试替身比现实更配合」的表现——补齐而非放宽实现。
+            "ann_date": ["20251028"],
             "roe": [15.0],
             "netprofit_yoy": [10.0],
             "tr_yoy": [8.0],
@@ -158,6 +162,10 @@ async def test_adp_05b_financial_data_basic_is_main_table(
         {
             "ts_code": ["000001.SZ"],
             "end_date": ["20250930"],
+            # ann_date 是真实 fina_indicator 必返字段；2026-09-07 起适配器
+            # 按它做 PIT 截断（未公告即丢弃）。替身缺这个字段会走 fail-closed，
+            # 那正是「测试替身比现实更配合」的表现——补齐而非放宽实现。
+            "ann_date": ["20251028"],
             "roe": [15.0],
             "netprofit_yoy": [10.0],
             "tr_yoy": [8.0],
@@ -515,6 +523,10 @@ async def test_td_12_fetch_financial_data_uses_ts_code_batches(
         {
             "ts_code": ["000001.SZ"],
             "end_date": ["20250930"],
+            # ann_date 是真实 fina_indicator 必返字段；2026-09-07 起适配器
+            # 按它做 PIT 截断（未公告即丢弃）。替身缺这个字段会走 fail-closed，
+            # 那正是「测试替身比现实更配合」的表现——补齐而非放宽实现。
+            "ann_date": ["20251028"],
             "roe": [15.0],
             "netprofit_yoy": [10.0],
             "tr_yoy": [8.0],

@@ -212,6 +212,29 @@ class TushareAdapter(DataSourceAdapter):
 
     # ── 财务数据 ───────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _truncate_to_announced(fina: pd.DataFrame, as_of_date: date) -> pd.DataFrame:
+        """只保留 `ann_date <= as_of_date` 的行（PIT 截断）。
+
+        `ann_date` 缺失时 **fail-closed**：丢弃全部基本面并记 ERROR。
+        §4.3 记着「接口参数名写错 = 静默返全表前 5000 行」——字段名一旦失效，
+        静默放行等于把前视偏差原样放回来且无人发现；而基本面全空当天就会被
+        `universe_filter_low_coverage` 告警照出来（可见的降级优于不可见的错误）。
+        """
+        if fina.empty:
+            return fina
+        if "ann_date" not in fina.columns:
+            logger.error(
+                "fina_indicator_missing_ann_date: 无法做 PIT 截断，"
+                "按 fail-closed 丢弃全部基本面（as_of=%s, rows=%d）",
+                as_of_date, len(fina),
+            )
+            return fina.iloc[0:0]
+        ann = pd.to_datetime(fina["ann_date"], format="%Y%m%d", errors="coerce")
+        # ann_date 解析失败（NaT）同样丢弃：无法证明「当时已公告」即视为未公告
+        keep = ann.notna() & (ann.dt.date <= as_of_date)
+        return fina[keep]
+
     async def fetch_financial_data(
         self,
         as_of_date: date,
@@ -259,7 +282,10 @@ class TushareAdapter(DataSourceAdapter):
                         self._pro.fina_indicator,
                         period=period_str,
                         ts_code=",".join(batch),
-                        fields="ts_code,end_date,roe,netprofit_yoy,tr_yoy,debt_to_assets",
+                        fields=(
+                            "ts_code,end_date,ann_date,roe,netprofit_yoy,"
+                            "tr_yoy,debt_to_assets"
+                        ),
                     )
                     if df_batch is not None and not df_batch.empty:
                         fina_frames.append(df_batch)
@@ -280,6 +306,21 @@ class TushareAdapter(DataSourceAdapter):
                              "tr_yoy", "debt_to_assets"]
                 )
             self._fina_cache[cache_key] = fina
+        # ── PIT 截断：丢弃 as_of_date 当时尚未公告的基本面（2026-09-07 修）──────
+        #
+        # 本函数写出的行是 `publish_date = as_of_date`，语义是「该日已知」。
+        # 而 `fina_indicator(period=...)` 返回的是**该期的最终值**，与 as_of 无关：
+        # 实时跑时该期未披露、Tushare 返空 → 正确；回填历史时早已披露 → 返最终值
+        # → **把 8 月才公布的中报写进 7 月的行**。同一段代码因运行时点不同而产生前视。
+        #
+        # 实测（5434 与生产逐条一致）：`report_period=2025-06-30` 且
+        # `publish_date=2025-07-15` 的 5408 行中 5384 行等于该期最终公布值，
+        # 等于上一期值的仅 2 行——是真的提前写了未来值，不是「沿用上期」的误标。
+        #
+        # ⚠️ 过滤必须在**取缓存之后**：缓存按 period 键，而同一 period 对不同
+        # as_of_date 的可见性不同。在入缓存前过滤会让首个 as_of_date 冻结整个窗口的
+        # 可见性，而 `ingest_history` 正是按日推进——方向反了但一样错。
+        fina = self._truncate_to_announced(fina, as_of_date)
         # 注：total_equity（总股东权益）来自 balancesheet API（total_hldr_eqy_exc_min_int），
         # 不在 fina_indicator 中；V1.5 接入 fetch_balance_sheet 补充，V1.0 暂存 NaN。
 
