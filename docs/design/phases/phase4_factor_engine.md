@@ -1,6 +1,6 @@
 # Phase 4：因子计算引擎
 
-> **版本：** v1.0
+> **版本：** v1.2
 > **所属阶段：** Phase 4 / 10
 > **依据文档：** system_design.md §2.1、§2.4、§5.3–5.4、§6；SDD §7、§8.3、附录 B/D
 > **日期：** 2026-04-01
@@ -14,6 +14,7 @@
 |------|------|------|
 | **v1.0** | 2026-04-01 | 重写：基于 Phase 1–3 整合检查结果，完全对齐 SDD §7/§8.3 和 system_design §5.3–5.4；修正文件命名（universe.py / pool.py / strategy_service.py）；修正 API 路由（扩展 market.py + 新增 watchlist.py）；补全 UniverseFilter 六类过滤条件；明确 candidate_pool schema 无新迁移；完整 WatchlistService 规格 |
 | **v1.1** | 2026-04-02 | 专家评审 C-01~C-12 全部修复：CandidatePoolManager 改为纯函数（C-01）；修复 frozen dataclass 循环赋值 bug（C-02/C-03）；修复 asyncio.gather 返回 tuple 类型不匹配（C-04）；补充 SDD §5.4 流动性/涨停封死两条过滤（C-05）；Phase 4 不写 signal_score_snapshot（C-06）；ROE 降级权重改为比例归一化（C-07）；淡出标记逻辑移入 ScoringService（C-08）；pe_pb_history 按 universe 过滤加载（C-09）；补充 TD 回填任务 T-01b/T-02b（C-10）；引入 MarketSnapshot TypedDict（C-11）；holding_codes 类型注解统一（C-12） |
+| **v1.2** | 2026-09-07 | F-4/F-6 降级告警的日志键由 `universe_filter_skipped_null_field` 改为 `universe_filter_low_coverage`（`1b05bc8`）：原实现只在字段**恰好 100% 全 NULL** 时才响，报不出「几乎全死」——实测 `total_equity` 覆盖率有 10/21 个采样日低于 19%、最低 1.2%，那条告警全程沉默。改为覆盖率阈值 0.5 并打印真实覆盖率。**过滤行为本身不变**（NaN 仍逐条跳过）。⚠️ 顺带订正本文档头部版本号：此前写 v1.0 而修订历史已到 v1.1，违反 CLAUDE.md §5.2。 |
 
 ---
 
@@ -227,7 +228,8 @@ Engine 层，纯函数，无 IO。输入来自 ScoringService 预加载的市场
 | F-7 | 流动性充足 | 20 日均日成交额 ≥ `min_avg_amount`（默认 500 万元，可配置）<br>**【降级实现】** 当前使用当日单日 `amount` 代替 20 日滚动均值。待 Repository 新增 `get_avg_amount()` 后修复。 | 无 |
 | F-8 | 非涨停封死 | `limit_up=True` 且当日成交量为 0 时排除（无法买入） | 无 |
 
-> **TD 依赖说明**：F-4/F-5/F-6 在 TD 修复完成前，对应字段为 NULL 时**跳过该条件**（不过滤），并在日志中记录 `universe_filter_skipped_null_field`。F-7/F-8 所需字段（`amount`/`limit_up`/`vol`）来自 `daily_quotes`，Phase 2 已入库，无 TD 依赖。
+> **TD 依赖说明**：F-4/F-5/F-6 在 TD 修复完成前，对应字段为 NULL 时**跳过该条件**（不过滤），并在日志中记录 `universe_filter_low_coverage`（2026-09-07 前为 `universe_filter_skipped_null_field`，
+> 该版本只在字段**恰好 100% 全 NULL** 时才响、报不出「几乎全死」，已改为覆盖率阈值 0.5 并打印真实覆盖率）。F-7/F-8 所需字段（`amount`/`limit_up`/`vol`）来自 `daily_quotes`，Phase 2 已入库，无 TD 依赖。
 
 **黑名单集成**（在 ScoringService 层实现，不在 Engine 层）：过滤后的宇宙再移除用户黑名单股票。
 
