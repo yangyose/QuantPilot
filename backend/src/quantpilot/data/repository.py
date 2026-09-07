@@ -696,6 +696,11 @@ class MarketDataRepository:
           并成一条（roe 每期恒定，max=coalesce 语义安全）。`HAVING 有任一非空` 后
           `DISTINCT ON (ts_code) ORDER BY report_period DESC` 取最近有值一期：真空股回落
           上一披露期（A5b 据 forecast.report_period > 本期判定真空）；已披露股取当期。
+        - **total_equity 另走一条按字段 LOCF**（2026-09-07 修）：上面那期是全字段共用的，
+          而 total_equity 每股每期只有一条锚点行、其余字段每条日频行都有。季初首日新期
+          已有日频行（roe 非空）但无锚点行 → 新期过 HAVING 并把有值的旧期挡掉，
+          total_equity 全 NULL → F-4 净资产过滤整日跳过。故单独取「最近有该字段值的期」
+          回填，且**只填共用期取不到的**（新期有值时不得被旧期结转值盖住）。
 
         回看窗口 `_FUND_LOOKBACK_DAYS` 界定 GROUP BY 扫描量（6.5M 行 / 2GB 机）。
         """
@@ -758,6 +763,36 @@ class MarketDataRepository:
             .distinct(fund_agg.c.ts_code)
             .order_by(fund_agg.c.ts_code, fund_agg.c.report_period.desc())
         )
+        # ── total_equity 专用 LOCF：取「最近**有该字段值**的报告期」──────────────
+        # 上面那段是「最近有值一期」共用给全部字段，而 total_equity 与其余字段的
+        # 稀疏度差一个量级：roe/yoy/debt 由采集侧打在**每条日频行**上，total_equity
+        # 每股每期只有一条锚点行（balancesheet 公告日）。季初首日新期已有密集日频行
+        # （roe 非空）却还没有锚点行 → 新期过得了 HAVING，把有值的旧期整个挡掉。
+        # 2026-09-07 于 5434 实测 2024-07-01：report_period=2024-06-30 命中 5334 股，
+        # roe 非空 5309、total_equity **0** → F-4 净资产过滤整日跳过（全 5y 面板
+        # 1114 日中 18 日命中，全是季初首个交易日，生产每年 4~5 天）。
+        # ⚠️ 只补 total_equity、**不动 report_period**：A5b 据
+        # `forecast.report_period > 本期` 判定真空，改了会连带坏掉（03h/03i 双向钉死）。
+        te_agg = (
+            select(
+                FinancialData.ts_code,
+                FinancialData.report_period,
+                func.max(FinancialData.total_equity).label("total_equity"),
+            )
+            .where(
+                FinancialData.ts_code.in_(ts_codes),
+                FinancialData.publish_date <= as_of_date,
+                FinancialData.publish_date >= lookback,
+                FinancialData.total_equity.is_not(None),
+            )
+            .group_by(FinancialData.ts_code, FinancialData.report_period)
+            .subquery()
+        )
+        te_stmt = (
+            select(te_agg.c.ts_code, te_agg.c.total_equity)
+            .distinct(te_agg.c.ts_code)
+            .order_by(te_agg.c.ts_code, te_agg.c.report_period.desc())
+        )
 
         daily_rows = (await self._session.execute(daily_stmt)).all()
         if not daily_rows:
@@ -774,6 +809,13 @@ class MarketDataRepository:
                      "revenue_yoy", "debt_to_asset", "total_equity"]
         if fund_rows:
             fund_df = pd.DataFrame(fund_rows, columns=fund_cols).set_index("ts_code")
+            # 只回填共用期取不到的那些；共用期本身有值时保持原样（不得被旧期盖住）
+            te_map = dict((await self._session.execute(te_stmt)).all())
+            if te_map:
+                fund_df["total_equity"] = [
+                    te_map.get(code) if pd.isna(v) else v
+                    for code, v in zip(fund_df.index, fund_df["total_equity"], strict=True)
+                ]
         else:
             fund_df = pd.DataFrame(
                 columns=fund_cols[1:], index=pd.Index([], name="ts_code")

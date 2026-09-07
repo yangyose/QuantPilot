@@ -197,6 +197,97 @@ async def test_repo_03d_latest_financial_locf_beyond_lookback(
 
 
 @pytest.mark.asyncio
+async def test_repo_03h_locf_total_equity_survives_dense_new_period(
+    repo: MarketDataRepository,
+) -> None:
+    """季初首日：新期日频行带 roe 但无 total_equity → total_equity 必须回落上一期。
+
+    ⚠️ 这条与 03b 的差别只有一处，却是缺陷四个月不被发现的全部原因：
+    03b 的真空期 Q2 行 **roe 也是 NULL**，于是 Q2 整期被 HAVING 挡掉、
+    report_period 回落 Q1，total_equity 顺带取到。**现实不长这样**——
+    采集侧把最近已知 roe 打在当季日频行上（2026-09-07 于 5434 实测：
+    2024-07-01 那天 report_period=2024-06-30 命中 5334 股、roe 非空 5309、
+    total_equity **0**），新期因此过得了 HAVING，反把有值的旧期整个挡住。
+    §4.11「测试输入比现实更配合」——护栏喂的是自己编的温和样本。
+
+    后果：F-4 净资产过滤在**每个季度首个交易日**整段跳过。全 5y 面板
+    1114 日中 18 日命中，生产每年 4~5 天。
+
+    判据同时钉住**不得回归 03b**：`report_period` 仍须是新期 Q2
+    （A5b 据 forecast.report_period > 本期判定真空，改了会连带坏掉）。
+    """
+    q1, q2 = date(2025, 3, 31), date(2025, 6, 30)
+    rows = [
+        # Q1 已披露：roe + total_equity 齐全
+        _fin_row("000011.SZ", q1, date(2025, 4, 30),
+                 pe=10.0, pb=1.0, roe=0.15, teq=1e10, npyoy=0.2),
+        # Q2 季初首日：日频行已滚到新期且 roe 非空，但 total_equity 尚无锚点行
+        _fin_row("000011.SZ", q2, date(2025, 7, 1),
+                 pe=11.0, pb=1.1, roe=0.15, npyoy=0.2),
+    ]
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000011.SZ"], as_of_date=date(2025, 7, 1))
+    r = res.iloc[0]
+    assert r["report_period"] == q2, "report_period 语义不得变（A5b 真空判定依赖它）"
+    assert float(r["roe"]) == pytest.approx(0.15)
+    assert not pd.isna(r["total_equity"]), "total_equity 被新期挡掉 → F-4 整日跳过"
+    assert float(r["total_equity"]) == pytest.approx(1e10)
+
+
+@pytest.mark.asyncio
+async def test_repo_03i_locf_total_equity_prefers_newest_period_with_value(
+    repo: MarketDataRepository,
+) -> None:
+    """反向钉：新期**有** total_equity 时不得被旧期的结转值盖住。
+
+    没有这条，"总是取旧期" 这种写宽了的修法照样能让 03h 变绿。
+    """
+    q1, q2 = date(2025, 3, 31), date(2025, 6, 30)
+    rows = [
+        _fin_row("000012.SZ", q1, date(2025, 4, 30),
+                 pe=10.0, pb=1.0, roe=0.15, teq=1e10, npyoy=0.2),
+        _fin_row("000012.SZ", q2, date(2025, 8, 28),
+                 pe=11.0, pb=1.1, roe=0.18, teq=2e10, npyoy=0.3),
+    ]
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000012.SZ"], as_of_date=date(2025, 9, 1))
+    r = res.iloc[0]
+    assert r["report_period"] == q2
+    assert float(r["total_equity"]) == pytest.approx(2e10), "不得被 Q1 结转值盖住"
+
+
+@pytest.mark.asyncio
+async def test_repo_03j_locf_total_equity_takes_newest_period_that_has_it(
+    repo: MarketDataRepository,
+) -> None:
+    """结转时必须取**最近**有值那期，不是随便一个旧期。
+
+    ⚠️ 这条是 03i 补不上的那一半：03i 里共用期自己就有 total_equity，
+    根本不走回填路径，故把结转的排序反过来（`report_period.asc()`）它照样绿
+    ——2026-09-07 变异实测 14/14 全过。要区分排序方向，必须让共用期**没有**该字段
+    且候选旧期**不止一个**。§4.4「一个判据若在两种情况下给出相同结果，它就不是判据」。
+    """
+    q1, q2, q3 = date(2024, 12, 31), date(2025, 3, 31), date(2025, 6, 30)
+    rows = [
+        _fin_row("000013.SZ", q1, date(2025, 1, 31),
+                 pe=9.0, pb=0.9, roe=0.10, teq=1e10, npyoy=0.1),
+        _fin_row("000013.SZ", q2, date(2025, 4, 30),
+                 pe=10.0, pb=1.0, roe=0.15, teq=2e10, npyoy=0.2),
+        # Q3 季初首日：日频行 roe 非空、无 total_equity 锚点行
+        _fin_row("000013.SZ", q3, date(2025, 7, 1),
+                 pe=11.0, pb=1.1, roe=0.18, npyoy=0.3),
+    ]
+    await repo.upsert_financial_data(pd.DataFrame(rows, columns=_FIN_COLS))
+
+    res = await repo.get_latest_financial(["000013.SZ"], as_of_date=date(2025, 7, 1))
+    r = res.iloc[0]
+    assert r["report_period"] == q3
+    assert float(r["total_equity"]) == pytest.approx(2e10), "须取 Q2（最近有值），不是 Q1"
+
+
+@pytest.mark.asyncio
 async def test_repo_03e_upsert_dedups_duplicate_conflict_keys(
     repo: MarketDataRepository,
 ) -> None:
