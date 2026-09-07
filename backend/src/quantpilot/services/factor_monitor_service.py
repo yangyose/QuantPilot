@@ -21,12 +21,19 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from quantpilot.core.config_defaults import DEFAULT_STRATEGY_WEIGHTS
+from quantpilot.core.config_defaults import (
+    DEFAULT_FACTOR_MONITOR,
+    DEFAULT_SCORING_PIPELINE,
+    DEFAULT_STRATEGY_WEIGHTS,
+    FactorMonitorConfig,
+    ScoringPipelineConfig,
+)
 from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import (
     FactorICRepository,
@@ -50,12 +57,43 @@ from quantpilot.models.market import DailyQuote
 
 logger = logging.getLogger(__name__)
 
-# Phase 11 §4.1 滚动窗口配置（默认值，与 SDD v1.4 / config_defaults FactorMonitorConfig 对齐）
-_ICIR_WINDOW_DAYS = 252
-_ICIR_LAG_DAYS = 20
-_ICIR_WARMUP_DAYS = _ICIR_WINDOW_DAYS + _ICIR_LAG_DAYS  # 272
-_STATE_MIN_SAMPLES = 60
-_BOOTSTRAP_ITERS = 1000
+
+def resolve_effective_order(
+    *,
+    prev_month_order: list[str] | None,
+    this_month_order: list[str],
+    last_status: str,
+    hysteresis_enabled: bool,
+) -> tuple[list[str], str]:
+    """按 `hysteresis_enabled` 决定本月生效顺序。
+
+    F-SI（2026-09-07）：`ScoringPipelineConfig.hysteresis_enabled` 此前**无人读取**
+    ——调用点无条件 `HysteresisStateMachine()`，开关是装饰品，而它对用户可编辑。
+
+    - 开：走状态机（连续两月同序才切换，中间态 `pending_switch`）
+    - 关：**本月顺序立即生效**，状态恒 `stable`
+
+    抽成模块级纯函数是为了能被「改参数 → 结果必须变」单测直接钉住；
+    留在方法体里就只能靠跑一整轮 rebalance 才能观测，那种测试没人会写。
+    """
+    if not hysteresis_enabled:
+        return list(this_month_order), "stable"
+    return HysteresisStateMachine().evaluate(
+        prev_month_order=prev_month_order,
+        this_month_order=this_month_order,
+        last_status=last_status,
+    )
+
+# Phase 11 §4.1 的滚动窗口配置**只有一个来源**：`FactorMonitorConfig`。
+#
+# 此处原有 5 个模块级常量（252/20/272/60/1000）与该 dataclass 逐个同值，
+# 而 dataclass 经 `ConfigService.get_factor_monitor_params` 对用户可编辑
+# → 用户改了会存库、界面显示已保存、代码永远读常量（2026-08-27 专项排查，
+# `docs/reviews/silent_ignore_audit_2026-08-27.md`）。当时两侧数值相同故行为无误，
+# 风险是用户侧修改自始至终无效 + 任一侧被改就静默分叉。
+#
+# 常量已删除、改由 `self._cfg` 取值。**不要再加回平行常量**——
+# `tests/unit/test_config_actually_consumed.py` 会断言它们不存在。
 _BOOTSTRAP_SEED = 42
 
 # Phase 11 §4.4 因子下线规则窗口
@@ -169,15 +207,48 @@ class FactorMonitorService:
         engine: FactorMonitorEngine,
         repo: FactorICRepository | None = None,
         calendar: TradingCalendar | None = None,
+        config: FactorMonitorConfig | None = None,
+        scoring_config: ScoringPipelineConfig | None = None,
+        config_service: Any = None,
     ) -> None:
         self._session = session
         self._engine = engine
         self._repo = repo or FactorICRepository()
+        # F-SI：ICIR 窗口参数与迟滞开关的**唯一来源**。此前分别被模块级同值常量
+        # 与「无条件实例化状态机」架空，属"旋钮拧了没反应"（CLAUDE.md §4.11）。
+        #
+        # ⚠️ **惰性解析**，不在构造时读配置：首版工厂在构造时 `await
+        # get_factor_monitor_params()`，结果是 FastAPI 依赖在**鉴权之前**就打 DB
+        # （`/factor-quality` 的 401 用例变成 ConnectionRefused），且假 session
+        # 的单测全炸。构造器不做 IO 是这一层的既有契约，接配置不能顺手破坏它。
+        self._cfg = config
+        self._scoring_cfg = scoring_config
+        self._config_service = config_service
         # Phase 14 §14-5：注入 TradingCalendar 让 rolling_icir_state 走严格交易日窗口
         # （SDD §7.4 定义：252 + 20 交易日 = 272 交易日，而非日历日）。
         # calendar=None → 回退到旧路径（日历日近似），仅供旧测试兼容；生产路径
         # （main.py lifespan / MonthlyScheduler / DailyPipeline / deps.py）必须注入。
         self._calendar = calendar
+
+    async def _factor_config(self) -> FactorMonitorConfig:
+        """ICIR 窗口参数：显式注入 > ConfigService（用户可编辑）> 默认值。"""
+        if self._cfg is None:
+            self._cfg = (
+                await self._config_service.get_factor_monitor_params()
+                if self._config_service is not None
+                else DEFAULT_FACTOR_MONITOR
+            )
+        return self._cfg
+
+    async def _scoring_config(self) -> ScoringPipelineConfig:
+        """评分管线配置（本服务只用 `hysteresis_enabled`）。"""
+        if self._scoring_cfg is None:
+            self._scoring_cfg = (
+                await self._config_service.get_scoring_pipeline_params()
+                if self._config_service is not None
+                else DEFAULT_SCORING_PIPELINE
+            )
+        return self._scoring_cfg
 
     # ------------------------------------------------------------------
     # V1.5-C C0：日级 IC 产出（调度闭环的生产者）
@@ -216,12 +287,13 @@ class FactorMonitorService:
                 trade_date,
             )
             return 0
+        lag_days = (await self._factor_config()).icir_lag_days
         try:
-            end_date = self._calendar.get_next_trade_date(trade_date, _ICIR_LAG_DAYS)
+            end_date = self._calendar.get_next_trade_date(trade_date, lag_days)
         except (ValueError, IndexError):
             logger.info(
                 "daily_ic_forward_window_incomplete: trade_date=%s 日历无 t+%d 交易日",
-                trade_date, _ICIR_LAG_DAYS,
+                trade_date, lag_days,
             )
             return 0
         max_quote_date = await market_repo.get_max_daily_quote_date()
@@ -503,7 +575,7 @@ class FactorMonitorService:
         """计算 ``[trade_date - 272d, trade_date - 20d]`` 窗口内 state 子集
         （``state_{t-20} == state``）的 ICIR 估计。
 
-        - sample_size < ``_STATE_MIN_SAMPLES`` (60) → 返回 ``None``（触发冷启动 fallback）
+        - sample_size < ``config.state_min_samples``（默认 60）→ 返回 ``None``（冷启动 fallback）
         - sample_size ≥ 60 → 返回 ``ICIRSnapshot``（ic_mean / ic_std / icir / CI / t_stat）
         - 窗口固定 ``[t-272, t-20]``（lag 20 跳过未完成 forward returns）
         - state 子集判定使用因子值日 state（``factor_ic_window_state.state`` 字段
@@ -521,12 +593,13 @@ class FactorMonitorService:
         # 回看 252 交易日；旧路径用 272/20 日历日 ≈ 188/14 交易日，比规格短约 25%）。
         # 注入 TradingCalendar 后走严格交易日；未注入则回退到旧日历日路径仅供旧测试
         # 兼容（生产路径全部已注入）。
+        cfg = await self._factor_config()
         if self._calendar is not None:
             window_end = self._calendar.get_prev_trade_date(
-                trade_date, n=_ICIR_LAG_DAYS,
+                trade_date, n=cfg.icir_lag_days,
             )
             window_start = self._calendar.get_prev_trade_date(
-                window_end, n=_ICIR_WINDOW_DAYS,
+                window_end, n=cfg.ic_window_days,
             )
         else:
             # 【降级说明】无 calendar 注入 → 回退到日历日近似窗口（约 188 交易日，
@@ -537,8 +610,8 @@ class FactorMonitorService:
                 "trade_date=%s — falling back to calendar-day window (Phase 14 §14-5)",
                 strategy, factor, state, trade_date,
             )
-            window_end = trade_date - timedelta(days=_ICIR_LAG_DAYS)
-            window_start = trade_date - timedelta(days=_ICIR_WARMUP_DAYS)
+            window_end = trade_date - timedelta(days=cfg.icir_lag_days)
+            window_start = trade_date - timedelta(days=cfg.icir_warmup_days)
 
         rows = await self._repo.get_ic_daily_window(
             session,
@@ -557,7 +630,7 @@ class FactorMonitorService:
             ic_values.append(float(row.ic_value))
 
         sample_size = len(ic_values)
-        if sample_size < _STATE_MIN_SAMPLES:
+        if sample_size < cfg.state_min_samples:
             return None
 
         arr = np.asarray(ic_values, dtype=float)
@@ -578,8 +651,9 @@ class FactorMonitorService:
 
         # bootstrap 95% CI（固定 seed=42 保证复现性）
         rng = np.random.default_rng(_BOOTSTRAP_SEED)
-        boot_means = np.empty(_BOOTSTRAP_ITERS, dtype=float)
-        for i in range(_BOOTSTRAP_ITERS):
+        n_boot = cfg.ic_bootstrap_iterations
+        boot_means = np.empty(n_boot, dtype=float)
+        for i in range(n_boot):
             resample = rng.choice(arr, size=sample_size, replace=True)
             boot_means[i] = resample.mean()
         ci_low = float(np.percentile(boot_means, 2.5))
@@ -915,7 +989,6 @@ class FactorMonitorService:
                 prev_order = None
                 last_status = "stable"
 
-            hsm = HysteresisStateMachine()
             if not this_order:
                 # 无任何 ICIR 数据 → 冷启动
                 effective_order = _default_order_for_state(state)
@@ -926,10 +999,11 @@ class FactorMonitorService:
                 for s in _default_order_for_state(state):
                     if s not in full_this_order:
                         full_this_order.append(s)
-                effective_order, new_status = hsm.evaluate(
+                effective_order, new_status = resolve_effective_order(
                     prev_month_order=prev_order,
                     this_month_order=full_this_order,
                     last_status=last_status,
+                    hysteresis_enabled=(await self._scoring_config()).hysteresis_enabled,
                 )
 
             # 4. 因子下线规则

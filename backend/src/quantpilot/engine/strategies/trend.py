@@ -65,12 +65,19 @@ class TrendStrategy(BaseStrategy):
             ma_alignment = conditions_met / 3.0
 
             # ── MACD（DIF/DEA，pandas_ta）────────────────────────────────────
-            macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+            macd_df = ta.macd(
+                close,
+                fast=self._cfg.macd_fast,
+                slow=self._cfg.macd_slow,
+                signal=self._cfg.macd_signal,
+            )
             if macd_df is None or macd_df.empty:
                 macd_signal = float("nan")
             else:
-                dif = macd_df.iloc[-1, 0]   # MACD_12_26_9
-                dea = macd_df.iloc[-1, 2]   # MACDs_12_26_9
+                # 按**位置**取（0=DIF / 2=DEA）：参数化后列名随参数变
+                # （MACD_12_26_9 → MACD_3_7_3），按名字取会 KeyError。
+                dif = macd_df.iloc[-1, 0]
+                dea = macd_df.iloc[-1, 2]
                 if pd.isna(dif) or pd.isna(dea):
                     macd_signal = float("nan")
                 elif dif > dea and dea > 0:

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from quantpilot.core.config_defaults import (
+    DEFAULT_FACTOR_MONITOR,
     DEFAULT_MEAN_REVERSION_STRATEGY,
     DEFAULT_MOMENTUM_STRATEGY,
     DEFAULT_SCORING_PIPELINE,
@@ -78,8 +79,15 @@ def build_default_scoring_service(
     的覆写结果；``None`` = 默认集合（生产路径）。
     """
     repo = MarketDataRepository(session)
+    # ⚠️ 这里**显式传 DEFAULT_***，让「用的是默认值」成为代码里看得见的事实，
+    # 而不是漏传参数的副产物。本工厂服务于离线脚本（回填 / 面板重跑）与生产调度，
+    # 前者**应当**用默认值：研究结论必须可复现，悄悄捡起用户当时的配置会让
+    # 「某批产出出自哪个配置」无从判断（V1.5-C C1-2 对照跑记过同类教训）。
+    # 生产路径需要用户配置的是 FactorMonitorService 自身，走
+    # `build_factor_monitor_service`（下方），它传 provider 由服务惰性解析。
     factor_monitor = FactorMonitorService(
         session, FactorMonitorEngine(), FactorICRepository(), calendar=calendar,
+        config=DEFAULT_FACTOR_MONITOR, scoring_config=DEFAULT_SCORING_PIPELINE,
     )
     fp_cfg = FactorPipelineConfig(
         winsorize_lower_pct=DEFAULT_SCORING_PIPELINE.winsorize_lower_pct,
@@ -96,4 +104,44 @@ def build_default_scoring_service(
         pool_manager=CandidatePoolManager(DEFAULT_UNIVERSE),
         calendar=calendar,
         factor_monitor=factor_monitor,
+    )
+
+
+def build_factor_monitor_service(
+    session,
+    *,
+    calendar: TradingCalendar | None,
+    engine: FactorMonitorEngine | None = None,
+    repo: FactorICRepository | None = None,
+    redis=None,
+) -> "FactorMonitorService":
+    """构造 `FactorMonitorService` 并**把用户配置真的接上**（F-SI，2026-09-07）。
+
+    ## 为什么必须走工厂
+
+    `FactorMonitorService.__init__` 接了 `config` / `scoring_config` 之后，
+    只要有**任何一个**构造点忘了传，那条路径上的用户配置就依旧无效——
+    而这正是本项目最贵的缺陷形态（CLAUDE.md §4.11 表第 4 例：
+    `compute_pool` 的持仓保护机制完全正确，只因链上三层默认 `frozenset()`、
+    终点从未被传入非空值，`candidate_pool.is_holding` 五年 0 行）。
+
+    「记得每处都传」不是判据。改为**唯一构造入口** + 一条 AST 测试断言
+    「除本函数外不得直接 `FactorMonitorService(...)`」，忘了就红。
+
+    ## 为什么传 `config_service` 而不是直接读出配置
+
+    首版把本函数写成 `async` 并在这里 `await get_factor_monitor_params()`，
+    结果是构造即 IO：FastAPI 依赖在**鉴权之前**打 DB（`/factor-quality` 的 401
+    用例变成 ConnectionRefused），假 session 的单测也全炸。构造器不做 IO 是这一层
+    的既有契约，接配置不能顺手破坏它——故传入 provider，由服务在首次真正需要时解析。
+    """
+    from quantpilot.services.config_service import ConfigService
+    from quantpilot.services.factor_monitor_service import FactorMonitorService
+
+    return FactorMonitorService(
+        session,
+        engine or FactorMonitorEngine(),
+        repo or FactorICRepository(),
+        calendar=calendar,
+        config_service=ConfigService(session, redis),
     )

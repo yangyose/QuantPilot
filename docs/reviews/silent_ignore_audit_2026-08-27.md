@@ -110,3 +110,69 @@ tushare.py 之外是否被使用"，得到 8 个疑似项：`list_status` / `dv_
    那条的判据），否则修完还是可能悄悄失效。
 
 登记去向：`v1_post_release_roadmap.md` §6 **V1.5-F 通知与配置**（该主题本就含"配置版本"）。
+
+---
+
+## 6. 2026-09-07 实施补记：本报告的计数偏低了，且漏了更严重的一层
+
+实施 F-SI 时按本报告逐项接线，过程中发现两处本报告自身的不足。**不是苛责当时的排查**
+——两处都是本报告 §4 已经预言的盲点，只是当时只找到了一个实例。
+
+### 6.1 零引用字段是 **14 项**，不是 12 项
+
+`TrendStrategyConfig.ma_short` / `ma_long` **同样零引用**，逃过排查的原因与
+`macd_signal` **完全相同**：`MarketStateConfig` 有同名字段且被 `market_state.py:65`
+消费（`self.ma_short = cfg.ma_short`），纯 grep 判为「已引用」。
+
+即 §4 记的那条盲点（**按名字检索会因同名标识符产生假阴性**）在同一份报告里
+**命中了两次**，而当时只发现一次。假阴性不会被复核——这就是它的代价。
+
+⚠️ 这两项的接线方式需要设计决策，本批**未接**：`ma_alignment` 因子用的是
+5/10/20/60 **四档 MA 阶梯**，两个配置字段表达不了；按默认值把 `ma_short→20` /
+`ma_long→60` 对上去是猜，而 5/10 仍然写死，属"文档里认了一半"。
+
+### 6.2 更严重的一层：**整个 config_key 从未被读取**（6/12）
+
+本报告数的是「类内字段无人引用」。但还有一个更粗的口径没被检查过：
+**`ConfigService` 的 getter 本身有没有人调用**。实测（`src/` + `scripts/`，AST 计数）：
+
+| config_key | 生产消费者 |
+|---|---|
+| `signal_params` / `risk_limits` / `universe_params` / `backtest_defaults` / `notification_prefs` / `factor_monitor_params` | ≥1 ✓ |
+| **`market_state_params`** | **0** |
+| **`strategy_weights`** | **0** |
+| **`strategy_params_trend` / `momentum` / `mean_reversion` / `value`** | **0** |
+
+`api/v1/settings.py::_VALID_CONFIG_KEYS` 的 **12 个 key 里 6 个零消费者**。
+后果比字段级严重：用户改四个策略的**任何**参数、改市场状态阈值、改策略权重，
+全部存库、界面显示已保存、生产永不读取。
+
+字段级排查看不见这一层——因为字段确实被某个 dataclass 的构造消费了，
+只是**那个 dataclass 永远是 `DEFAULT_*`，不是用户的**。
+
+### 6.3 本批实际交付与欠账
+
+**已接线并配「改参数 → 结果必须变」单测**（`tests/unit/test_config_actually_consumed.py`，
+14 条，8 个变异逐一验证有效）：
+
+- `FactorMonitorConfig` 9 项 —— 删除 5 个平行模块常量，改由注入配置取值
+- `ScoringPipelineConfig.hysteresis_enabled` —— 抽 `resolve_effective_order` 纯函数并接线
+- `TrendStrategyConfig.macd_fast/slow/signal` 3 项 —— `ta.macd` 改读配置
+
+**顺带堵住「上挪一层」**：给 `__init__` 加 `config` 参数并不等于用户配置生效——
+6 个构造点一个都没传。改为唯一入口 `build_factor_monitor_service` +
+AST 断言「除工厂外不得直接构造」。这正是 CLAUDE.md §4.11 表第 4 例的形状。
+
+⚠️ **过程中自己踩了一次**：首版工厂写成 `async` 并在构造时 `await` 配置读取，
+导致 FastAPI 依赖在**鉴权之前**打 DB（`/factor-quality` 的 401 用例变 ConnectionRefused）、
+假 session 的单测全炸。改为传 provider、服务首次使用时惰性解析。
+**构造器不做 IO 是这一层的既有契约，接配置不能顺手破坏它。**
+
+**欠账（已登记 roadmap §6 V1.5-F，属 §5.4「依赖外部决策」）**：
+
+1. 6.1 的 `ma_short` / `ma_long` —— 需先定 MA 阶梯的参数化形态
+2. 6.2 的 6 个零消费者 key —— 策略参数该不该给用户调、`strategy_weights` 与
+   ICIR 运行期权重孰先，都要产品拍板
+
+两项均由 `TestEveryEditableConfigKeyHasAConsumer` 的白名单钉住：
+**只许缩短不许加长**，新增第 7 个未接线 key 立刻红，接上线却忘了删白名单也红。

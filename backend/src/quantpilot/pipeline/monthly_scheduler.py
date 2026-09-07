@@ -75,14 +75,15 @@ class MonthlyScheduler:
             return
 
         from quantpilot.services.config_service import ConfigService
-        from quantpilot.services.factor_monitor_service import FactorMonitorService
         from quantpilot.services.notification_service import NotificationService
+        from quantpilot.services.scoring_factory import build_factor_monitor_service
 
         async with self._session_factory() as session:
             try:
                 # Phase 14 §14-5：注入 calendar 让 rolling_icir_state 走严格交易日
-                service = FactorMonitorService(
-                    session, self._factor_monitor_engine, calendar=self._calendar,
+                service = build_factor_monitor_service(
+                    session, calendar=self._calendar,
+                    engine=self._factor_monitor_engine, redis=self._redis,
                 )
                 notifier: NotificationService | None = None
                 if self._notification_channel is not None:
@@ -114,14 +115,15 @@ class MonthlyScheduler:
             return
 
         from quantpilot.services.config_service import ConfigService
-        from quantpilot.services.factor_monitor_service import FactorMonitorService
         from quantpilot.services.notification_service import NotificationService
+        from quantpilot.services.scoring_factory import build_factor_monitor_service
 
         async with self._session_factory() as session:
             try:
                 # Phase 14 §14-5：注入 calendar 让 rolling_icir_state 走严格交易日
-                service = FactorMonitorService(
-                    session, self._factor_monitor_engine, calendar=self._calendar,
+                service = build_factor_monitor_service(
+                    session, calendar=self._calendar,
+                    engine=self._factor_monitor_engine, redis=self._redis,
                 )
                 # R13-P1-2：注入 NotificationService 让 apply_monthly_rebalance
                 # 内部的 check_persistent_decay 能触发 factor_decayed_persistent

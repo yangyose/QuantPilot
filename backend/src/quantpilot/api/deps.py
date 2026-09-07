@@ -9,7 +9,6 @@ from quantpilot.core.security import decode_token
 from quantpilot.data.attribution_repository import AttributionRepository
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.data.validators import DataValidator
-from quantpilot.engine.factor_monitor import FactorMonitorEngine
 from quantpilot.engine.market_state import MarketStateEngine
 from quantpilot.models.account import Account
 from quantpilot.models.user import User
@@ -25,6 +24,7 @@ from quantpilot.services.market_state_service import MarketStateService
 from quantpilot.services.notification_service import NotificationService
 from quantpilot.services.performance_service import PerformanceService
 from quantpilot.services.report_service import ReportService
+from quantpilot.services.scoring_factory import build_factor_monitor_service
 from quantpilot.services.settings_service import SettingsService
 from quantpilot.services.setup_service import SetupService
 from quantpilot.services.signal_service import SignalService
@@ -230,16 +230,22 @@ def get_factor_monitor_service(
     request: Request,
     session: AsyncSession = Depends(get_db),
 ) -> FactorMonitorService:
-    """按请求构造 FactorMonitorService。
+    """按请求构造 FactorMonitorService（F-SI：经工厂注入用户配置）。
 
     Phase 14 §14-5：注入 app.state.calendar 让 rolling_icir_state 走严格交易日
     窗口（SDD §7.4：252 + 20 交易日）。lifespan 启动失败导致 calendar 缺失时
     （Tushare token 未配置 + fallback_calendar 也失败）传 None → service 回退到
     日历日近似 + WARNING 日志。
+
+    F-SI（2026-09-07）：改走 `build_factor_monitor_service` —— 直接构造会漏传
+    `config` / `scoring_config`，用户在设置里改的 ICIR 窗口与迟滞开关就依旧无效。
+    ⚠️ 工厂**不做 IO**（只传 provider），故本函数保持同步——
+    首版让它 await 配置读取，导致 401 用例在鉴权前就打 DB。
     """
     calendar = getattr(request.app.state, "calendar", None)
-    return FactorMonitorService(
-        session, FactorMonitorEngine(), calendar=calendar,
+    redis = getattr(request.app.state, "redis", None)
+    return build_factor_monitor_service(
+        session, calendar=calendar, redis=redis,
     )
 
 

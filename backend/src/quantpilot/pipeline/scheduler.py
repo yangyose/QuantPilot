@@ -264,9 +264,10 @@ async def _daily_ic_producer_job(
     from datetime import timedelta
 
     from quantpilot.data.factor_ic_repository import FactorICRepository
-    from quantpilot.engine.factor_monitor import FactorMonitorEngine
-    from quantpilot.services.factor_monitor_service import FactorMonitorService
-    from quantpilot.services.scoring_factory import build_default_scoring_service
+    from quantpilot.services.scoring_factory import (
+        build_default_scoring_service,
+        build_factor_monitor_service,
+    )
 
     today = datetime.now(tz=ZoneInfo("Asia/Shanghai")).date()
     try:
@@ -303,9 +304,8 @@ async def _daily_ic_producer_job(
     for td in planned:
         try:
             async with session_factory() as session:
-                service = FactorMonitorService(
-                    session, FactorMonitorEngine(), FactorICRepository(),
-                    calendar=calendar,
+                service = build_factor_monitor_service(
+                    session, calendar=calendar,
                 )
                 scoring_service = build_default_scoring_service(session, calendar)
                 n = await service.produce_daily_ic(session, td, scoring_service)

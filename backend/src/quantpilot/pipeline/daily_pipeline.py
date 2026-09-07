@@ -316,9 +316,7 @@ class DailyPipeline:
         """
         from sqlalchemy import select
 
-        from quantpilot.data.factor_ic_repository import FactorICRepository
         from quantpilot.data.repository import MarketDataRepository
-        from quantpilot.engine.factor_monitor import FactorMonitorEngine
         from quantpilot.engine.factor_pipeline import FactorPipeline, FactorPipelineConfig
         from quantpilot.engine.pool import CandidatePoolManager
         from quantpilot.engine.scorer import Scorer
@@ -329,7 +327,7 @@ class DailyPipeline:
         from quantpilot.engine.universe import UniverseFilter
         from quantpilot.models.system import PipelineRun
         from quantpilot.services.config_snapshot import from_snapshot
-        from quantpilot.services.factor_monitor_service import FactorMonitorService
+        from quantpilot.services.scoring_factory import build_factor_monitor_service
         from quantpilot.services.strategy_service import ScoringService
 
         snap = run.config_snapshot
@@ -354,9 +352,8 @@ class DailyPipeline:
             # Phase 11 §6.3：FactorMonitorService 注入用于 score_universe 内
             # get_active_weights 查询 strategy_weights_history（冷启动 fallback default_matrix）
             # Phase 14 §14-5：注入 calendar 让 rolling_icir_state 走严格交易日窗口
-            factor_monitor = FactorMonitorService(
-                session, FactorMonitorEngine(), FactorICRepository(),
-                calendar=self._calendar,
+            factor_monitor = build_factor_monitor_service(
+                session, calendar=self._calendar,
             )
             scoring_service = ScoringService(
                 repo=repo,
