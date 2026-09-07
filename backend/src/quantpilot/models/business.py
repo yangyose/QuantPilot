@@ -508,3 +508,38 @@ class FactorPanelStat(Base):
             "panel_run", "metric", "trade_date",
         ),
     )
+
+
+class UniverseDailyStat(Base):
+    """每日 universe 规模与逐条规则的剔除数（可观测性缺口，CLAUDE.md §6）。
+
+    生产此前**没有任何表持久化每日 universe 规模**，容器重启后日志只剩当日一行。
+    后果是每次改动选股面都无法回溯度量：2026-09-03 `is_suspended` 修复上线后
+    「universe 扩大了百分之几」答不出来（当时的预估 2276→2658 事后被证明是错的，
+    真机实测 3212）；2026-09-07 F-4 净资产过滤修复同样面临这个问题。
+
+    ⚠️ 只记总数不够。`excluded` 逐条规则的**边际**剔除数才是判据——
+    只看总数的话，「F-4 生效但当天没有负净资产股」与「F-4 整条静默失效」
+    长得一模一样，而后者恰恰真实发生过（§4.11 元判据）。
+
+    每日一行，`trade_date` 唯一。研究批次（5434 面板重跑）与生产各写各的库，
+    互不干扰；重跑同一天走 upsert 覆盖。
+    """
+
+    __tablename__ = "universe_daily_stat"
+
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    # PIT 活股数（进入过滤前）
+    total_in: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 通过全部 F-1~F-8 之后
+    total_out: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 黑名单剔除后真正进评分的只数（黑名单在 Service 层，不在 UniverseFilter）
+    after_blacklist: Mapped[int | None] = mapped_column(Integer)
+    # {"F-1": n, ..., "F-8": n}；**边际**计数，各条之和 == total_in - total_out
+    excluded: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="NOW()"
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="NOW()"
+    )

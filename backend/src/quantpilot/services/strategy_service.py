@@ -157,7 +157,7 @@ class ScoringService:
                 avg_amount["avg_amount"].reindex(daily_quotes_filter.index)
             )
 
-        universe = self._universe_filter.filter(
+        universe, _ustats = self._universe_filter.filter_with_stats(
             stock_info=stock_info,
             financials=financials_raw,
             daily_quotes=daily_quotes_filter,
@@ -171,6 +171,7 @@ class ScoringService:
         blacklist = await self._repo.get_blacklist_codes()
         universe = universe.difference(pd.Index(list(blacklist)))
         logger.info("scoring_universe_post_blacklist: size=%d", len(universe))
+        await self._record_universe_stats(trade_date, _ustats, len(universe))
 
         if len(universe) == 0:
             return []
@@ -270,7 +271,10 @@ class ScoringService:
         snapshot_quotes, financials, financials_history, avg_amount = await asyncio.gather(
             self._repo.get_snapshot_quotes(ts_codes, trade_date),
             self._repo.get_latest_financial(ts_codes, trade_date),
-            self._repo.get_latest_n_financials(ts_codes, trade_date, n=2),
+            # n=4 而非 2：未披露报告期每天写一条全 NULL 占位行、占掉名额，
+            # 只取 2 期时 F-5 至多拿到 1 个有值期 → 「连续两期」实质失效
+            # （2026-09-07 实测 87% 的股票如此）。4 期可容忍连续两个未披露期。
+            self._repo.get_latest_n_financials(ts_codes, trade_date, n=4),
             self._repo.get_avg_amount(ts_codes, trade_date, window=20),
         )
         return snapshot_quotes, financials, financials_history, avg_amount
@@ -286,6 +290,35 @@ class ScoringService:
             (s.required_history_days for s in self._strategies),
             default=DEFAULT_REQUIRED_HISTORY_DAYS,
         )
+
+
+    async def _record_universe_stats(
+        self, trade_date, stats, after_blacklist: int
+    ) -> None:
+        """把逐条规则剔除数落库（CLAUDE.md §6 可观测性缺口）。
+
+        ⚠️ **绝不抛**：可观测性不能成为评分链路的失败点——为了记一行统计
+        而让当日无信号，是本末倒置。失败记 WARNING（C-4：降级可以、静默不行）。
+
+        ⚠️ 光 `except` 不够，**必须套 SAVEPOINT**（2026-09-07 真机实测）：
+        PostgreSQL 里一条语句失败会把**整个事务**置为 aborted，之后所有查询都报
+        `current transaction is aborted`。当时 5434 尚未建表，`except` 确实吞掉了
+        异常，但紧接着的 `get_latest_market_state` 直接炸——「不抛」只保证了这一行
+        不抛，没保证调用方还能继续。`begin_nested()` 让失败只回滚到 savepoint。
+        """
+        try:
+            async with self._repo._session.begin_nested():
+                await self._repo.upsert_universe_daily_stat(
+                    trade_date=trade_date,
+                    total_in=stats.total_in,
+                    total_out=stats.total_out,
+                    excluded=stats.excluded,
+                    after_blacklist=after_blacklist,
+                )
+        except Exception:
+            logger.warning(
+                "universe_stat_write_failed: date=%s", trade_date, exc_info=True
+            )
 
     async def _build_market_snapshot(
         self,
@@ -459,7 +492,7 @@ class ScoringService:
                 avg_amount["avg_amount"].reindex(daily_quotes_filter.index)
             )
 
-        universe = self._universe_filter.filter(
+        universe, _ustats = self._universe_filter.filter_with_stats(
             stock_info=stock_info,
             financials=financials_raw,
             daily_quotes=daily_quotes_filter,
@@ -470,8 +503,10 @@ class ScoringService:
         blacklist = await self._repo.get_blacklist_codes()
         universe = universe.difference(pd.Index(list(blacklist)))
         logger.info(
-            "scoring_universe_phase11: date=%s size=%d", trade_date, len(universe)
+            "scoring_universe_phase11: date=%s size=%d total_in=%d excluded=%s",
+            trade_date, len(universe), _ustats.total_in, _ustats.excluded,
         )
+        await self._record_universe_stats(trade_date, _ustats, len(universe))
         if len(universe) == 0:
             return []
 

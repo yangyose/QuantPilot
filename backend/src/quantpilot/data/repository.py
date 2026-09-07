@@ -18,6 +18,7 @@ from quantpilot.models.business import (
     MarketStateHistory,
     Signal,
     SignalScoreSnapshot,
+    UniverseDailyStat,
     UserWatchlist,
 )
 from quantpilot.models.market import (
@@ -561,6 +562,40 @@ class MarketDataRepository:
             {str(r.ts_code): float(r.pct_rank) for r in rows}, dtype=float
         )
         return (1.0 - pct).reindex(index)
+
+    async def upsert_universe_daily_stat(
+        self,
+        trade_date: date,
+        total_in: int,
+        total_out: int,
+        excluded: Mapping[str, int],
+        after_blacklist: int | None = None,
+    ) -> None:
+        """写入/覆盖某交易日的 universe 规模统计（CLAUDE.md §6 可观测性缺口）。
+
+        每日一行，重跑同日走 upsert 覆盖——回填与生产各写各的库，互不干扰。
+
+        ⚠️ 不抛：可观测性不得成为评分链路的失败点。写失败记 WARNING
+        （C-4：降级可以，静默不行），评分照常返回。
+        """
+        stmt = pg_insert(UniverseDailyStat).values(
+            trade_date=trade_date,
+            total_in=int(total_in),
+            total_out=int(total_out),
+            after_blacklist=None if after_blacklist is None else int(after_blacklist),
+            excluded=dict(excluded),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["trade_date"],
+            set_={
+                "total_in": stmt.excluded.total_in,
+                "total_out": stmt.excluded.total_out,
+                "after_blacklist": stmt.excluded.after_blacklist,
+                "excluded": stmt.excluded.excluded,
+                "updated_at": func.now(),
+            },
+        )
+        await self._session.execute(stmt)
 
     async def upsert_factor_panel_stat_bulk(
         self,
