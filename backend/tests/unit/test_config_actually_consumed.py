@@ -313,73 +313,73 @@ class TestFactorMonitorConstructedThroughFactory:
         assert "ConfigService" in ctor, "工厂没构造 ConfigService，配置来源仍是 DEFAULT_*"
 
 
-class TestEveryEditableConfigKeyHasAConsumer:
-    """用户可编辑的每个 `config_key`，生产侧都必须真的去读它。
+# ── 撤掉的一条护栏，与撤掉的理由（2026-09-07 同日订正）─────────────────────────
+#
+# 本文件一度有个 `TestEveryEditableConfigKeyHasAConsumer`：对
+# `_VALID_CONFIG_KEYS` 的每个 key，断言其 `ConfigService` getter 在 src/ 有调用，
+# 并把「6 个零消费者 key」列入白名单。**那个前提是错的，已删除。**
+#
+# 错在哪：统计时排除了 `config_service.py` 自身（避免自引用），而
+# `get_pipeline_snapshot()` 恰恰在那个文件里**调用了全部 12 个 getter**，
+# DailyPipeline CP1/CP2 再用 `from_snapshot(...)` 取出。用户配置确实进得了生产评分。
+# **为降噪设的过滤器，把唯一的信号滤掉了**——与审计 §4 记的「同名标识符造成假阴性」
+# 同属一类：判据本身的作用域出了问题，而假阴性不会被复核。
+#
+# 后来改测字段级（每个 dataclass 字段有没有属性访问）同样不可靠，三种假结果都实测到了：
+#   · 假阳性·动态访问：`notify_signal_buy` 等经 `getattr(prefs, key)` 消费，
+#     字段名只以**字符串**出现在 `notification_service.py:43-45` 的映射里
+#   · 假阳性·同名：`rsi_oversold` 撞上 mean_reversion 的同名因子键
+#   · 假阴性·同名：`TrendStrategyConfig.ma_short` 撞上 `MarketStateConfig.ma_short`
+#
+# 结论：**没有可靠的自动扫描**。审计原本给的判据才是对的，也是本文件其余部分做的事——
+# **每项一条「改参数 → 结果必须变」的行为测试**。扫描只能用来生成候选，不能当护栏。
 
-    2026-09-07 实测：`api/v1/settings.py::_VALID_CONFIG_KEYS` 的 12 个 key 里，
-    **6 个的 ConfigService getter 在 src/ 与 scripts/ 下零调用**——用户改了
-    会存库、界面显示已保存、生产永不读取。这比 2026-08-27 审计的口径更严重一档：
-    审计数的是「类内字段无人引用」（12 个字段），这里是**整个 key 从未被读取**。
 
-    ⚠️ 白名单不是豁免，是**账**：它记录当前欠着的 6 项（已登记 roadmap §6 V1.5-F，
-    属「依赖外部决策」——策略参数该不该给用户调、`strategy_weights` 与 ICIR
-    运行期权重孰先，都要产品拍板，CLAUDE.md §5.4 四类充分理由之一）。
-    新增第 7 项、或加了新 key 却没接线，本测试立刻红。
+class TestPipelineUsesFrozenSnapshotNotLiveConfig:
+    """DailyPipeline CP2 必须用**冻结快照**里的配置，不得现读 ConfigService。
+
+    `daily_pipeline.py` 开头写着：「首次运行时一次性写入 `config_snapshot`，
+    后续 CP 如需消费配置应从 `run.config_snapshot` 反序列化，**禁止再调 ConfigService**」。
+    冻结的目的是让一次运行内配置自洽——运行到一半用户改了设置，不该产出
+    「半新半旧」的一天。
+
+    ⚠️ F-SI 首版接线时我正好捅穿了这条：把 CP2 的 FactorMonitorService 改成走
+    `build_factor_monitor_service`，而那个工厂内部构造的是**实时** ConfigService。
+    接一个配置的过程中破坏另一个配置约束，属同一族错误的镜像。
     """
 
-    # 已知未接线（V1.5-F）。**只许缩短，不许加长**。
-    _KNOWN_UNWIRED = {
-        "market_state_params",
-        "strategy_weights",
-        "strategy_params_trend",
-        "strategy_params_momentum",
-        "strategy_params_mean_reversion",
-        "strategy_params_value",
-    }
+    def test_snapshot_registry_covers_scoring_pipeline_params(self) -> None:
+        """`from_snapshot` 必须支持这个 key，否则 CP2 只能手工 `.get(k, 硬编码默认)`
+        ——那本身就是一份平行副本（F-SI 要消灭的东西）。"""
+        from quantpilot.core.config_defaults import ScoringPipelineConfig
+        from quantpilot.services.config_snapshot import _SNAPSHOT_REGISTRY, from_snapshot
 
-    @staticmethod
-    def _getter_call_sites() -> dict[str, int]:
-        import ast
-        import pathlib
-
-        from quantpilot.api.v1.settings import _VALID_CONFIG_KEYS
-
-        root = pathlib.Path(__file__).resolve().parents[2]
-        defn = root / "src" / "quantpilot" / "services" / "config_service.py"
-        counts = {k: 0 for k in _VALID_CONFIG_KEYS}
-        # key → getter 名（ConfigService 的命名约定）
-        getters = {k: f"get_{k}" for k in counts}
-        for base in ("src", "scripts"):
-            for f in (root / base).rglob("*.py"):
-                if f == defn:
-                    continue
-                try:
-                    tree = ast.parse(f.read_text(encoding="utf-8"))
-                except SyntaxError:  # pragma: no cover
-                    continue
-                for n in ast.walk(tree):
-                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
-                        for k, g in getters.items():
-                            if n.func.attr == g:
-                                counts[k] += 1
-        return counts
-
-    def test_no_new_unwired_config_keys(self) -> None:
-        counts = self._getter_call_sites()
-        unwired = {k for k, c in counts.items() if c == 0}
-        new = unwired - self._KNOWN_UNWIRED
-        assert not new, (
-            f"新增了无人读取的用户可编辑配置：{sorted(new)} —— "
-            "旋钮拧了没反应且不报错（CLAUDE.md §4.11）"
+        assert "scoring_pipeline_params" in _SNAPSHOT_REGISTRY
+        cfg = from_snapshot(
+            {"scoring_pipeline_params": {"hysteresis_enabled": False}},
+            "scoring_pipeline_params",
         )
+        assert isinstance(cfg, ScoringPipelineConfig)
+        assert cfg.hysteresis_enabled is False, "快照里的值没被取出来"
 
-    def test_allowlist_shrinks_when_a_key_gets_wired(self) -> None:
-        """白名单里的 key 一旦接上线，必须从白名单删掉。
+    def test_cp2_passes_frozen_configs_to_the_factory(self) -> None:
+        """AST 检查调用点：CP2（`_cp2_scoring`）必须显式传 `config=` / `scoring_config=`。
 
-        没有这条，白名单会变成永久豁免——「记了账」和「还了账」看起来一样。
+        §4.11：调用点只能在调用点上验；不传就会静默回落实时配置。
         """
-        counts = self._getter_call_sites()
-        wired_but_listed = {k for k in self._KNOWN_UNWIRED if counts.get(k, 0) > 0}
-        assert not wired_but_listed, (
-            f"这些 key 已有消费者，请从 _KNOWN_UNWIRED 删除：{sorted(wired_but_listed)}"
+        import ast
+        import inspect
+
+        from quantpilot.pipeline.daily_pipeline import DailyPipeline
+
+        src = inspect.getsource(DailyPipeline._cp2_scoring).lstrip()
+        kwargs = {
+            kw.arg
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Call)
+            and getattr(n.func, "id", None) == "build_factor_monitor_service"
+            for kw in n.keywords
+        }
+        assert {"config", "scoring_config"} <= kwargs, (
+            f"CP2 未传冻结配置，会现读 ConfigService：{kwargs}"
         )

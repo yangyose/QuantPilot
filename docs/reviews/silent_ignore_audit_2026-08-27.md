@@ -131,24 +131,50 @@ tushare.py 之外是否被使用"，得到 8 个疑似项：`list_status` / `dv_
 5/10/20/60 **四档 MA 阶梯**，两个配置字段表达不了；按默认值把 `ma_short→20` /
 `ma_long→60` 对上去是猜，而 5/10 仍然写死，属"文档里认了一半"。
 
-### 6.2 更严重的一层：**整个 config_key 从未被读取**（6/12）
+### 6.2 🔴 我在同一天写下的一个错误结论（已撤回，连同它的成因一起记下）
 
-本报告数的是「类内字段无人引用」。但还有一个更粗的口径没被检查过：
-**`ConfigService` 的 getter 本身有没有人调用**。实测（`src/` + `scripts/`，AST 计数）：
+本节原写着「12 个用户可编辑 config_key 里 6 个零消费者，用户改四个策略的任何参数
+全部存库而生产永不读取」，并据此加了一条白名单护栏。**那个结论是错的。**
 
-| config_key | 生产消费者 |
+`ConfigService.get_pipeline_snapshot()` **调用了全部 12 个 getter**，
+`DailyPipeline._write_config_snapshot` 把结果冻结进 `pipeline_run.config_snapshot`，
+CP1/CP2 再用 `from_snapshot(...)` 取出（`market_state_params` / `universe_params` /
+`strategy_weights` / 四个 `strategy_params_*` 共 7 个 key 走这条路）。
+**用户配置确实进得了生产评分。**
+
+错因：统计调用点时排除了 `config_service.py` 自身以避免自引用——
+而那个文件恰恰是唯一消费它们的地方。**为降噪设的过滤器，把唯一的信号滤掉了。**
+这与 §4 记的「同名标识符造成假阴性」同属一类：**判据自身的作用域出了问题**，
+且假阴性不会被复核。同一份报告里，同一类方法学错误现在有三个实例了。
+
+改测**字段级**（每个 dataclass 字段有没有属性访问）同样不可靠，三种假结果全部实测到：
+
+| 形态 | 实例 |
 |---|---|
-| `signal_params` / `risk_limits` / `universe_params` / `backtest_defaults` / `notification_prefs` / `factor_monitor_params` | ≥1 ✓ |
-| **`market_state_params`** | **0** |
-| **`strategy_weights`** | **0** |
-| **`strategy_params_trend` / `momentum` / `mean_reversion` / `value`** | **0** |
+| 假阳性·动态访问 | `notify_signal_buy` / `notify_signal_sell` / `notify_market_state` 经 `getattr(prefs, key)` 消费，字段名只以**字符串**出现在 `notification_service.py:43-45` 的映射里 |
+| 假阳性·同名 | `MeanReversionStrategyConfig.rsi_oversold` 撞上 mean_reversion 的同名因子键 |
+| 假阴性·同名 | `TrendStrategyConfig.ma_short` 撞上 `MarketStateConfig.ma_short`（见 §6.1）|
 
-`api/v1/settings.py::_VALID_CONFIG_KEYS` 的 **12 个 key 里 6 个零消费者**。
-后果比字段级严重：用户改四个策略的**任何**参数、改市场状态阈值、改策略权重，
-全部存库、界面显示已保存、生产永不读取。
+**结论：这件事没有可靠的自动扫描。** 扫描只能用来生成**候选**，逐个人工核实；
+唯一可靠的护栏是本报告 §5 第 4 条原本就给出的那句——
+**每项修复配一条「改参数 → 结果必须变」的行为测试**。
+那条白名单护栏已删除，`tests/unit/test_config_actually_consumed.py` 里留了原因。
 
-字段级排查看不见这一层——因为字段确实被某个 dataclass 的构造消费了，
-只是**那个 dataclass 永远是 `DEFAULT_*`，不是用户的**。
+⚠️ 与此同时 §6.1 的发现**不受影响**：`ma_short`/`ma_long` 确实零引用（人工核实过
+`trend.py` 写死 5/10/20/60），零引用字段实为 14 项。字段级的原始发现成立，
+错的是我后来加的那个 key 级推论。
+
+### 6.2b 再订正一处：`hysteresis_enabled` **对用户不可编辑**，严重性被高估
+
+§3.1 写「三者都经 `ConfigService` 暴露，且 `api/v1/settings.py` 的 key 列表里含
+`factor_monitor_params`、`scoring_pipeline_params`」。**后半句不成立**：
+实测 `_VALID_CONFIG_KEYS` 共 12 个，**不含** `scoring_pipeline_params`
+（它只进 `get_pipeline_snapshot()` 供 CP2 派生 `FactorPipelineConfig`）。
+
+故 `hysteresis_enabled` 从来不是「面向用户的旋钮」，只是代码级配置——
+接线仍然该做（它此前确实无人读取、Hysteresis 恒开），但它**不属于**
+§3.1 说的「本族里最严重的形态」。真正对用户可编辑且字段无人读的，
+是 `FactorMonitorConfig`（9 项）与 `TrendStrategyConfig`（macd 3 项 + ma 2 项）。
 
 ### 6.3 本批实际交付与欠账
 
@@ -171,8 +197,10 @@ AST 断言「除工厂外不得直接构造」。这正是 CLAUDE.md §4.11 表�
 **欠账（已登记 roadmap §6 V1.5-F，属 §5.4「依赖外部决策」）**：
 
 1. 6.1 的 `ma_short` / `ma_long` —— 需先定 MA 阶梯的参数化形态
-2. 6.2 的 6 个零消费者 key —— 策略参数该不该给用户调、`strategy_weights` 与
-   ICIR 运行期权重孰先，都要产品拍板
+2. `FactorMonitorConfig` 剩 4 个 Phase 7~10 遗留字段（`ic_window` /
+   `ic_alert_threshold` / `half_life_window` / `half_life_window_days`）仍无属性访问，
+   `ValueStrategyConfig.pe_pb_history_years` 亦然（后者 `value.py:19` 已有明示的
+   【降级说明】）。这几项要么接线、要么从用户可编辑清单里摘掉，同样需要拍板。
 
-两项均由 `TestEveryEditableConfigKeyHasAConsumer` 的白名单钉住：
-**只许缩短不许加长**，新增第 7 个未接线 key 立刻红，接上线却忘了删白名单也红。
+⚠️ 原文此处曾列「6 个零消费者 key」并声称由白名单护栏钉住——**该条已随 §6.2 撤回**，
+护栏也已删除（前提是错的）。留在这里的只有经人工逐个核实过的字段级欠账。

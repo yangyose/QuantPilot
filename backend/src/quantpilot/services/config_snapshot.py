@@ -22,6 +22,7 @@ from quantpilot.core.config_defaults import (
     DEFAULT_MOMENTUM_STRATEGY,
     DEFAULT_NOTIFICATION,
     DEFAULT_RISK_LIMITS,
+    DEFAULT_SCORING_PIPELINE,
     DEFAULT_SIGNAL_CONFIG,
     DEFAULT_STRATEGY_WEIGHTS,
     DEFAULT_TREND_STRATEGY,
@@ -34,6 +35,7 @@ from quantpilot.core.config_defaults import (
     MomentumStrategyConfig,
     NotificationConfig,
     RiskLimitsConfig,
+    ScoringPipelineConfig,
     SignalConfig,
     StrategyWeightsConfig,
     TrendStrategyConfig,
@@ -60,6 +62,8 @@ _SNAPSHOT_REGISTRY: dict[str, tuple[type, Any]] = {
     "backtest_defaults": (BacktestDefaultsConfig, DEFAULT_BACKTEST_DEFAULTS),
     "notification_prefs": (NotificationConfig, DEFAULT_NOTIFICATION),
     "factor_monitor_params": (FactorMonitorConfig, DEFAULT_FACTOR_MONITOR),
+    # F-SI：CP2 此前手工 `.get(k, 硬编码默认值)` 派生，那是一份平行副本
+    "scoring_pipeline_params": (ScoringPipelineConfig, DEFAULT_SCORING_PIPELINE),
 }
 
 
@@ -70,7 +74,9 @@ def from_snapshot(snapshot: dict[str, Any] | None, key: str) -> Any:
     - 子值为 dict 但结构损坏（未知字段已过滤后仍构造失败）→ 记 ERROR，回退默认值。
     - 子值结构正确 → 与默认值深合并后实例化。
 
-    `key` 必须是 12 个合法 config_key 之一；否则 KeyError（属编码错误）。
+    `key` 必须是注册表里的 13 个 key 之一；否则 KeyError（属编码错误）。
+    ⚠️ 13 ≠ `settings.py::_VALID_CONFIG_KEYS` 的 12——`scoring_pipeline_params`
+    进快照供 CP2 派生 FactorPipelineConfig，但**不对用户开放编辑**。
     """
     cls, default = _SNAPSHOT_REGISTRY[key]
     if not snapshot:

@@ -338,13 +338,15 @@ class DailyPipeline:
         mr_cfg = from_snapshot(snap, "strategy_params_mean_reversion")
         value_cfg = from_snapshot(snap, "strategy_params_value")
         # Phase 11 §7.2：派生 FactorPipelineConfig（snapshot 缺失时回退默认）
-        sp_dict = (snap or {}).get("scoring_pipeline_params") or {}
+        # F-SI：改走 `from_snapshot`，消掉此处硬编码的 0.01/0.99/True/True/False
+        # ——那是 `ScoringPipelineConfig` 默认值的一份平行副本，改一边不改另一边即静默分叉。
+        sp_cfg = from_snapshot(snap, "scoring_pipeline_params")
         fp_cfg = FactorPipelineConfig(
-            winsorize_lower_pct=sp_dict.get("winsorize_lower_pct", 0.01),
-            winsorize_upper_pct=sp_dict.get("winsorize_upper_pct", 0.99),
-            neutralize_industry=sp_dict.get("neutralize_industry", True),
-            neutralize_market_cap=sp_dict.get("neutralize_market_cap", True),
-            neutralize_beta=sp_dict.get("neutralize_beta", False),
+            winsorize_lower_pct=sp_cfg.winsorize_lower_pct,
+            winsorize_upper_pct=sp_cfg.winsorize_upper_pct,
+            neutralize_industry=sp_cfg.neutralize_industry,
+            neutralize_market_cap=sp_cfg.neutralize_market_cap,
+            neutralize_beta=sp_cfg.neutralize_beta,
         )
 
         async with self._session_factory() as session:
@@ -354,6 +356,9 @@ class DailyPipeline:
             # Phase 14 §14-5：注入 calendar 让 rolling_icir_state 走严格交易日窗口
             factor_monitor = build_factor_monitor_service(
                 session, calendar=self._calendar,
+                # 冻结快照，禁止现读 ConfigService（见本文件开头 §4.3 约定）
+                config=from_snapshot(snap, "factor_monitor_params"),
+                scoring_config=sp_cfg,
             )
             scoring_service = ScoringService(
                 repo=repo,

@@ -114,6 +114,8 @@ def build_factor_monitor_service(
     engine: FactorMonitorEngine | None = None,
     repo: FactorICRepository | None = None,
     redis=None,
+    config=None,
+    scoring_config=None,
 ) -> "FactorMonitorService":
     """构造 `FactorMonitorService` 并**把用户配置真的接上**（F-SI，2026-09-07）。
 
@@ -143,5 +145,10 @@ def build_factor_monitor_service(
         engine or FactorMonitorEngine(),
         repo or FactorICRepository(),
         calendar=calendar,
+        # 显式配置优先于 provider（服务的惰性访问器只在 None 时才去 await provider）。
+        # DailyPipeline 走这条：它必须用 `run.config_snapshot` 里的**冻结**配置，
+        # 而不是现读——运行到一半用户改了设置，不该产出「半新半旧」的一天。
+        config=config,
+        scoring_config=scoring_config,
         config_service=ConfigService(session, redis),
     )
