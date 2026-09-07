@@ -295,3 +295,60 @@ def test_urf_10_limit_up_no_vol_excluded(uf: UniverseFilter, calendar: TradingCa
 
     assert "000001.SZ" not in result
     assert "000002.SZ" in result
+
+
+# ── URF-11：基本面覆盖率告警的阈值盲区（2026-09-07）──────────────────────────────
+
+def _cov_case(uf, calendar, caplog, col: str, present: int, total: int = 200):
+    """构造 `col` 只有 present/total 只有值的 financials，返回捕获的告警文本。"""
+    codes = [f"{i:06d}.SZ" for i in range(total)]
+    fin = _make_financials(codes)
+    fin[col] = [fin[col].iloc[0]] * present + [float("nan")] * (total - present)
+    with caplog.at_level("WARNING"):
+        uf.filter(
+            _make_stock_info(codes), fin, _make_daily_quotes(codes),
+            TODAY, calendar,
+        )
+    return "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_urf_11_low_coverage_warns_not_only_all_null(
+    uf: UniverseFilter, calendar: TradingCalendar, caplog
+) -> None:
+    """1% 覆盖率必须告警——原实现只在**恰好 100% 全 NULL** 时才响。
+
+    ⚠️ 这条钉的是阈值盲区，不是「有没有告警」。2026-09-07 于 5434 实测：
+    `total_equity` 在 5 年 21 个采样日中有 **10 天**覆盖率低于 19%
+    （最低 1.2%），而全 5y 面板 1114 日里只有 **18 天**触发了那条 WARNING
+    ——因为它要求 100% 全 NULL。「F-4 对 98.8% 的股票不生效」在日志里
+    与完全健康**长得一模一样**。§4.11 元判据：护栏在机制生效与失效时
+    给出相同结果，它就不是护栏。
+
+    判据同时要求把**真实覆盖率**打进日志：只说「跳过了」而不说「覆盖多少」，
+    下次仍然只能分辨 0% 与非 0%。
+    """
+    msg = _cov_case(uf, calendar, caplog, "total_equity", present=2)
+    assert "total_equity" in msg, "1% 覆盖率未告警 —— 阈值盲区仍在"
+    assert "1.0%" in msg or "0.01" in msg, "告警未报出真实覆盖率"
+
+
+def test_urf_11b_full_coverage_is_silent(
+    uf: UniverseFilter, calendar: TradingCalendar, caplog
+) -> None:
+    """反向钉：覆盖率正常时不得刷告警（否则阈值等于没设）。"""
+    msg = _cov_case(uf, calendar, caplog, "total_equity", present=200)
+    assert "total_equity" not in msg
+
+
+def test_urf_11c_covers_f5_and_f6_fields(
+    uf: UniverseFilter, calendar: TradingCalendar, caplog
+) -> None:
+    """F-5 / F-6 用的是同一个 100% 阈值，同样要能报出低覆盖。
+
+    这两个字段目前实测健康（92~100%），但盲区是结构性的：
+    只钉 total_equity 的话，它们跌到 5% 时照样无声。
+    """
+    for col in ("net_profit_yoy", "debt_to_asset"):
+        caplog.clear()
+        msg = _cov_case(uf, calendar, caplog, col, present=4)
+        assert col in msg, f"{col} 低覆盖未告警"

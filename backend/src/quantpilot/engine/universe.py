@@ -11,6 +11,30 @@ from quantpilot.data.calendar import TradingCalendar
 
 logger = logging.getLogger(__name__)
 
+# 基本面字段覆盖率告警阈值：低于此值即认为该条过滤规则已实质失效。
+# ⚠️ 原实现只在**恰好 100% 全 NULL** 时才告警，那是个报不出「几乎全死」的阈值。
+# 2026-09-07 于 5434 实测：total_equity 在 5 年 21 个采样日中 10 天覆盖率低于 19%
+# （最低 1.2%），而全 5y 面板 1114 日里只有 18 天触发过那条 WARNING——因为它要求
+# 100%。「F-4 对 98.8% 的股票不生效」在日志里与完全健康长得一模一样。
+# 取 0.5：正常年份实测 92~99%，季末真空期跌到 1~19%，两者之间没有别的形态。
+_MIN_FIELD_COVERAGE = 0.5
+
+
+def _warn_if_low_coverage(values: pd.Series, field: str, rule: str) -> None:
+    """字段覆盖率低于阈值时告警，并**报出真实覆盖率**。
+
+    只说「跳过了」而不说「覆盖多少」，下次仍然只能分辨 0% 与非 0%。
+    """
+    n = len(values)
+    if n == 0:
+        return
+    cov = float(values.notna().sum()) / n
+    if cov < _MIN_FIELD_COVERAGE:
+        logger.warning(
+            "universe_filter_low_coverage: %s 覆盖率 %.1f%%（%d/%d）→ %s 实质失效",
+            field, cov * 100, int(values.notna().sum()), n, rule,
+        )
+
 
 class UniverseFilter:
     """SDD §5.4：八条硬性过滤规则（F-1~F-8），Engine 层纯函数，无 IO。
@@ -78,9 +102,7 @@ class UniverseFilter:
 
         # F-4：净资产为正（NaN → 跳过该条件）
         equity = _get_col(financials, "total_equity", idx)
-        null_f4 = equity.isna().all()
-        if null_f4:
-            logger.warning("universe_filter_skipped_null_field: total_equity 全为 NULL，F-4 跳过")
+        _warn_if_low_coverage(equity, "total_equity", "F-4 净资产过滤")
         equity_ok = equity.isna() | (equity > 0)
         mask &= (equity_ok | is_financial)
 
@@ -107,17 +129,13 @@ class UniverseFilter:
                 mask &= (yoy_ok | is_financial)
         else:
             yoy = _get_col(financials, "net_profit_yoy", idx)
-            if yoy.isna().all():
-                logger.warning(
-                    "universe_filter_skipped_null_field: net_profit_yoy 全为 NULL，F-5 跳过"
-                )
+            _warn_if_low_coverage(yoy, "net_profit_yoy", "F-5 连亏过滤")
             yoy_ok = yoy.isna() | (yoy >= 0)
             mask &= (yoy_ok | is_financial)
 
         # F-6：非高杠杆（debt_to_asset >= 0.9 排除，NaN → 跳过）
         d2a = _get_col(financials, "debt_to_asset", idx)
-        if d2a.isna().all():
-            logger.warning("universe_filter_skipped_null_field: debt_to_asset 全为 NULL，F-6 跳过")
+        _warn_if_low_coverage(d2a, "debt_to_asset", "F-6 高杠杆过滤")
         d2a_ok = d2a.isna() | (d2a < 0.9)
         mask &= (d2a_ok | is_financial)
 

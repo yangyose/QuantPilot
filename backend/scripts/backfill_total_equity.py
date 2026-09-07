@@ -7,7 +7,7 @@
 的 `start_date=None` → 今日-2y），**更早的报告期从未补过**。
 
 后果不报错、但很实在：`universe.filter` 的 **F-4（净资产过滤）在 total_equity 全为
-NULL 时整段跳过**，只留一条 `universe_filter_skipped_null_field` 的 INFO。于是历史
+NULL 时整段跳过**，只留一条 `universe_filter_low_coverage` 的 WARNING。于是历史
 日期上的 universe 与今天口径不一致——2026-09-04 跑 V1.5-K 面板时被这条日志暴露。
 
 ## 安全性
