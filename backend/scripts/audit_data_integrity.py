@@ -46,6 +46,45 @@ def _parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
+async def lookahead_violations(session) -> int:
+    """公告日**之前**就已存在基本面值的行数——历史前视偏差的痕迹。
+
+    ## 为什么源头修了还要查数据
+
+    `TushareAdapter._truncate_to_announced`（`5f7d57a`）让采集不再写入未公告的
+    基本面，但它挡不住：换人跑旧版脚本、恢复旧备份、手工 SQL、或接口字段变更后
+    走了 fail-closed 之外的路径。那些都会让 2021-05~2026-05 那 318 万行的污染
+    悄悄回来，而**代码是对的、测试是绿的、没有任何告警**。
+
+    源头拦的是「产生」，本检测拦的是「存在」——C-6 要求两者都有。
+
+    ## 公告日怎么来
+
+    `min(publish_date) WHERE total_equity IS NOT NULL`：`total_equity` 走
+    `fetch_balance_sheet`，其 `publish_date = ann_date`。该代理已用唯一有真值的
+    一期（2026-06-30，实时采集）校准——179 只可比股票上与 yoy 首现日**完全一致**、
+    平均差 0.00 天。
+
+    ⚠️ **无锚点的 (股票,报告期) 不计入**：无法判定公告日就不猜，与
+    `repair_financial_lookahead.py` 的「原样保留」口径**必须一致**。否则审计会对着
+    修复脚本有意不动的那批长期报警 → 被当噪声忽略 → **恒亮的告警等于没有告警**。
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    return int((await session.execute(text("""
+        WITH ann AS (
+            SELECT ts_code, report_period, min(publish_date) AS a
+            FROM financial_data WHERE total_equity IS NOT NULL
+            GROUP BY ts_code, report_period
+        )
+        SELECT count(*) FROM financial_data f JOIN ann
+          ON ann.ts_code = f.ts_code AND ann.report_period = f.report_period
+        WHERE f.publish_date < ann.a
+          AND (f.net_profit_yoy IS NOT NULL OR f.roe IS NOT NULL
+               OR f.revenue_yoy IS NOT NULL OR f.debt_to_asset IS NOT NULL)
+    """))).scalar_one())
+
+
 async def _distinct_trade_dates(session, model, start: date, end: date) -> set[date]:
     result = await session.execute(
         select(model.trade_date)
@@ -119,9 +158,18 @@ async def _main() -> int:
                     for d in missing[-15:]:
                         print(f"    - {d} ({d:%a})")
 
-    print("\n" + ("=== 审计通过：无缺口 ===" if total_gaps == 0
-                  else f"=== 发现 {total_gaps} 处表-日缺口（需补数据）==="))
-    return 0 if total_gaps == 0 else 1
+        # ── PIT 前视偏差检测（与交易日缺口无关，但同属数据完整性）──────────
+        la = await lookahead_violations(session)
+        print(f"\n[前视偏差] 公告日之前已有基本面值的行数：{la}")
+        if la:
+            print("    🔴 历史数据含前视偏差 —— 回测/面板的绝对水平不可信。")
+            print("    修复：scripts/repair_financial_lookahead.py --dry-run")
+            print("    成因：docs/reviews/financial_data_lookahead_2026-09-07.md")
+
+    ok = total_gaps == 0 and la == 0
+    print("\n" + ("=== 审计通过：无缺口、无前视偏差 ===" if ok
+                  else f"=== 发现 {total_gaps} 处表-日缺口 / {la} 行前视偏差 ==="))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
