@@ -331,3 +331,23 @@ ebe88c6 feat(v1.5-k): K-3 多前向窗口解析——两种「不可用」必须
 ab58c4d feat(v1.5-k): K-2 十分位收益阶梯 + top 5% 头部超额（组合口径）
 d2af940 feat(v1.5-k): K-6 写库方 upsert_factor_panel_stat_bulk（分批，≥2979 行才测得出）
 ```
+
+## 85438a8 — 2026-09-08T02:37:37Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `2d2c93f` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_85438a8_20260908_113509.tar.gz` |
+| delta | 7 个 commit |
+
+```
+5f7d57a fix(data): 按公告日做 PIT 截断——回填历史不得再写入未公告的基本面
+63731f5 feat(universe): 每日选股面落库 + 🔴 修复 F-5「连续两期亏损」名存实亡
+80b2251 fix(config): CP2 改用冻结快照 + 撤回一条我自己写错的结论
+384d683 fix(config): F-SI 配置静默失效——13 个字段接线 + 堵住「加了参数没人传」
+1b05bc8 fix(universe): 基本面覆盖率告警改按阈值——「100% 才响」报不出「几乎全死」
+6bdd623 fix(data): total_equity 按字段 LOCF——F-4 净资产过滤每逢季初首日整段跳过
+fb33d57 feat(v1.5-k): 补组合级（composite）统计量——因子级答不了「系统实际买什么」
+8c27c51 fix(v1.5-k): 面板窗口起点按行情历史深度订正 + 补价格覆盖守卫；全 5y 面板已跑完
+```
