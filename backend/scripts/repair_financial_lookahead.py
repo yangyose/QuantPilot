@@ -118,10 +118,14 @@ async def _backup(session, out: Path, period: date) -> int:
 
 
 async def _apply(session, period: date) -> int:
+    # ⚠️ `financial_data` **没有** `updated_at` 列（首版误加，第一批即 UndefinedColumnError）。
+    # 表结构见迁移 0001：id / ts_code / report_period / publish_date / pe_ttm / pb /
+    # roe / net_profit_yoy / revenue_yoy / dividend_yield / total_equity / debt_to_asset。
+    # 幸而失败发生在事务内、第一个报告期（1 行），未提交任何改动。
     sets = ", ".join(f"{c} = NULL" for c in _FIELDS)
     res = await session.execute(text(f"""
         {_ANN_CTE}
-        UPDATE financial_data f SET {sets}, updated_at = NOW()
+        UPDATE financial_data f SET {sets}
         FROM ann
         WHERE ann.ts_code = f.ts_code AND ann.report_period = f.report_period
           AND f.publish_date < ann.a AND ({_DIRTY}) AND f.report_period = :p
