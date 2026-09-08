@@ -251,7 +251,10 @@ class TushareAdapter(DataSourceAdapter):
         basic = await self._call(
             self._pro.daily_basic,
             trade_date=date_str,
-            fields="ts_code,pe_ttm,pb,dv_ttm",
+            # `total_share`（V1.5-C C2）取自这里而非 `balancesheet`：后者不支持
+            # 逗号多码，全市场两期约需 11000 次调用；`daily_basic` 每日一次取回
+            # 全市场，实测非空率 100%。单位是**万股**，下方 ×10000 转为股。
+            fields="ts_code,pe_ttm,pb,dv_ttm,total_share",
         )
 
         # 2. 最近季报财务数据：fina_indicator(period=最近季度末, ts_code=批量)
@@ -284,7 +287,11 @@ class TushareAdapter(DataSourceAdapter):
                         ts_code=",".join(batch),
                         fields=(
                             "ts_code,end_date,ann_date,roe,netprofit_yoy,"
-                            "tr_yoy,debt_to_assets"
+                            "tr_yoy,debt_to_assets,"
+                            # V1.5-C C2（Piotroski）新增 6 列。2026-08-27 实调核对：
+                            # 逗号多码模式下这 6 列与单码返回一致（多码模式字段集
+                            # 与单码不同是 total_equity 第 6 号 bug 的成因，故不靠推断）。
+                            "roa,ocfps,eps,current_ratio,grossprofit_margin,assets_turn"
                         ),
                     )
                     if df_batch is not None and not df_batch.empty:
@@ -325,8 +332,16 @@ class TushareAdapter(DataSourceAdapter):
         # 不在 fina_indicator 中；V1.5 接入 fetch_balance_sheet 补充，V1.0 暂存 NaN。
 
         # basic 为主表（全市场），LEFT JOIN fina（季报可能缺失部分股票）
-        fina_cols = ["ts_code", "end_date", "roe", "netprofit_yoy", "tr_yoy", "debt_to_assets"]
-        df = basic.merge(fina[fina_cols], on="ts_code", how="left")
+        # ⚠️ 这是个**白名单**：`fields` 里请求了、这里没列出的字段会被静默挡在
+        # merge 之外——「请求了但没消费」那一族（CLAUDE.md §4.11）。加字段要改两处。
+        fina_cols = [
+            "ts_code", "end_date", "roe", "netprofit_yoy", "tr_yoy", "debt_to_assets",
+            # V1.5-C C2（Piotroski）
+            "roa", "ocfps", "eps", "current_ratio", "grossprofit_margin", "assets_turn",
+        ]
+        df = basic.merge(
+            fina[[c for c in fina_cols if c in fina.columns]], on="ts_code", how="left"
+        )
 
         # report_period 缺失时填充最近季度末（保证 NOT NULL 约束）
         df["end_date"] = df["end_date"].fillna(period_str)
@@ -350,6 +365,17 @@ class TushareAdapter(DataSourceAdapter):
         df["revenue_yoy"] = df["revenue_yoy"] / 100
         df["dividend_yield"] = df["dividend_yield"] / 100
         df["debt_to_asset"] = df["debt_to_asset"] / 100
+        # ── V1.5-C C2：Piotroski 7 列的单位换算 ────────────────────────────────
+        # ⚠️ 换算错了**不会报错也不会让测试变红**：F-Score 的 9 项里 5 项是同比比较，
+        # 两端同样缩放时结果不变，错误会潜伏到与阈值有关的地方才发作。
+        # 故按量纲逐个处理，并在 `test_tushare_pit.py` 逐字段钉死数值。
+        for _pct in ("roa", "grossprofit_margin"):        # Tushare 侧是百分数
+            if _pct in df.columns:
+                df[_pct] = df[_pct] / 100
+        # `current_ratio`（倍数）/ `assets_turn`（次）/ `ocfps`、`eps`（元/股）
+        # **不换算**——多除一次会让阈值判定失真。
+        if "total_share" in df.columns:
+            df["total_share"] = df["total_share"] * 10_000  # daily_basic 单位：万股 → 股
         # total_equity 需要 balancesheet API（total_hldr_eqy_exc_min_int），
         # fina_indicator 不提供该字段，暂填 NaN，Phase 4 前补充。
         df["total_equity"] = float("nan")
@@ -531,7 +557,14 @@ class TushareAdapter(DataSourceAdapter):
                 ts_code=",".join(batch),
                 start_date=self._fmt(start_date),
                 end_date=self._fmt(end_date),
-                fields="ts_code,ann_date,end_date,roe,netprofit_yoy,tr_yoy,debt_to_assets",
+                fields=(
+                    "ts_code,ann_date,end_date,roe,netprofit_yoy,tr_yoy,"
+                    "debt_to_assets,"
+                    # V1.5-C C2：两条采集路径都要带这 6 列——只改日频那条，
+                    # 回填出来的历史全 NULL → F-Score 全历史「不可判」→
+                    # 门控在回测/面板里永不生效，且没有任何报错。
+                    "roa,ocfps,eps,current_ratio,grossprofit_margin,assets_turn"
+                ),
             )
             if not df.empty:
                 frames.append(df)
@@ -553,9 +586,15 @@ class TushareAdapter(DataSourceAdapter):
         })
         result["publish_date"] = result["publish_date"].apply(self._to_date)
         result["report_period"] = result["report_period"].apply(self._to_date)
-        for col in ["roe", "net_profit_yoy", "revenue_yoy", "debt_to_asset"]:
+        # 百分数 → 小数。⚠️ `current_ratio`（倍数）/ `assets_turn`（次）/
+        # `ocfps`、`eps`（元/股）**不在此列**——多除一次会让 F-Score 阈值判定失真。
+        for col in ["roe", "net_profit_yoy", "revenue_yoy", "debt_to_asset",
+                    "roa", "grossprofit_margin"]:
             if col in result.columns:
                 result[col] = pd.to_numeric(result[col], errors="coerce") / 100.0
+        for col in ["ocfps", "eps", "current_ratio", "assets_turn"]:
+            if col in result.columns:
+                result[col] = pd.to_numeric(result[col], errors="coerce")
         return result.reset_index(drop=True)
 
     # 业绩预告/快报归一化输出列（V1.5-A A5 / SDD-EXT-03）

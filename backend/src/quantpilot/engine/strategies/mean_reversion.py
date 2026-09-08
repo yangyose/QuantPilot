@@ -1,6 +1,8 @@
 """MeanReversionStrategy：均值回归策略（Phase 4，Phase 10 接入 UserConfig）。"""
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import pandas_ta as ta  # type: ignore[import-untyped]
 
@@ -9,6 +11,18 @@ from quantpilot.core.config_defaults import (
     MeanReversionStrategyConfig,
 )
 from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot
+from quantpilot.engine.universe import UniverseFilter
+
+# 复用同一份常量，不另写——各写一份必漂，而「两处金融股定义不一致」
+# 在数字上看不出来。
+_FINANCIAL_INDUSTRIES = UniverseFilter.FINANCIAL_INDUSTRIES
+
+# SDD-EXT-04：F-Score >= 6 方可参与均值回归
+_F_SCORE_MIN = 6.0
+# 金融股替代判据（其会计科目不适用 Piotroski）
+_FINANCIAL_MIN_ROE = 0.05
+
+logger = logging.getLogger(__name__)
 
 
 class MeanReversionStrategy(BaseStrategy):
@@ -27,6 +41,70 @@ class MeanReversionStrategy(BaseStrategy):
 
     def __init__(self, config: MeanReversionStrategyConfig | None = None) -> None:
         self._cfg = config or DEFAULT_MEAN_REVERSION_STRATEGY
+
+    def apply_constraints(
+        self,
+        raw: pd.DataFrame,
+        universe: pd.Index,
+        market_data: MarketSnapshot,
+    ) -> pd.DataFrame:
+        """C2 / SDD-EXT-04：F-Score < 6 的股票不参与均值回归。
+
+        写在这里而非 `score()` 末尾——C1-1 记过教训：`compute_strategy_factors`
+        从不调用 `score()`，写在那里的约束在五步管线里完全不生效。
+
+        三条分支：
+
+        1. **命中门控** → 该行三列**全置 NaN**。⚠️ 禁止置 0：Z-score 后 0 是
+           横截面均值，置 0 等于发了张中性分而不是把它排除。
+        2. **金融股**（复用 `UniverseFilter.FINANCIAL_INDUSTRIES`）走 `roe > 5%`。
+           【降级说明】当前降级内容 = 金融股仅 ROE 判据；原因 = SDD 外评原文的
+           「不良贷款率未显著上升」在 Tushare `fina_indicator` 无对应字段；
+           恢复条件 = 接入含 NPL 的数据源后补第二判据。
+        3. **`f_score` 为 NaN（不可判）→ 不门控**。不可判 ≠ 不合格；
+           当低分处理会让数据缺口伪装成基本面恶化。
+
+        快照未提供 `f_score`（回填未完成 / 回测路径）→ **恒等返回**，
+        并记 INFO 便于确认门控是否真的在生效（C-4：可见的降级）。
+        """
+        f_score = market_data.get("f_score")
+        if f_score is None or raw.empty:
+            logger.info("piotroski_gate_skipped: 快照未提供 f_score，门控未生效")
+            return raw
+
+        idx = raw.index
+        fs = pd.to_numeric(pd.Series(f_score), errors="coerce").reindex(idx)
+
+        info = market_data.get("stock_info")
+        industry = (
+            info["sw_industry_l1"].reindex(idx)
+            if info is not None and "sw_industry_l1" in info.columns
+            else pd.Series(index=idx, dtype=object)
+        )
+        is_financial = industry.isin(_FINANCIAL_INDUSTRIES)
+
+        fin = market_data.get("financials")
+        roe = (
+            pd.to_numeric(fin["roe"], errors="coerce").reindex(idx)
+            if fin is not None and "roe" in fin.columns
+            else pd.Series(float("nan"), index=idx, dtype=float)
+        )
+
+        # 非金融：f_score 有值且 < 6 → 门控（NaN 不门控）
+        blocked = (~is_financial) & fs.notna() & (fs < _F_SCORE_MIN)
+        # 金融：roe 有值且 <= 5% → 门控（roe 缺失同样不门控）
+        blocked_fin = is_financial & roe.notna() & (roe <= _FINANCIAL_MIN_ROE)
+        hit = blocked | blocked_fin
+
+        logger.info(
+            "piotroski_gate_applied: blocked=%d unjudgeable=%d financial_alt=%d",
+            int(hit.sum()), int(fs.isna().sum()), int(is_financial.sum()),
+        )
+        if not hit.any():
+            return raw
+        out = raw.copy()
+        out.loc[hit, :] = float("nan")
+        return out
 
     def compute_raw_factors(
         self,

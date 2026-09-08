@@ -82,6 +82,19 @@ class FinancialData(Base):
     dividend_yield: Mapped[float | None] = mapped_column(Numeric(8, 6))
     total_equity: Mapped[float | None] = mapped_column(Numeric(18, 2))
     debt_to_asset: Mapped[float | None] = mapped_column(Numeric(8, 6))
+    # ── V1.5-C C2：Piotroski F-Score 所需 7 列（SDD-EXT-04）─────────────────────
+    # 精度按量纲：比率类 Numeric(12,6) / 每股类 Numeric(12,4) / 股本 Numeric(20,4)。
+    # 前 6 列来自 `fina_indicator`（已实调核对逗号多码模式下均正常返回）；
+    # `total_share` 取自 `daily_basic`——`balancesheet` 不支持多码、全市场两期需
+    # 约 11000 次调用，而 `daily_basic` 每日一次取回全市场且实测非空率 100%。
+    # ⚠️ 口径近似与其恢复条件见 `engine/piotroski.py` 的【降级说明】。
+    roa: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    ocfps: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    eps: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    current_ratio: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    grossprofit_margin: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    assets_turn: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    total_share: Mapped[float | None] = mapped_column(Numeric(20, 4))
 
     __table_args__ = (
         UniqueConstraint(

@@ -347,6 +347,7 @@ class ScoringService:
             index_history,
             market_cap_series,
             forecast,
+            yoy_pairs,
         ) = await asyncio.gather(
             self._repo.get_adj_prices_bulk(ts_codes, start_prices, trade_date),
             self._repo.get_snapshot_quotes(ts_codes, trade_date),
@@ -354,6 +355,9 @@ class ScoringService:
             self._repo.get_index_history(_BENCHMARK_INDEX, start_prices, trade_date),
             self._repo.get_market_cap_pit(ts_codes, trade_date),
             self._repo.get_latest_forecast(ts_codes, trade_date),
+            # V1.5-C C2：Piotroski 门控所需的**同比**配对（不是环比——季报口径下
+            # H1 与 Q1 不可比，环比会把季节性读成基本面变化）。
+            self._repo.get_financials_yoy_pairs(ts_codes, trade_date),
         )
 
         # A5b（SDD-EXT-03）：信息真空期前瞻 ROE 覆盖——快报/预告已发、正式财报未发时，
@@ -433,6 +437,27 @@ class ScoringService:
         if market_cap_series is not None and not market_cap_series.empty:
             market_cap = market_cap_series.astype(float)
 
+        # ── V1.5-C C2：Piotroski F-Score ─────────────────────────────────────
+        # ⚠️ 算了必须**放进快照**：门控写在 `MeanReversionStrategy.apply_constraints`，
+        # 快照里没有 `f_score` 它就恒等返回——机制正确但永不生效，正是 §4.11 表第 4 例
+        # 的形状（`compute_pool` 持仓保护五年 0 行）。`test_piotroski_gate.py` 的
+        # `TestServiceActuallyComputesFScore` 用 AST 在**调用点**钉死这三件事。
+        from quantpilot.engine.piotroski import compute_f_score  # noqa: PLC0415
+
+        f_score: pd.Series | None = None
+        if yoy_pairs is not None and not yoy_pairs.empty:
+            _cur = yoy_pairs.xs("current", level="period_tag", drop_level=True)
+            try:
+                _pri = yoy_pairs.xs("yoy", level="period_tag", drop_level=True)
+            except KeyError:
+                # 全市场都无上年同期（极早期回填）→ 5 个同比项全缺 → 全体不可判
+                _pri = _cur.iloc[0:0]
+            f_score, _ = compute_f_score(_cur, _pri)
+            logger.info(
+                "piotroski_f_score: date=%s judged=%d unjudgeable=%d",
+                trade_date, int(f_score.notna().sum()), int(f_score.isna().sum()),
+            )
+
         result: MarketSnapshot = {  # type: ignore[assignment]
             "trade_date": trade_date,
             "adj_prices": adj_prices,
@@ -445,6 +470,10 @@ class ScoringService:
             "industry": industry,
             "market_cap": market_cap,
             "beta": None,                          # V1.0 未实现，占位
+            # V1.5-C C2：门控输入。`stock_info` 供金融股 ROE 替代分支取
+            # `sw_industry_l1`——缺它金融股永远走不到替代判据。
+            "f_score": f_score,
+            "stock_info": snapshot_quotes,
             "_snapshot_quotes": snapshot_quotes,   # 供 run_daily_scoring 内部使用
         }
         return result

@@ -103,9 +103,15 @@ def _df_to_dict_with_nulls(df: pd.DataFrame) -> list[dict]:
     return records
 
 
+# ⚠️ **白名单**：新增列若不加进来，upsert 会静默丢弃它——列在表里、数据在
+# DataFrame 里、SQL 却不写它，**没有任何报错**。2026-09-08 C2 的 7 个新列第一次
+# 就撞上（同日适配器 `fina_cols` 也是同一形态）。加字段务必同时改这里。
 _FINANCIAL_UPDATE_COLS = [
     "pe_ttm", "pb", "roe", "net_profit_yoy", "revenue_yoy",
     "dividend_yield", "total_equity", "debt_to_asset",
+    # V1.5-C C2（Piotroski，SDD-EXT-04）
+    "roa", "ocfps", "eps", "current_ratio", "grossprofit_margin",
+    "assets_turn", "total_share",
 ]
 _INDEX_UPDATE_COLS = ["open", "high", "low", "close", "vol", "pct_chg"]
 
@@ -1486,6 +1492,72 @@ class MarketDataRepository:
             )
         df = pd.DataFrame(rows, columns=["ts_code", "avg_amount"])
         return df.set_index("ts_code")
+
+    _PIOTROSKI_COLS = (
+        "roa", "ocfps", "eps", "current_ratio", "grossprofit_margin",
+        "assets_turn", "total_share", "debt_to_asset",
+    )
+
+    async def get_financials_yoy_pairs(
+        self,
+        ts_codes: list[str],
+        as_of_date: date,
+    ) -> pd.DataFrame:
+        """取 F-Score 所需的**同比**配对（V1.5-C C2 / SDD-EXT-04）。
+
+        返回 MultiIndex `(ts_code, period_tag)`，`period_tag ∈ {"current", "yoy"}`，
+        列为 `_PIOTROSKI_COLS` + `report_period`。
+
+        ## ⚠️ 不能复用 `get_latest_n_financials(n=2)`
+
+        那个取最近两个**报告期** = **环比**（2025-06-30 vs 2025-03-31）。
+        Piotroski 的 5 个 Δ 项一律是**同比上年同期**——季报口径下 H1 与 Q1 本就
+        不可比，用环比会把季节性读成基本面变化。
+
+        ## PIT 与缺失
+
+        两端都要求 `publish_date <= as_of_date`。同比期取不到 → 该股只返回
+        `current` 行，`compute_f_score` 会把 5 个同比项记 NaN（**不是 0**），
+        缺 ≥3 项即「不可判」，由调用方决定不门控。
+
+        ## 「最新一期」的口径
+
+        取**最近一个有基本面值的报告期**，而非最近的报告期——未披露期每天写一条
+        基本面全 NULL 的占位行，直接取最近报告期会拿到空行
+        （与 F-5「连续两期」名存实亡同源，见
+        `docs/reviews/universe_filter_composition_2026-09-07.md`）。
+        """
+        if not ts_codes:
+            return pd.DataFrame()
+
+        stmt = text(f"""
+            WITH agg AS (
+                SELECT f.ts_code, f.report_period,
+                       {", ".join(f"max(f.{c}) AS {c}" for c in self._PIOTROSKI_COLS)}
+                FROM financial_data f
+                WHERE f.ts_code = ANY(CAST(:codes AS text[]))
+                  AND f.publish_date <= :as_of
+                GROUP BY f.ts_code, f.report_period
+                HAVING max(f.roa) IS NOT NULL OR max(f.eps) IS NOT NULL
+                    OR max(f.debt_to_asset) IS NOT NULL
+            ),
+            cur AS (
+                SELECT DISTINCT ON (ts_code) * FROM agg
+                ORDER BY ts_code, report_period DESC
+            )
+            SELECT 'current' AS period_tag, cur.* FROM cur
+            UNION ALL
+            SELECT 'yoy' AS period_tag, a.*
+            FROM agg a JOIN cur ON cur.ts_code = a.ts_code
+            WHERE a.report_period = (cur.report_period - INTERVAL '1 year')::date
+        """)
+        rows = (await self._session.execute(
+            stmt, {"codes": list(ts_codes), "as_of": as_of_date}
+        )).mappings().all()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        return df.set_index(["ts_code", "period_tag"])
 
     async def get_latest_n_financials(
         self,

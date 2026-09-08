@@ -33,6 +33,11 @@ class MarketSnapshot(TypedDict, total=False):
     pb_percentile: pd.Series | None
     # index=index_code，columns=trade_date，Wide 格式（与 adj_prices 结构一致）
     index_adj_prices: pd.DataFrame
+    # V1.5-C C2（SDD-EXT-04）：index=ts_code 的 Piotroski F-Score（0~9 或 NaN=不可判）。
+    # 由 Service 算好传入；**未提供时门控恒等返回**（回测路径与回填未完成时）。
+    f_score: pd.Series | None
+    # index=ts_code，至少含 `sw_industry_l1`——C2 金融股 ROE 替代分支要用。
+    stock_info: pd.DataFrame
 
     # === Phase 11 §3.0 P0-3 新增字段 ===
     industry: dict[str, str]            # ts_code -> 行业代码（来自 StockInfo.sw_industry_l1）

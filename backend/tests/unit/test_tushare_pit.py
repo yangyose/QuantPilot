@@ -142,3 +142,133 @@ class TestMissingAnnDateFailsClosed:
         fina_kw = [c for c in calls if "period" in c]
         assert fina_kw, "未调用 fina_indicator"
         assert "ann_date" in fina_kw[0].get("fields", ""), "fields 未请求 ann_date"
+
+
+# ── V1.5-C C2：Piotroski 7 字段的采集与单位换算 ────────────────────────────────
+
+
+def _fina_c2(ann: str = "20250828") -> pd.DataFrame:
+    """fina_indicator 真实返回形态（含 C2 新增 6 列，Tushare 侧多为百分数）。"""
+    return pd.DataFrame({
+        "ts_code": ["000001.SZ"],
+        "end_date": ["20250630"],
+        "ann_date": [ann],
+        "roe": [15.0],                    # %
+        "netprofit_yoy": [10.0],          # %
+        "tr_yoy": [8.0],                  # %
+        "debt_to_assets": [50.0],         # %
+        "roa": [7.5],                     # % → 0.075
+        "ocfps": [1.2345],                # 元/股，不换算
+        "eps": [0.9876],                  # 元/股，不换算
+        "current_ratio": [2.5],           # 倍数，不换算
+        "grossprofit_margin": [32.0],     # % → 0.32
+        "assets_turn": [0.85],            # 次，不换算
+    })
+
+
+def _basic_c2() -> pd.DataFrame:
+    return pd.DataFrame({
+        "ts_code": ["000001.SZ"], "pe_ttm": [12.0], "pb": [1.2], "dv_ttm": [3.0],
+        "total_share": [194_405.9], "float_share": [194_405.9],  # 万股
+    })
+
+
+class TestPiotroskiFieldsIngestion:
+    """C2 的 7 个字段必须真的入库，且单位换算正确。
+
+    ⚠️ 单位错了不会报错、也不会让测试变红——F-Score 的 9 项里有 5 项是**同比比较**，
+    两端同样缩放时比较结果不变，错误会一路潜伏到与阈值有关的地方才发作。
+    故这里逐字段钉死数值，而不是只断言「列存在」。
+    """
+
+    @staticmethod
+    async def _run(adapter: TushareAdapter) -> pd.Series:
+        with patch.object(
+            adapter, "_call", new=AsyncMock(side_effect=[_basic_c2(), _fina_c2()])
+        ):
+            res = await adapter.fetch_financial_data(date(2025, 9, 1))
+        return res.iloc[0]
+
+    async def test_percentage_fields_converted(self, adapter: TushareAdapter) -> None:
+        r = await self._run(adapter)
+        assert r["roa"] == pytest.approx(0.075), "roa 是百分数，须 /100"
+        assert r["grossprofit_margin"] == pytest.approx(0.32), "毛利率是百分数，须 /100"
+
+    async def test_ratio_and_per_share_fields_not_converted(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """倍数/每股类**不得**除以 100——多除一次会让 F-Score 的阈值判定失真。"""
+        r = await self._run(adapter)
+        assert r["current_ratio"] == pytest.approx(2.5)
+        assert r["assets_turn"] == pytest.approx(0.85)
+        assert r["ocfps"] == pytest.approx(1.2345)
+        assert r["eps"] == pytest.approx(0.9876)
+
+    async def test_total_share_comes_from_daily_basic_in_shares(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """`total_share` 取自 `daily_basic`，单位**万股 → 股**（×10000）。
+
+        选 `daily_basic` 而非 `balancesheet` 的理由见设计 §4.1：后者不支持逗号多码，
+        全市场两期约需 11000 次调用。
+        """
+        r = await self._run(adapter)
+        assert r["total_share"] == pytest.approx(194_405.9 * 10_000)
+
+    async def test_fields_string_requests_all_seven(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """钉住 `fields` 真的问了这些列——不问就永远是 NULL，而 F-Score 会
+        安静地判成「不可判」，看起来像数据还没回填。"""
+        calls = []
+
+        async def _spy(fn, **kw):
+            calls.append(kw)
+            return _basic_c2() if len(calls) == 1 else _fina_c2()
+
+        with patch.object(adapter, "_call", new=_spy):
+            await adapter.fetch_financial_data(date(2025, 9, 1))
+        basic_kw = calls[0].get("fields", "")
+        fina_kw = calls[1].get("fields", "")
+        assert "total_share" in basic_kw, "daily_basic 未请求 total_share"
+        for f in ("roa", "ocfps", "eps", "current_ratio",
+                  "grossprofit_margin", "assets_turn"):
+            assert f in fina_kw, f"fina_indicator 未请求 {f}"
+
+
+class TestByStockCarriesPiotroskiFields:
+    """`fetch_financial_by_stock`（回填路径，`publish_date = ann_date`）也要带 C2 六列。
+
+    ⚠️ 两条采集路径都得改：日频快照（`fetch_financial_data`）供每日增量，
+    逐股路径供历史回填。只改一条 → 回填出来的历史里这 6 列全 NULL →
+    F-Score 全历史「不可判」→ 门控在回测/面板里永不生效，且**没有任何报错**。
+    """
+
+    async def test_fields_and_unit_conversion(self, adapter: TushareAdapter) -> None:
+        raw = pd.DataFrame({
+            "ts_code": ["000001.SZ"], "ann_date": ["20250828"], "end_date": ["20250630"],
+            "roe": [15.0], "netprofit_yoy": [10.0], "tr_yoy": [8.0],
+            "debt_to_assets": [50.0],
+            "roa": [7.5], "ocfps": [1.2345], "eps": [0.9876],
+            "current_ratio": [2.5], "grossprofit_margin": [32.0], "assets_turn": [0.85],
+        })
+        calls = []
+
+        async def _spy(fn, **kw):
+            calls.append(kw)
+            return raw
+
+        with patch.object(adapter, "_call", new=_spy):
+            res = await adapter.fetch_financial_by_stock(
+                ["000001.SZ"], date(2025, 1, 1), date(2025, 12, 31)
+            )
+        for f in ("roa", "ocfps", "eps", "current_ratio",
+                  "grossprofit_margin", "assets_turn"):
+            assert f in calls[0].get("fields", ""), f"fields 未请求 {f}"
+            assert f in res.columns, f"返回缺列 {f}"
+        r = res.iloc[0]
+        assert r["roa"] == pytest.approx(0.075), "roa 是百分数，须 /100"
+        assert r["grossprofit_margin"] == pytest.approx(0.32)
+        assert r["current_ratio"] == pytest.approx(2.5), "倍数不得再除 100"
+        assert r["ocfps"] == pytest.approx(1.2345)
+        assert r["publish_date"] == date(2025, 8, 28), "本路径用 ann_date 作 publish_date"
