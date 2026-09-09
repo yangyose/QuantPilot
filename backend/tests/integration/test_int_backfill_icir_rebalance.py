@@ -19,6 +19,7 @@ import numpy as np
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.data.factor_ic_repository import FactorICRepository, ICDailyRow
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.engine.factor_monitor import FactorMonitorEngine
@@ -89,9 +90,13 @@ async def test_int_p14_2_01_5_month_ends_yield_60_aggregate_rows(
     for me in _MONTH_ENDS:
         result = await service.apply_monthly_rebalance(db_session, me)
         await db_session.flush()
-        # 每月每 state 应有 4 行 strategy_weights
+        # ⚠️ **两个基准不同，别混**：
+        #   · 权重行（本处 + strategy_weights_history）= registry **全体**策略，
+        #     影子策略也写一行（权重 0）——设计 §8.3 陷阱 2 要求 default_matrix 覆盖全体。
+        #   · aggregate 行 = **本测试播种过 IC 的**策略（`_STRATEGIES`），
+        #     影子策略无 IC 历史故不产行，那是正确行为。
         for state in _STATES:
-            assert len(result[state]) == 4
+            assert len(result[state]) == len(STRATEGY_NAMES)
 
     # 3. 断言 factor_ic_window_state aggregate 行数
     agg_count = (
@@ -102,8 +107,10 @@ async def test_int_p14_2_01_5_month_ends_yield_60_aggregate_rows(
             )
         )
     ).scalar() or 0
-    assert agg_count == 60, (
-        f"expected 60 aggregate rows (4 strategy × 3 state × 5 month), got {agg_count}"
+    # 5 月末 × 3 state × **播种过 IC 的**策略数（影子策略无历史，不产行）
+    assert agg_count == 5 * 3 * len(_STRATEGIES), (
+        f"expected {5 * 3 * len(_STRATEGIES)} aggregate rows "
+        f"({len(_STRATEGIES)} seeded strategy × 3 state × 5 month), got {agg_count}"
     )
 
     # 4. 断言 strategy_weights_history 写入 60 行（effective_date = month_end + 1d）
@@ -115,8 +122,10 @@ async def test_int_p14_2_01_5_month_ends_yield_60_aggregate_rows(
             )
         )
     ).scalar() or 0
-    assert sw_count == 60, (
-        f"expected 60 strategy_weights_history rows, got {sw_count}"
+    # 权重行覆盖 registry **全体**（含影子策略的 0 权重行）
+    assert sw_count == 5 * 3 * len(STRATEGY_NAMES), (
+        f"expected {5 * 3 * len(STRATEGY_NAMES)} strategy_weights_history rows, "
+        f"got {sw_count}"
     )
 
 

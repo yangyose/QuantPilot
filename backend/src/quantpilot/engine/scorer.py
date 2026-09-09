@@ -24,6 +24,12 @@ from quantpilot.core.config_defaults import (
     DEFAULT_STRATEGY_WEIGHTS,
     StrategyWeightsConfig,
 )
+from quantpilot.core.strategy_registry import (
+    SCORE_COLUMN_MAP as _REGISTRY_SCORE_COLUMN_MAP,
+)
+from quantpilot.core.strategy_registry import (
+    STRATEGY_NAMES as _REGISTRY_STRATEGY_NAMES,
+)
 from quantpilot.engine.factor_pipeline import FactorPipeline
 from quantpilot.engine.market_state import MarketStateEnum
 from quantpilot.engine.orthogonalizer import Orthogonalizer
@@ -38,15 +44,11 @@ WEIGHTS: dict[MarketStateEnum, dict[str, float]] = {
     MarketStateEnum.OSCILLATION: DEFAULT_STRATEGY_WEIGHTS.oscillation,
 }
 
-# DB 列名映射（CandidatePool.reversion_score 对应策略 key mean_reversion）
-SCORE_COLUMN_MAP: dict[str, str] = {
-    "trend":           "trend_score",
-    "momentum":        "momentum_score",
-    "mean_reversion":  "reversion_score",
-    "value":           "value_score",
-}
-
-_STRATEGY_KEYS = ("trend", "momentum", "mean_reversion", "value")
+# DB 列名映射与策略清单**一律引用** `core/strategy_registry`——此前散在五处，
+# 「改了三处漏第四处」是本项目反复踩的坑（设计 §8.3 陷阱 3）。
+# 这里是别名而非副本：留副本会让「内容相等」的断言照样绿，下次加策略仍会漏。
+SCORE_COLUMN_MAP = _REGISTRY_SCORE_COLUMN_MAP
+_STRATEGY_KEYS = _REGISTRY_STRATEGY_NAMES
 
 # Phase 14 §14-3：5 步管线 Winsorize 横截面最小样本（< 30 → BacktestEngine 走
 # aggregate_legacy 降级）。30 是 Phase 11 设计估计值；ScoringService.score_universe
@@ -77,6 +79,11 @@ class CompositeScore:
 
     # === Phase 11 新增字段 ===
     # 层 1：跨期可比 z 分；层 2：rank_descending/N（越小越靠前）；层 3：Φ(z)×100
+    # V1.5-C C3（影子模式）：低波动策略分数。放在默认值区段，既有构造点无需改动；
+    # `aggregate` 会按 `SCORE_COLUMN_MAP` 填充。⚠️ 策略分数字段现散在**四处**
+    # （本类 / `PoolEntry` / `CandidatePool` / `SignalScoreSnapshot`），
+    # 契约测试 `TestScoreColumnMapIsACheckedContract` 把它们钉在一起。
+    low_volatility_score: float | None = None
     composite_z: float | None = None
     composite_pct_in_market: float | None = None
     # {strategy: {z_raw, weight, contribution}}

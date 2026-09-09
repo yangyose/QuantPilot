@@ -627,6 +627,7 @@ def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:
     from quantpilot.engine.position import PositionSizer
     from quantpilot.engine.scorer import Scorer
     from quantpilot.engine.signal import SignalGenerator
+    from quantpilot.engine.strategies.low_volatility import LowVolatilityStrategy
     from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
     from quantpilot.engine.strategies.momentum import MomentumStrategy
     from quantpilot.engine.strategies.trend import TrendStrategy
@@ -649,6 +650,8 @@ def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:
             MomentumStrategy(momentum_cfg),
             MeanReversionStrategy(mr_cfg),
             ValueStrategy(value_cfg),
+            # V1.5-C C3：影子模式（权重 0）。四处组装点必须同步。
+            LowVolatilityStrategy(),
         ],
         market_state_engine=MarketStateEngine(ms_cfg),
         universe_filter=UniverseFilter(universe_cfg),

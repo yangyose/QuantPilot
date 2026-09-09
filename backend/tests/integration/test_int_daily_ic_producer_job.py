@@ -25,6 +25,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import FactorICRepository, ICDailyRow
 from quantpilot.data.repository import MarketDataRepository
@@ -144,9 +145,10 @@ async def _count_daily_rows(session: AsyncSession, td: date) -> int:
     stmt = select(func.count()).select_from(FactorICWindowState).where(
         FactorICWindowState.row_type == "daily",
         FactorICWindowState.trade_date == td,
-        FactorICWindowState.strategy.in_(
-            ("trend", "momentum", "mean_reversion", "value")
-        ),
+        # ⚠️ 不写死策略名——写死会让计数器漏掉新策略，表现为「产出 5 行、只数到 4」，
+        # 而**生产行为是对的**（影子策略也产日级 IC，那正是它能被 ICIR 评估、
+        # 进而自动激活的前提）。加策略时这里必须跟随，故直接引用 registry。
+        FactorICWindowState.strategy.in_(STRATEGY_NAMES),
     )
     return int((await session.execute(stmt)).scalar_one())
 

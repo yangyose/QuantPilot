@@ -15,6 +15,7 @@ from datetime import date, timedelta
 import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.data.factor_ic_repository import (
     FactorICRepository,
     ICAggregateRow,
@@ -43,7 +44,7 @@ async def test_int_p11_rb_01_cold_start_falls_back_to_default(
     # 三个 state 均应有 4 行
     for state in ("UPTREND", "DOWNTREND", "OSCILLATION"):
         rows = result[state]
-        assert len(rows) == 4
+        assert len(rows) == len(STRATEGY_NAMES)
         assert all(r.weights_source == "default_matrix" for r in rows)
         # 权重 sum=1
         total = sum(r.weight_used for r in rows)
@@ -238,7 +239,10 @@ async def test_int_p11_rb_06_get_active_weights(db_session: AsyncSession) -> Non
     assert status_b == "pending_switch"
     assert abs(weights_b["momentum"] - 0.45) < 1e-9
     # order 按 weight 降序：momentum > trend > value > mean_reversion
-    assert order_b == ["momentum", "trend", "value", "mean_reversion"]
+    # ⚠️ 只断言**前四个**——影子策略（权重 0）自然排末尾（设计 §8.4），
+    # 写死全表会让每次加策略都假红。
+    assert order_b[:4] == ["momentum", "trend", "value", "mean_reversion"]
+    assert order_b[4:] == ["low_volatility"], "权重 0 的影子策略应排最后"
 
 
 # ============================================================

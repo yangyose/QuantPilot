@@ -300,6 +300,7 @@ def get_scoring_service(
     from quantpilot.data.calendar import TradingCalendar
     from quantpilot.engine.pool import CandidatePoolManager
     from quantpilot.engine.scorer import Scorer
+    from quantpilot.engine.strategies.low_volatility import LowVolatilityStrategy
     from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
     from quantpilot.engine.strategies.momentum import MomentumStrategy
     from quantpilot.engine.strategies.trend import TrendStrategy
@@ -311,7 +312,14 @@ def get_scoring_service(
     return ScoringService(
         repo=repo,
         universe_filter=UniverseFilter(),
-        strategies=[TrendStrategy(), MomentumStrategy(), MeanReversionStrategy(), ValueStrategy()],
+        strategies=[
+            TrendStrategy(),
+            MomentumStrategy(),
+            MeanReversionStrategy(),
+            ValueStrategy(),
+            # V1.5-C C3：影子模式（权重 0）。四处组装点必须同步。
+            LowVolatilityStrategy(),
+        ],
         scorer=Scorer(),
         pool_manager=CandidatePoolManager(),  # 用 DEFAULT_UNIVERSE.pool_capacity（V1.0 → 50）
         calendar=calendar,

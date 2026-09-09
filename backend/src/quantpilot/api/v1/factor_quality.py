@@ -12,6 +12,7 @@ from quantpilot.api.deps import (
 )
 from quantpilot.core.config_defaults import DEFAULT_STRATEGY_WEIGHTS
 from quantpilot.core.database import get_db
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.data.factor_ic_repository import FactorICRepository
 from quantpilot.engine.market_state import MarketStateEnum
 from quantpilot.schemas.factor_quality import (
@@ -28,7 +29,9 @@ _VALID_STATES = (
     MarketStateEnum.DOWNTREND,
     MarketStateEnum.OSCILLATION,
 )
-_STRATEGY_NAMES = ("trend", "momentum", "mean_reversion", "value")
+# ⚠️ 设计 §8.3 只数到四处清单，**漏了本处**——漏它会让因子质量 API 少报
+# 新策略，而接口照常返回 200。引用单一事实来源。
+_STRATEGY_NAMES = STRATEGY_NAMES
 _STATE_TO_DEFAULT_ATTR = {
     MarketStateEnum.UPTREND: "uptrend",
     MarketStateEnum.DOWNTREND: "downtrend",

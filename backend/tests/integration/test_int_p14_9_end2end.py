@@ -29,6 +29,7 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import FactorICRepository, ICDailyRow
 from quantpilot.data.repository import MarketDataRepository
@@ -51,6 +52,11 @@ from backfill_daily_ic import (  # noqa: E402
     _build_scoring_service,
     _extract_strategy_z,
 )
+
+# 本文件只播种这四个策略的 IC 数据；影子策略（如 low_volatility）无 IC 历史，
+# 故**不产 aggregate 行**——那是正确行为。⚠️ 权重行则覆盖 registry 全体，
+# 两个基准不同，断言时别混。
+_SEEDED_STRATEGIES = ("trend", "momentum", "mean_reversion", "value")
 
 _PREFIX = "P149"
 _INDEX = "000300.SH"
@@ -255,7 +261,7 @@ async def _seed_uptrend_window(
     rng = np.random.default_rng(7)
     means = {"trend": 0.06, "momentum": 0.04, "mean_reversion": 0.03, "value": 0.02}
     rows: list[ICDailyRow] = []
-    for strategy in ("trend", "momentum", "mean_reversion", "value"):
+    for strategy in _SEEDED_STRATEGIES:
         for i in range(n_days):
             td = month_end - timedelta(days=20 + i)
             ic = float(rng.normal(means[strategy], 0.02))
@@ -282,7 +288,9 @@ async def test_int_p14_9_01b_daily_ic_chains_to_icir_rebalance(
     service = FactorMonitorService(session=db_session, engine=FactorMonitorEngine())
     result = await service.apply_monthly_rebalance(db_session, month_end)
     await db_session.flush()
-    assert len(result["UPTREND"]) == 4
+    # ⚠️ 权重行覆盖 registry **全体**（影子策略也有 0 权重行）；
+    # 而 aggregate 行只覆盖**播种过 IC 的**策略。两个基准不同，别混。
+    assert len(result["UPTREND"]) == len(STRATEGY_NAMES)
 
     effective_date = month_end + timedelta(days=1)
     rows = (await db_session.execute(
@@ -296,14 +304,16 @@ async def test_int_p14_9_01b_daily_ic_chains_to_icir_rebalance(
 
     # dominant state UPTREND：≥60 样本 → icir
     up = by_state.get("UPTREND", [])
-    assert len(up) == 4, f"UPTREND 应有 4 策略权重行，实际 {len(up)}"
+    assert len(up) == len(STRATEGY_NAMES), (
+        f"UPTREND 应有 {len(STRATEGY_NAMES)} 策略权重行，实际 {len(up)}"
+    )
     assert all(r.weights_source == "icir" for r in up), (
         f"UPTREND 应为 icir，实际 {[r.weights_source for r in up]}"
     )
 
     # 稀疏 state DOWNTREND：无 seed < 60 → default_matrix（SDD §7.4 合规降级）
     down = by_state.get("DOWNTREND", [])
-    assert len(down) == 4
+    assert len(down) == len(STRATEGY_NAMES)
     assert all(r.weights_source == "default_matrix" for r in down), (
         f"DOWNTREND 稀疏应为 default_matrix，实际 {[r.weights_source for r in down]}"
     )
@@ -316,4 +326,6 @@ async def test_int_p14_9_01b_daily_ic_chains_to_icir_rebalance(
             FactorICWindowState.state == "UPTREND",
         )
     )).scalar() or 0
-    assert agg == 4, f"UPTREND 应写 4 行 aggregate（4 策略），实际 {agg}"
+    assert agg == len(_SEEDED_STRATEGIES), (
+        f"UPTREND 应写 {len(_SEEDED_STRATEGIES)} 行 aggregate，实际 {agg}"
+    )

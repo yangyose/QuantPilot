@@ -8,6 +8,7 @@ from httpx import AsyncClient
 
 from quantpilot.api.deps import get_factor_monitor_service
 from quantpilot.core.security import create_token
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.main import app
 from quantpilot.models.business import FactorICWindowState
 
@@ -201,14 +202,15 @@ async def test_fq_11_current_weights_cold_start(client: AsyncClient) -> None:
         assert body["code"] == 0
         items = body["data"]["items"]
         assert isinstance(items, list)
-        # 3 state × 4 strategy = 12 行（冷启动 fallback 保证 12）
-        assert len(items) == 12
+        # 3 state × 全部 strategy（冷启动 fallback 保证每格都有）。
+        # ⚠️ 不写死——写死等于在测试里又存一份「有几个策略」的副本。
+        assert len(items) == 3 * len(STRATEGY_NAMES)
         # 全部 default_matrix（无历史）
         sources = {it["weights_source"] for it in items}
         assert sources == {"default_matrix"}
-        # 4 strategy 全部覆盖
+        # 全部 strategy 覆盖（由 registry 派生，加策略时自动跟随）
         strategies = {it["strategy"] for it in items}
-        assert strategies == {"trend", "momentum", "mean_reversion", "value"}
+        assert strategies == set(STRATEGY_NAMES)
         # 3 state 全部覆盖
         states = {it["state"] for it in items}
         assert states == {"UPTREND", "DOWNTREND", "OSCILLATION"}

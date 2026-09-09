@@ -320,6 +320,9 @@ class DailyPipeline:
         from quantpilot.engine.factor_pipeline import FactorPipeline, FactorPipelineConfig
         from quantpilot.engine.pool import CandidatePoolManager
         from quantpilot.engine.scorer import Scorer
+        from quantpilot.engine.strategies.low_volatility import (
+            LowVolatilityStrategy,
+        )
         from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
         from quantpilot.engine.strategies.momentum import MomentumStrategy
         from quantpilot.engine.strategies.trend import TrendStrategy
@@ -368,6 +371,9 @@ class DailyPipeline:
                     MomentumStrategy(momentum_cfg),
                     MeanReversionStrategy(mr_cfg),
                     ValueStrategy(value_cfg),
+                    # V1.5-C C3：影子模式（权重 0）。四处组装点必须同步——漏一处
+                    # 即「不同路径算的不是同一个 composite」，且不报错。
+                    LowVolatilityStrategy(),
                 ],
                 # Phase 11 §7.2：scoring_pipeline_params 驱动 FactorPipeline 5 步管线开关
                 scorer=Scorer(weights_cfg, pipeline=FactorPipeline(fp_cfg)),

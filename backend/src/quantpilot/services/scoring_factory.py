@@ -29,6 +29,7 @@ from quantpilot.engine.factor_pipeline import FactorPipeline, FactorPipelineConf
 from quantpilot.engine.pool import CandidatePoolManager
 from quantpilot.engine.scorer import Scorer
 from quantpilot.engine.strategies.base import BaseStrategy
+from quantpilot.engine.strategies.low_volatility import LowVolatilityStrategy
 from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
 from quantpilot.engine.strategies.momentum import MomentumStrategy
 from quantpilot.engine.strategies.trend import TrendStrategy
@@ -62,6 +63,9 @@ def build_default_strategies(
         MomentumStrategy(momentum_cfg),
         MeanReversionStrategy(DEFAULT_MEAN_REVERSION_STRATEGY),
         ValueStrategy(DEFAULT_VALUE_STRATEGY),
+        # V1.5-C C3：影子模式（权重 0）。⚠️ 设计 §5.2 只数了三处组装点，
+        # **漏了本处**——而这正是面板脚本与回填脚本走的那条路。
+        LowVolatilityStrategy(),
     ]
 
 

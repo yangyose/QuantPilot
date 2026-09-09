@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import math
 
-import numpy as np
 import pandas as pd
 
 from quantpilot.core.config_defaults import (
@@ -12,6 +11,7 @@ from quantpilot.core.config_defaults import (
     MomentumStrategyConfig,
 )
 from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot
+from quantpilot.engine.volatility import SIGMA_MIN_VALID_RATIO, rolling_sigma
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,10 @@ _REVERSAL_WINDOW = 20
 _SIGMA_COL = "volatility_60d"
 
 # σ 的最低有效样本比例：有效收益数 < volatility_window × 该比例 → σ 记 NaN。
-_SIGMA_MIN_VALID_RATIO = 0.7
+# 与 C3 低波动策略共用同一份实现（`engine/volatility.py`）——各算一遍必然漂移，
+# 而「两处 σ 定义不一致」在数字上看不出来。别名而非副本，测试以对象同一性钉死。
+_SIGMA_MIN_VALID_RATIO = SIGMA_MIN_VALID_RATIO
+_rolling_sigma = rolling_sigma
 
 # 年化系数（仅用于理由文本展示；计算全程不年化——横截面 rank 与 Z-score 对
 # 正的常数缩放不变，年化只增计算不增信息）。
@@ -231,28 +234,6 @@ class MomentumStrategy(BaseStrategy):
             f"3月风险调整涨幅（涨幅/波动率）={ratio:.2f}，"
             f"年化波动率={sigma_pct:.1f}%，{tail}"
         )
-
-
-def _rolling_sigma(adj_prices: pd.DataFrame, window: int) -> pd.Series:
-    """近 ``window`` 个交易日**对数收益率**的标准差，不年化。
-
-    不年化的理由：横截面 rank 与 Z-score 对正的常数缩放不变，年化只增计算不增
-    信息。理由文本里才乘 √252 展示，便于用户理解。
-
-    有效收益数 < ``window × _SIGMA_MIN_VALID_RATIO`` 的标的记 NaN——样本不足时
-    σ 不可靠，而它在分母上，会把噪声放大成一个很大的"高分"。
-    """
-    if adj_prices.shape[1] < 2:
-        return pd.Series(float("nan"), index=adj_prices.index)
-
-    prices = adj_prices.astype(float)
-    # 非正价格取对数会得到 -inf/NaN；先置 NaN，由下面的有效样本数判定兜底
-    prices = prices.where(prices > 0)
-    log_ret = np.log(prices).diff(axis=1).iloc[:, -window:]
-
-    sigma = log_ret.std(axis=1, skipna=True)
-    min_valid = window * _SIGMA_MIN_VALID_RATIO
-    return sigma.where(log_ret.notna().sum(axis=1) >= min_valid)
 
 
 def _period_return(adj_prices: pd.DataFrame, n: int) -> pd.Series:

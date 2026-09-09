@@ -8,6 +8,7 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.services.factor_monitor_service import (
     FactorMonitorService,
     ICIRSnapshot,
@@ -44,9 +45,12 @@ async def test_ut_r13_p1_2_apply_monthly_rebalance_calls_check_persistent_decay(
         fake_session, month_end_date=date(2026, 4, 30), notifier=notifier,
     )
 
-    # 3 个 state × 4 个 strategy = 12 次调用
-    assert svc.check_persistent_decay.await_count == 12, (
-        f"应调 12 次（3 state × 4 strategy），实际 {svc.check_persistent_decay.await_count}"
+    # 3 个 state × 全部 strategy。⚠️ **不写死数字**——写死等于在测试里又存一份
+    # 「有几个策略」的副本，加策略时会假红（C3 加 low_volatility 时 12→15 就发生过）。
+    expected = 3 * len(STRATEGY_NAMES)
+    assert svc.check_persistent_decay.await_count == expected, (
+        f"应调 {expected} 次（3 state × {len(STRATEGY_NAMES)} strategy），"
+        f"实际 {svc.check_persistent_decay.await_count}"
     )
     # 任取一次断言 notifier 被透传
     first_call = svc.check_persistent_decay.await_args_list[0]
@@ -158,7 +162,7 @@ async def test_ut_p14_7_3b_no_persistent_hit_fires_single_month_alerts() -> None
         fake_session, month_end_date=date(2026, 4, 30), notifier=notifier,
     )
     # 12 个 (strategy, factor, state) 三元组 × action="halve" → 12 条单月告警
-    assert notifier.notify_factor_alert.await_count == 12
+    assert notifier.notify_factor_alert.await_count == 3 * len(STRATEGY_NAMES)
     # 告警 alert_type 含 R-rule 名
     args, _ = notifier.notify_factor_alert.await_args_list[0]
     assert args[0] == "factor_decayed_R3"
@@ -178,8 +182,8 @@ async def test_ut_p14_7_3c_action_ok_does_not_alert() -> None:
 
 
 async def test_ut_p14_7_3d_partial_persistent_hit_only_suppresses_matched() -> None:
-    """只 UPTREND state 命中持续告警 → UPTREND 4 条单月告警被抑制，
-    其余 2 state × 4 strategy = 8 条仍触发。"""
+    """只 UPTREND state 命中持续告警 → 该 state 的 N 条单月告警被抑制，
+    其余 **2 state × N strategy** 仍触发。"""
     svc, fake_session, notifier, _ = await _make_rebalance_svc(
         snap_icir=0.04,
         persistent_hit_states={"UPTREND"},
@@ -189,4 +193,5 @@ async def test_ut_p14_7_3d_partial_persistent_hit_only_suppresses_matched() -> N
     await svc.apply_monthly_rebalance(
         fake_session, month_end_date=date(2026, 4, 30), notifier=notifier,
     )
-    assert notifier.notify_factor_alert.await_count == 8
+    # 抑制的是**整个 UPTREND state**（N 条），故剩 2 state × N strategy
+    assert notifier.notify_factor_alert.await_count == 2 * len(STRATEGY_NAMES)

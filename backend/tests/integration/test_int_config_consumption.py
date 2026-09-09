@@ -258,9 +258,20 @@ async def test_int_cfg_04_strategy_weights_drives_composite_score(
     factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     snap_date = date(2026, 4, 15)
-    custom_uptrend = {"trend": 0.0, "momentum": 0.0, "mean_reversion": 0.0, "value": 1.0}
-    custom_oscillation = {"trend": 1.0, "momentum": 0.0, "mean_reversion": 0.0, "value": 0.0}
-    custom_downtrend = {"trend": 0.0, "momentum": 1.0, "mean_reversion": 0.0, "value": 0.0}
+    # ⚠️ 必须覆盖 registry 全体——`get_active_weights` 会给缺席策略补 0.0，
+    # 只写四个会让「读回来的 dict」多出一项而假红。
+    custom_uptrend = {
+        "trend": 0.0, "momentum": 0.0, "mean_reversion": 0.0, "value": 1.0,
+        "low_volatility": 0.0,
+    }
+    custom_oscillation = {
+        "trend": 1.0, "momentum": 0.0, "mean_reversion": 0.0, "value": 0.0,
+        "low_volatility": 0.0,
+    }
+    custom_downtrend = {
+        "trend": 0.0, "momentum": 1.0, "mean_reversion": 0.0, "value": 0.0,
+        "low_volatility": 0.0,
+    }
 
     pipeline = DailyPipeline(
         session_factory=factory,

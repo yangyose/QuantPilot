@@ -89,19 +89,30 @@ DEFAULT_UNIVERSE = UniverseConfig()
 # ---------------- 5. strategy_weights ----------------
 @dataclass(frozen=True)
 class StrategyWeightsConfig:
-    """Scorer 三态 × 4 策略权重矩阵（SDD §7.5）。
+    """Scorer 三态 × N 策略权重矩阵（SDD §7.5）。
 
-    子键必须与 BaseStrategy.name 逐字一致：trend / momentum / mean_reversion / value
-    （v1.1 评审 Q-6：误写 reversion 会让 Scorer 取不到权重而回退默认）。
+    子键必须与 `BaseStrategy.name` 逐字一致（v1.1 评审 Q-6：误写 `reversion`
+    会让 Scorer 取不到权重而回退默认），且必须**覆盖 `STRATEGY_NAMES` 全体**——
+    缺键时 `_default_weights_for_state` 返回的 dict 会少一项，
+    冷启动 / DOWNTREND（当前正走 `default_matrix`）路径下该策略直接缺席，
+    **行为在不同路径间不一致**（设计 §8.3 陷阱 2）。
+
+    ⚠️ 新策略按**影子模式**登记 `0.0`：结构上进 composite、被 ICIR 监控，
+    但权重从 0 起步，经验证后由月末 rebalance 自动激活。
+    加 0 权重项**不改变现有策略的相对权重**（`apply_monthly_rebalance` 的
+    归一化分母含这个 0）——影子期零回归在这条路径上是数学保证。
     """
     uptrend: dict[str, float] = field(default_factory=lambda: {
         "trend": 0.40, "momentum": 0.25, "mean_reversion": 0.15, "value": 0.20,
+        "low_volatility": 0.0,
     })
     downtrend: dict[str, float] = field(default_factory=lambda: {
         "trend": 0.10, "momentum": 0.05, "mean_reversion": 0.15, "value": 0.70,
+        "low_volatility": 0.0,
     })
     oscillation: dict[str, float] = field(default_factory=lambda: {
         "trend": 0.15, "momentum": 0.15, "mean_reversion": 0.40, "value": 0.30,
+        "low_volatility": 0.0,
     })
 
 
@@ -116,6 +127,24 @@ class TrendStrategyConfig:
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
+
+
+# ---------------- strategy_params_low_volatility（V1.5-C C3 / SDD §7.3）----------
+@dataclass(frozen=True)
+class LowVolatilityStrategyConfig:
+    """低波动策略：`-σ60` + `-β120`。
+
+    【降级说明】`beta_window` 取 120 而非教科书的 252——为复用现有约 120 交易日的
+    价格窗口，对数据层零改动、对生产内存零额外开销。这是有意的口径偏离。
+    恢复条件：价格窗口扩至 ≥400 日历天并实测生产内存/延迟可接受后改 252。
+    """
+
+    volatility_window: int = 60
+    beta_window: int = 120
+    benchmark: str = "000300.SH"
+
+
+DEFAULT_LOW_VOLATILITY_STRATEGY = LowVolatilityStrategyConfig()
 
 
 DEFAULT_TREND_STRATEGY = TrendStrategyConfig()
@@ -287,6 +316,7 @@ __all__ = [
     "UniverseConfig", "DEFAULT_UNIVERSE",
     "StrategyWeightsConfig", "DEFAULT_STRATEGY_WEIGHTS",
     "TrendStrategyConfig", "DEFAULT_TREND_STRATEGY",
+    "LowVolatilityStrategyConfig", "DEFAULT_LOW_VOLATILITY_STRATEGY",
     "MomentumStrategyConfig", "DEFAULT_MOMENTUM_STRATEGY",
     "MeanReversionStrategyConfig", "DEFAULT_MEAN_REVERSION_STRATEGY",
     "ValueStrategyConfig", "DEFAULT_VALUE_STRATEGY",

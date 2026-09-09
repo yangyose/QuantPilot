@@ -34,6 +34,7 @@ from quantpilot.core.config_defaults import (
     FactorMonitorConfig,
     ScoringPipelineConfig,
 )
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.factor_ic_repository import (
     FactorICRepository,
@@ -114,7 +115,8 @@ _STATE_TO_DEFAULT_ATTR: dict[str, str] = {
     MarketStateEnum.DOWNTREND: "downtrend",
     MarketStateEnum.OSCILLATION: "oscillation",
 }
-_STRATEGY_NAMES: tuple[str, ...] = ("trend", "momentum", "mean_reversion", "value")
+# 引用单一事实来源（设计 §8.3 陷阱 3）——此前是本文件的一份副本
+_STRATEGY_NAMES = STRATEGY_NAMES
 
 
 def _default_weights_for_state(state: str) -> dict[str, float]:
@@ -184,6 +186,9 @@ _FACTOR_MAP: dict[str, tuple[str, str]] = {
     "reversion_score": ("MeanReversionStrategy", "reversion_score"),
     "momentum_score": ("MomentumStrategy", "momentum_score"),
     "value_score": ("ValueStrategy", "value_score"),
+    # V1.5-C C3（影子模式）。⚠️ 键必须是 **DB 列名**（经 `score_column()`），
+    # 不是策略名——`mean_reversion` → `reversion_score` 那条不规则映射就在这里生效。
+    "low_volatility_score": ("LowVolatilityStrategy", "low_volatility_score"),
 }
 
 

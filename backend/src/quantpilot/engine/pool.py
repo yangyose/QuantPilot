@@ -15,6 +15,8 @@ class PoolEntry:
     momentum_score: float | None
     reversion_score: float | None
     value_score: float | None
+    # V1.5-C C3（影子模式）。字段名 = `SCORE_COLUMN_MAP['low_volatility']`。
+    low_volatility_score: float | None
     market_state: str | None
     in_pool: bool
     is_holding: bool
@@ -81,6 +83,9 @@ class CandidatePoolManager:
                 momentum_score=s.momentum_score if s else None,
                 reversion_score=s.reversion_score if s else None,
                 value_score=s.value_score if s else None,
+                low_volatility_score=(
+                    getattr(s, "low_volatility_score", None) if s else None
+                ),
                 market_state=s.market_state.value if s else None,
                 in_pool=True,
                 is_holding=(ts_code in holding_codes),

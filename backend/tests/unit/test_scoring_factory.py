@@ -11,6 +11,7 @@ CLI 开关：命令行本身即产出的出处记录。
 from __future__ import annotations
 
 from quantpilot.core.config_defaults import DEFAULT_MOMENTUM_STRATEGY
+from quantpilot.core.strategy_registry import STRATEGY_NAMES
 from quantpilot.engine.strategies.momentum import MomentumStrategy
 from quantpilot.services.scoring_factory import build_default_strategies
 
@@ -25,7 +26,9 @@ def test_ut_c1_10a_default_strategies_keep_config_defaults() -> None:
     """UT-C1-10a: 不传覆写时，momentum 配置 = DEFAULT_MOMENTUM_STRATEGY（默认开风险调整）。"""
     strategies = build_default_strategies()
 
-    assert len(strategies) == 4
+    # ⚠️ 不写死——写死等于在测试里又存一份「有几个策略」的副本。
+    # 组装点必须覆盖 registry 全体，漏一个即该路径与其余路径算的不是同一个 composite。
+    assert {s.name for s in strategies} == set(STRATEGY_NAMES)
     assert _momentum_of(strategies)._cfg == DEFAULT_MOMENTUM_STRATEGY
     assert DEFAULT_MOMENTUM_STRATEGY.risk_adjusted is True
 
