@@ -351,3 +351,21 @@ d2af940 feat(v1.5-k): K-6 写库方 upsert_factor_panel_stat_bulk（分批，≥
 fb33d57 feat(v1.5-k): 补组合级（composite）统计量——因子级答不了「系统实际买什么」
 8c27c51 fix(v1.5-k): 面板窗口起点按行情历史深度订正 + 补价格覆盖守卫；全 5y 面板已跑完
 ```
+
+## af94e57 — 2026-09-09T04:53:16Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `85438a8` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_af94e57_20260909_135036.tar.gz` |
+| delta | 5 个 commit |
+
+```
+af94e57 fix(v1.5-c): low_volatility_score 全链路死代码——契约测试断言字段存在≠值到了终点
+805c988 feat(v1.5-c): C2 回填激活 + 门控实测为负 → 影子模式；Tushare 行数截断守卫
+e133d41 feat(v1.5-c): C3 低波动策略（影子模式）+ 策略名单一事实来源
+83a8f79 feat(v1.5-c): C2 Piotroski F-Score 硬过滤——六块完成五块，差 5y 回填激活
+4bf6084 feat(audit): 前视偏差的数据层检测——源头拦「产生」，它拦「存在」
+6f89d74 fix(script): 修复脚本误设 updated_at + 5434 存量修复已执行完毕
+```
