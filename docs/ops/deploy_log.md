@@ -369,3 +369,19 @@ e133d41 feat(v1.5-c): C3 低波动策略（影子模式）+ 策略名单一事�
 4bf6084 feat(audit): 前视偏差的数据层检测——源头拦「产生」，它拦「存在」
 6f89d74 fix(script): 修复脚本误设 updated_at + 5434 存量修复已执行完毕
 ```
+
+**部署后核验（2026-09-09 12:53 CST）**：
+
+- `/health` = `af94e57 2026-09-09T04:50:46Z main` ✅
+- `alembic_version` = **0029**（0028 与 0029 均已跑）；9 个新列全部到位：
+  `financial_data` 的 7 个 Piotroski 列 + `candidate_pool` / `signal_score_snapshot`
+  各一个 `low_volatility_score`
+- `scheduler_started`，backend 日志无 error/traceback；可用内存 2524M
+- ⚠️ **本批选股行为应为零变化**：`low_volatility` 影子权重 0、
+  `piotroski_gate_enabled=False`（只算、只记日志，不剔除）。今晚 17:30 管线的
+  `universe` / `signal_count` 若与前一日同量级即符合预期；**出现明显跳变反而是
+  异常信号**，说明有未预期的行为变更，要查而不是庆祝。
+- **生产 7 列尚未回填**（全 NULL）→ F-Score 全判「不可判」→ 门控日志会报
+  `piotroski_gate_shadow` 且 `unjudgeable` 处于高位。这是**设计内的可见降级**
+  （C-4），且门控本就是影子模式，对选股无影响。回填是另一件事，
+  需单独的 C-1 确认 + `pg_dump -t financial_data` 定点备份。
