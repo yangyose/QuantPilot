@@ -57,6 +57,23 @@ class TushareAdapter(DataSourceAdapter):
         # ≈ 5 小时；缓存后整次 ingest_history 只调 1-2 × 110 批 ≈ 5-10 分钟。
         self._fina_cache: dict[str, pd.DataFrame] = {}
 
+    @staticmethod
+    def _interface_name(func: Any) -> str:
+        """取 Tushare 接口名。
+
+        ⚠️ SDK 的 `pro.xxx` 是 `functools.partial(DataApi.query, "xxx")`，
+        **没有 `__name__`**——原实现 `getattr(func, "__name__", "unknown")` 因此
+        对所有真实调用都返回 `unknown`，导致 `TUSHARE_CALLS{interface}` 埋点
+        自 Phase 13 上线起 13 个接口全挤在一个标签下、毫无区分度
+        （2026-09-09 加行数截断告警时才发现——那条告警同样不指名接口）。
+
+        接口名在 `partial.args[0]`。
+        """
+        args = getattr(func, "args", None)
+        if args and isinstance(args[0], str):
+            return args[0]
+        return getattr(func, "__name__", "unknown")
+
     async def _call(self, func: Any, **kwargs: Any) -> pd.DataFrame:
         """受限并发的异步包装器。
 
@@ -66,7 +83,7 @@ class TushareAdapter(DataSourceAdapter):
         """
         from quantpilot.core.metrics import TUSHARE_CALLS
 
-        interface = getattr(func, "__name__", "unknown")
+        interface = self._interface_name(func)
         async with self._semaphore:
             try:
                 result = await asyncio.to_thread(func, **kwargs)
@@ -75,7 +92,37 @@ class TushareAdapter(DataSourceAdapter):
                 TUSHARE_CALLS.labels(interface=interface, status=status).inc()
                 raise
             TUSHARE_CALLS.labels(interface=interface, status="success").inc()
+            self._warn_if_row_capped(interface, result, kwargs)
             return result
+
+    # Tushare 各接口的单次调用行数上限（实测值）。返回行数**恰好等于**其中之一，
+    # 是「被静默截断」的指纹——两次真实事故都是这个形态：
+    #   · `suspend_d` 参数名写错（2026-09-02）→ 恰好 **5000** 行（全表最早那批），
+    #     818 只正常股被当停牌，持续 4 个月
+    #   · `fina_indicator` 按日期窗口调用（2026-09-09）→ 恰好 **100** 行，
+    #     C2 回填只填到最新一期，而脚本报告 ok=5515 fail=0
+    # 两次都不报错。§4.3 既有的判据「验返回日期是否落在入参窗口内」拦不住这一类:
+    # 返回的数据确实落在窗口内，只是少了一大半。
+    _ROW_CAPS = frozenset({100, 1000, 2000, 3000, 4000, 5000, 6000, 10000})
+
+    @classmethod
+    def _warn_if_row_capped(cls, interface: str, result: Any, kwargs: dict) -> None:
+        """行数命中已知上限即告警。
+
+        ⚠️ **告警不是拦截**：合法响应偶尔也可能恰好是整百行。价值在于「有人看得见」，
+        而此前是完全无声。反向约束同样重要——普通行数不得告警，否则每天刷屏被当
+        噪声忽略，等于没有告警（同 `universe_filter_low_coverage` 的阈值教训）。
+        """
+        try:
+            n = len(result)
+        except TypeError:
+            return
+        if n in cls._ROW_CAPS:
+            logger.warning(
+                "tushare_row_cap_suspected: interface=%s rows=%d params=%s"
+                " —— 行数恰好等于已知单次上限，很可能被静默截断（换分批/换调用形态）",
+                interface, n, sorted(k for k in kwargs if k != "fields"),
+            )
 
     @staticmethod
     def _fmt(d: date) -> str:
@@ -536,6 +583,7 @@ class TushareAdapter(DataSourceAdapter):
         ts_codes: list[str],
         start_date: date,
         end_date: date,
+            period: str | None = None,
     ) -> pd.DataFrame:
         """TD-1：逐股查询 fina_indicator，每批 50 只，批次间 sleep(0.3s)。
 
@@ -552,11 +600,22 @@ class TushareAdapter(DataSourceAdapter):
         frames: list[pd.DataFrame] = []
         for i in range(0, len(ts_codes), batch_size):
             batch = ts_codes[i : i + batch_size]
+            # ⚠️ **按日期窗口调用有 100 行硬上限**（2026-09-09 实调：5 码跨 5.7 年
+            # 恰好返回 100 行、每码 18~21 期被截断）。50 码/批时每股只剩 2 期，
+            # 而调用**成功、不报错**——C2 回填因此只填到最新一期，
+            # 脚本却报 ok=5515 fail=0。给 `period` 即走定期调用，逐期取完整数据。
+            _window = (
+                {"period": period}
+                if period
+                else {
+                    "start_date": self._fmt(start_date),
+                    "end_date": self._fmt(end_date),
+                }
+            )
             df = await self._call(
                 self._pro.fina_indicator,
                 ts_code=",".join(batch),
-                start_date=self._fmt(start_date),
-                end_date=self._fmt(end_date),
+                **_window,
                 fields=(
                     "ts_code,ann_date,end_date,roe,netprofit_yoy,tr_yoy,"
                     "debt_to_assets,"

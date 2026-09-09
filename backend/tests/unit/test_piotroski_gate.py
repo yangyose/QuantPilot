@@ -46,10 +46,22 @@ def _snapshot(codes, f_scores, *, industries=None, roe=None) -> dict:
     }
 
 
+def _gated() -> MeanReversionStrategy:
+    """门控**打开**的策略实例。
+
+    生产默认是影子模式（`piotroski_gate_enabled=False`，见文件末尾那组测试）。
+    本文件绝大多数用例验的是「门控生效时怎么判」，故显式打开——
+    不显式打开的话，它们会在影子默认下全部退化成「什么都没发生也算过」。
+    """
+    from quantpilot.core.config_defaults import MeanReversionStrategyConfig
+
+    return MeanReversionStrategy(MeanReversionStrategyConfig(piotroski_gate_enabled=True))
+
+
 def _apply(codes, f_scores, **kw) -> pd.DataFrame:
-    s = MeanReversionStrategy()
-    return s.apply_constraints(_raw(codes), pd.Index(codes, name="ts_code"),
-                               _snapshot(codes, f_scores, **kw))
+    return _gated().apply_constraints(
+        _raw(codes), pd.Index(codes, name="ts_code"), _snapshot(codes, f_scores, **kw)
+    )
 
 
 class TestGate:
@@ -110,13 +122,13 @@ class TestNoSnapshotIsNoOp:
 
         C-4：可见的降级——门控不生效时不得悄悄改变因子值。
         """
-        s = MeanReversionStrategy()
+        s = _gated()
         raw = _raw(["A", "B"])
         out = s.apply_constraints(raw, raw.index, {})
         pd.testing.assert_frame_equal(out, raw)
 
     def test_does_not_mutate_input(self) -> None:
-        s = MeanReversionStrategy()
+        s = _gated()
         raw = _raw(["A"])
         before = raw.copy(deep=True)
         s.apply_constraints(raw, raw.index, _snapshot(["A"], [2.0]))
@@ -161,3 +173,82 @@ class TestServiceActuallyComputesFScore:
         assert '"stock_info"' in self._snapshot_src(), (
             "快照缺 stock_info → 金融股永远走不到 ROE 替代分支"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 影子模式（2026-09-09）：门控默认**不真正剔除**，只计算并记日志。
+#
+# 为什么默认关：开发集 28 个采样日实测（`docs/reviews/scoring_monotonicity_2026-09-09.md`
+# §7）——策略 IC 在 6 个阈值上基本不动，头部 5% 超额**不单调**（F<5 反比 F<4 差），
+# 且无一显著（|t| ≤ 1.13）。F<7 的 +0.0005 代价是丢掉 72% 可选池。
+# 机制先验合理，值得留在生产观察；但先验不能替代证据。
+#
+# ⚠️ 这两条测试钉的是「开关真的被消费」，不是「开关存在」。
+# CLAUDE.md §4.4 记过：接了配置却毫无作用的代码，能跑过任何只验证「不抛异常」的测试。
+# 判据是**改开关 → 结果必须变**。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_gate_11_shadow_is_default_and_returns_raw_unchanged():
+    """默认（影子）：命中门控的行也**原样返回**，不置 NaN。"""
+    codes = ["000001.SZ", "000002.SZ"]
+    raw = _raw(codes)
+    out = MeanReversionStrategy().apply_constraints(
+        raw, raw.index, _snapshot(codes, [3.0, 8.0])
+    )
+    pd.testing.assert_frame_equal(out, raw)
+
+
+def test_gate_12_enabling_the_flag_changes_the_result():
+    """开关打开 → 同一份输入，命中行三列全 NaN。
+
+    与上一条构成「改参数 → 结果必须变」的一对：只写其中任何一条，
+    开关没接线时都能绿。
+    """
+    from quantpilot.core.config_defaults import MeanReversionStrategyConfig
+
+    codes = ["000001.SZ", "000002.SZ"]
+    raw = _raw(codes)
+    strat = MeanReversionStrategy(
+        MeanReversionStrategyConfig(piotroski_gate_enabled=True)
+    )
+    out = strat.apply_constraints(raw, raw.index, _snapshot(codes, [3.0, 8.0]))
+
+    assert out.loc["000001.SZ"].isna().all()          # F=3 < 6 → 剔除
+    assert not out.loc["000002.SZ"].isna().any()      # F=8 → 保留
+    assert not out.equals(raw)
+
+
+def test_gate_13_threshold_is_configurable_and_consumed():
+    """阈值同样必须被真消费——写死 6.0 时这条会红。"""
+    from quantpilot.core.config_defaults import MeanReversionStrategyConfig
+
+    codes = ["000001.SZ"]
+    raw = _raw(codes)
+    snap = _snapshot(codes, [5.0])
+
+    lenient = MeanReversionStrategy(
+        MeanReversionStrategyConfig(piotroski_gate_enabled=True, piotroski_min_score=5.0)
+    ).apply_constraints(raw, raw.index, snap)
+    strict = MeanReversionStrategy(
+        MeanReversionStrategyConfig(piotroski_gate_enabled=True, piotroski_min_score=7.0)
+    ).apply_constraints(raw, raw.index, snap)
+
+    assert not lenient.isna().any().any()   # F=5 >= 5 → 留
+    assert strict.isna().all().all()        # F=5 <  7 → 剔
+
+
+def test_gate_14_shadow_still_logs_the_blocked_count(caplog):
+    """影子模式必须仍然报出「本来会剔掉几只」——否则观察期什么也观察不到。"""
+    import logging
+
+    codes = ["000001.SZ", "000002.SZ"]
+    raw = _raw(codes)
+    with caplog.at_level(logging.INFO):
+        MeanReversionStrategy().apply_constraints(
+            raw, raw.index, _snapshot(codes, [3.0, 8.0])
+        )
+    line = "\n".join(caplog.messages)
+    assert "piotroski_gate" in line
+    assert "blocked=1" in line
+    assert "shadow" in line          # 影子与真剔除必须能从日志区分开

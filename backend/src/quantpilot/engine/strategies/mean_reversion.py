@@ -17,8 +17,9 @@ from quantpilot.engine.universe import UniverseFilter
 # 在数字上看不出来。
 _FINANCIAL_INDUSTRIES = UniverseFilter.FINANCIAL_INDUSTRIES
 
-# SDD-EXT-04：F-Score >= 6 方可参与均值回归
-_F_SCORE_MIN = 6.0
+# SDD-EXT-04：F-Score >= 6 方可参与均值回归。
+# ⚠️ 阈值现由 `MeanReversionStrategyConfig.piotroski_min_score` 提供——本常量
+# 只作历史注记，**不要在判定里读它**，否则配置就成了平行副本（CLAUDE.md §4.11 第 2 例）。
 # 金融股替代判据（其会计科目不适用 Piotroski）
 _FINANCIAL_MIN_ROE = 0.05
 
@@ -66,6 +67,11 @@ class MeanReversionStrategy(BaseStrategy):
 
         快照未提供 `f_score`（回填未完成 / 回测路径）→ **恒等返回**，
         并记 INFO 便于确认门控是否真的在生效（C-4：可见的降级）。
+
+        ⚠️ **默认 `piotroski_gate_enabled=False`（影子模式）**：上面三条分支照常
+        计算、照常记日志（`piotroski_gate_shadow: blocked=N`），但**不改数据**。
+        开发集实测该门控在任何阈值上都无显著收益（见 `config_defaults` 的
+        【降级说明】与 `docs/reviews/scoring_monotonicity_2026-09-09.md` §7）。
         """
         f_score = market_data.get("f_score")
         if f_score is None or raw.empty:
@@ -90,17 +96,22 @@ class MeanReversionStrategy(BaseStrategy):
             else pd.Series(float("nan"), index=idx, dtype=float)
         )
 
-        # 非金融：f_score 有值且 < 6 → 门控（NaN 不门控）
-        blocked = (~is_financial) & fs.notna() & (fs < _F_SCORE_MIN)
+        threshold = self._cfg.piotroski_min_score
+        # 非金融：f_score 有值且低于阈值 → 门控（NaN 不门控）
+        blocked = (~is_financial) & fs.notna() & (fs < threshold)
         # 金融：roe 有值且 <= 5% → 门控（roe 缺失同样不门控）
         blocked_fin = is_financial & roe.notna() & (roe <= _FINANCIAL_MIN_ROE)
         hit = blocked | blocked_fin
 
+        enabled = self._cfg.piotroski_gate_enabled
         logger.info(
-            "piotroski_gate_applied: blocked=%d unjudgeable=%d financial_alt=%d",
-            int(hit.sum()), int(fs.isna().sum()), int(is_financial.sum()),
+            "piotroski_gate_%s: blocked=%d unjudgeable=%d financial_alt=%d threshold=%.1f",
+            "applied" if enabled else "shadow",
+            int(hit.sum()), int(fs.isna().sum()), int(is_financial.sum()), threshold,
         )
-        if not hit.any():
+        # 影子模式：算完、报完，但不动数据。日志里 blocked= 就是「本来会剔掉几只」，
+        # 观察期靠它累积证据；改成不算不报就什么也观察不到。
+        if not enabled or not hit.any():
             return raw
         out = raw.copy()
         out.loc[hit, :] = float("nan")

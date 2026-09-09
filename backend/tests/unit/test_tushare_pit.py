@@ -272,3 +272,173 @@ class TestByStockCarriesPiotroskiFields:
         assert r["current_ratio"] == pytest.approx(2.5), "倍数不得再除 100"
         assert r["ocfps"] == pytest.approx(1.2345)
         assert r["publish_date"] == date(2025, 8, 28), "本路径用 ann_date 作 publish_date"
+
+
+class TestByStockSupportsPeriodPinnedCall:
+    """⚠️ `fina_indicator` **按日期窗口调用有 100 行硬上限**（2026-09-09 实调确认）。
+
+    实测：5 码 + `start_date/end_date` 跨 5.7 年 → **恰好 100 行**（每码 18~21 期，
+    被截断）；同样 5 码改用 `period=` 定期调用 → 每期完整返回。
+
+    回填用 50 码/批 → 100 ÷ 50 = **每股只拿到 2 期**，于是 C2 的 6 个新列
+    只有最新一期有值、更早各期全空，而**回填脚本报告 ok=5515 fail=0**——
+    调用成功、行数被静默截断，是 §4.3「日期类接口静默返错数据」的又一形态。
+
+    ⚠️ 设计文档 2026-08-27 的「真调核对」验的是 `period=` 定期调用，
+    **而回填实际走的是日期窗口调用**——验证做了，验的不是真正走的那条路径。
+
+    故 `fetch_financial_by_stock` 增 `period` 参数：给了就走定期调用。
+    """
+
+    @staticmethod
+    def _fina_period_row() -> pd.DataFrame:
+        return pd.DataFrame({
+            "ts_code": ["000001.SZ"], "ann_date": ["20240830"], "end_date": ["20240630"],
+            "roe": [15.0], "netprofit_yoy": [10.0], "tr_yoy": [8.0],
+            "debt_to_assets": [50.0], "roa": [7.5], "ocfps": [1.2], "eps": [0.9],
+            "current_ratio": [2.5], "grossprofit_margin": [32.0], "assets_turn": [0.85],
+        })
+
+    async def test_period_argument_switches_call_shape(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """给了 `period` → 必须传 `period=` 且**不传** start/end（否则仍被 100 行截断）。"""
+        calls = []
+
+        async def _spy(fn, **kw):
+            calls.append(kw)
+            return self._fina_period_row()
+
+        with patch.object(adapter, "_call", new=_spy):
+            await adapter.fetch_financial_by_stock(
+                ["000001.SZ"], date(2021, 1, 1), date(2026, 9, 8), period="20240630"
+            )
+        kw = calls[0]
+        assert kw.get("period") == "20240630", "未走定期调用"
+        assert "start_date" not in kw and "end_date" not in kw, (
+            "同时传了日期窗口 —— 仍会命中 100 行上限"
+        )
+
+    async def test_without_period_keeps_date_range_shape(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """不给 `period` → 保持原日期窗口形态（向后兼容，既有调用点不受影响）。"""
+        calls = []
+
+        async def _spy(fn, **kw):
+            calls.append(kw)
+            return self._fina_period_row()
+
+        with patch.object(adapter, "_call", new=_spy):
+            await adapter.fetch_financial_by_stock(
+                ["000001.SZ"], date(2024, 1, 1), date(2024, 12, 31)
+            )
+        kw = calls[0]
+        assert "period" not in kw
+        assert kw.get("start_date") == "20240101"
+
+    async def test_period_path_still_maps_and_converts(
+        self, adapter: TushareAdapter
+    ) -> None:
+        """定期路径的字段映射与单位换算必须与窗口路径一致——两条路各写一份必漂。"""
+        with patch.object(
+            adapter, "_call", new=AsyncMock(return_value=self._fina_period_row())
+        ):
+            res = await adapter.fetch_financial_by_stock(
+                ["000001.SZ"], date(2021, 1, 1), date(2026, 9, 8), period="20240630"
+            )
+        r = res.iloc[0]
+        assert r["publish_date"] == date(2024, 8, 30)
+        assert r["report_period"] == date(2024, 6, 30)
+        assert r["roa"] == pytest.approx(0.075)
+        assert r["current_ratio"] == pytest.approx(2.5)
+
+
+class TestRowCapDetection:
+    """接口返回行数**恰好等于整数上限** = 截断指纹。两次真实事故都是这个形态：
+
+    | 事故 | 行数 | 后果 |
+    |---|---|---|
+    | `suspend_d` 参数名写错（2026-09-02）| **恰好 5000** | 818 只正常股被当停牌，持续 4 个月 |
+    | `fina_indicator` 日期窗口（2026-09-09）| **恰好 100** | C2 回填只填最新一期 |
+
+    两次都**不报错**，后者甚至报告 `ok=5515 fail=0`。
+
+    §4.3 已有的判据是「验返回数据的日期是否落在入参窗口内」——**它拦不住这一类**：
+    返回的数据确实落在窗口内，只是少了一大半。故在 `_call` 统一加一层行数指纹告警。
+
+    ⚠️ 这是**告警不是拦截**：合法响应偶尔也可能恰好是整百行。告警的价值在于
+    「有人看得见」，而此前是完全无声。
+    """
+
+    async def _call_n(self, adapter: TushareAdapter, n: int, caplog):
+        df = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(n)]})
+        with caplog.at_level("WARNING"):
+            await adapter._call(lambda **kw: df)
+        return caplog.text
+
+    async def test_exact_cap_logs_warning(self, adapter: TushareAdapter, caplog) -> None:
+        """恰好 100 行（今天 `fina_indicator` 的指纹）→ 必须告警。"""
+        assert "100" in await self._call_n(adapter, 100, caplog)
+
+    async def test_five_thousand_cap_logs_warning(
+        self, adapter: TushareAdapter, caplog
+    ) -> None:
+        """恰好 5000 行——2026-09-02 `suspend_d` 事故的指纹。"""
+        txt = await self._call_n(adapter, 5000, caplog)
+        assert "5000" in txt
+
+    async def test_ordinary_row_count_is_silent(
+        self, adapter: TushareAdapter, caplog
+    ) -> None:
+        """⚠️ 反向钉：普通行数不得告警，否则每天刷屏 → 被当噪声忽略 →
+        等于没有告警（同 `universe_filter_low_coverage` 的阈值教训）。"""
+        txt = await self._call_n(adapter, 5487, caplog)
+        assert txt.strip() == ""
+
+    async def test_empty_result_is_silent(
+        self, adapter: TushareAdapter, caplog
+    ) -> None:
+        txt = await self._call_n(adapter, 0, caplog)
+        assert txt.strip() == ""
+
+
+class TestInterfaceNameResolution:
+    """⚠️ Tushare SDK 的 `pro.xxx` 是 `functools.partial(DataApi.query, 'xxx')`，
+    **没有 `__name__`**。而 `_call` 取的是 `func.__name__`，于是：
+
+    - `TUSHARE_CALLS{interface}` 埋点自 Phase 13 上线起**恒为 `unknown`**，
+      13 个接口全挤在一个标签下，完全没有区分度
+    - 行数截断告警也不指名接口 → 排障时得靠猜
+
+    「告警要有人看得见才算数」——不指名接口的告警只完成了一半。
+    接口名在 `partial.args[0]`。
+    """
+
+    def test_resolves_partial_interface_name(self, adapter: TushareAdapter) -> None:
+        import functools
+
+        fake = functools.partial(lambda name, **kw: None, "fina_indicator")
+        assert adapter._interface_name(fake) == "fina_indicator"
+
+    def test_falls_back_to_dunder_name(self, adapter: TushareAdapter) -> None:
+        def some_api(**kw):
+            return None
+
+        assert adapter._interface_name(some_api) == "some_api"
+
+    def test_unknown_when_neither(self, adapter: TushareAdapter) -> None:
+        assert adapter._interface_name(object()) == "unknown"
+
+    async def test_row_cap_warning_names_the_interface(
+        self, adapter: TushareAdapter, caplog
+    ) -> None:
+        """告警必须带接口名——否则排障要在 13 个接口里猜。"""
+        import functools
+
+        df = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(100)]})
+        fn = functools.partial(lambda name, **kw: df, "fina_indicator")
+        with caplog.at_level("WARNING"):
+            await adapter._call(fn)
+        assert "fina_indicator" in caplog.text
+        assert "unknown" not in caplog.text

@@ -172,6 +172,17 @@ class MeanReversionStrategyConfig:
     rsi_oversold: float = 30.0
     bbands_period: int = 20
     bbands_std: float = 2.0
+    # ── C2 Piotroski 门控（SDD-EXT-04）────────────────────────────────────
+    # 【降级说明】默认 **False = 影子模式**：门控照常计算并记日志，但不真正剔除。
+    # 当前降级内容 = F-Score 门控不生效；
+    # 原因 = 开发集 28 个采样日实测无效（策略 IC 在 6 个阈值上基本不动、头部 5%
+    #        超额不单调且无一显著；F<7 那个 +0.0005 的 t=0.09，代价是 72% 可选池）
+    #        —— 见 docs/reviews/scoring_monotonicity_2026-09-09.md §7；
+    # 恢复条件 = holdout（2025-08~2026-07）+ 生产影子期数据上独立复现同向改善。
+    # 机制先验合理（均值回归买下跌股，避开基本面正在恶化的公司＝避免接飞刀），
+    # 故保留在生产里继续观察，而不是删掉。
+    piotroski_gate_enabled: bool = False
+    piotroski_min_score: float = 6.0
 
 
 DEFAULT_MEAN_REVERSION_STRATEGY = MeanReversionStrategyConfig()
