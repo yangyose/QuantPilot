@@ -192,6 +192,28 @@ DEFAULT_MEAN_REVERSION_STRATEGY = MeanReversionStrategyConfig()
 @dataclass(frozen=True)
 class ValueStrategyConfig:
     pe_pb_history_years: int = 5
+    # ── `roe_quality` 是否计入合成 ────────────────────────────────────────────
+    # **默认 True = 维持 SDD §7.2.4 现状**。开关是为「可一键关掉并重测」而加的，
+    # 不是已经关掉了。
+    #
+    # 证据侧倾向于关掉：前视偏差修复前该因子 IC +0.0183、修复后 −0.0028（变号；
+    # 它由 ROE 构成，正是被污染的字段），干净面板六年逐年
+    # −0.041/−0.021/−0.001/+0.020/−0.002/+0.005 **从未确立方向**，
+    # 而同策略 pb_percentile(+0.041)/pe_percentile(+0.028) **6/6 年全正**。
+    #
+    # ⚠️ **但不能就这么关**，两个独立原因：
+    # ① **SDD §7.2.4 冲突**：该表把「ROE 质量」列为 35% 权重因子，且把价值陷阱
+    #    规避写成「需结合 ROE 质量因子过滤」。按 C-5，范围变更必须**先回写
+    #    system_design §9 + SDD**，再改代码。
+    # ② **能力真的会缺一块**：关掉后 ROE 只剩 `apply_constraints` 里那个
+    #    「截断到横截面中位数」的护栏。护栏对「便宜但低质」仍有效（把它从高位压到
+    #    中位），但对**两只估值完全相同、只是质量不同**的股票是 **no-op**
+    #    ——中位数就等于它俩的值，截断不动任何东西。而 SDD 的判定标准恰恰是
+    #    「陷阱股不得排在健康同业之前」（`test_val_02_value_trap_ranked_below_healthy_peer`
+    #    钉着这条）。即：关掉它需要**同时**给出替代的价值陷阱机制。
+    #
+    # 也**不是「ROE 数据无效」**：覆盖率 98.8%、构造正确、前视污染已修干净。
+    include_roe_quality: bool = True
 
 
 DEFAULT_VALUE_STRATEGY = ValueStrategyConfig()

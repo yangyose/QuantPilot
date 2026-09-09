@@ -491,8 +491,11 @@ class BacktestService:
                 FinancialData.debt_to_asset,
                 FinancialData.pe_ttm,
                 FinancialData.pb,
-                # ValueStrategy roe_quality 依赖 roe；列裁剪优化（2026-06-12）漏掉它 →
-                # 回测 value 策略 roe_quality 恒 NaN → 整个 value 策略被跳过。补回。
+                # ⚠️ 别再把 roe 从这里裁掉：列裁剪优化（2026-06-12）漏掉过一次 →
+                # 回测 value 策略整个被跳过。原因当时是 roe_quality 因子依赖它；
+                # **2026-09-09 起 roe_quality 默认不入合成，但 roe 仍然必需**——
+                # `ValueStrategy.apply_constraints` 的价值陷阱护栏（SDD §7.2.4）读它。
+                # 即：那条注释的理由变了，结论没变，裁掉照样出事。
                 FinancialData.roe,
             )
             .where(FinancialData.publish_date >= fin_lookback_start)

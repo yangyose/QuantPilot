@@ -58,19 +58,22 @@ class ValueStrategy(BaseStrategy):
             market_data, "pb_percentile", universe, pb, pe_pb_history, "pb"
         )
 
-        # ── ROE 质量（横截面 rank，需 TD-1 修复）────────────────────────────────
-        if "roe" in financials.columns:
-            roe_quality = financials["roe"].astype(float)
-        else:
-            logger.warning("value_roe_placeholder: financials 无 roe 列，roe_quality 置 NaN")
-            roe_quality = pd.Series(float("nan"), index=universe)
+        cols = {"pe_percentile": pe_percentile, "pb_percentile": pb_percentile}
 
-        df = pd.DataFrame({
-            "pe_percentile": pe_percentile,
-            "pb_percentile": pb_percentile,
-            "roe_quality": roe_quality,
-        }, index=universe)
-        return df
+        # ── ROE 质量（横截面 rank）──────────────────────────────────────────────
+        # 2026-09-09 起**默认不计入合成**（`include_roe_quality=False`）：入选依据
+        # 已被证伪（前视污染修复后 IC 由 +0.0183 变 −0.0028），且六年从未确立方向。
+        # 理由与恢复条件见 `ValueStrategyConfig.include_roe_quality` 的【降级说明】。
+        # ⚠️ ROE 本身仍在用——`apply_constraints` 的价值陷阱护栏读 financials["roe"]，
+        #    不读本列，故那条护栏**不受影响**。
+        if self._cfg.include_roe_quality:
+            if "roe" in financials.columns:
+                cols["roe_quality"] = financials["roe"].astype(float)
+            else:
+                logger.warning("value_roe_placeholder: financials 无 roe 列，roe_quality 置 NaN")
+                cols["roe_quality"] = pd.Series(float("nan"), index=universe)
+
+        return pd.DataFrame(cols, index=universe)
 
     def apply_constraints(
         self,
@@ -129,11 +132,15 @@ class ValueStrategy(BaseStrategy):
         actual_pe_pct = (1.0 - pe_pct) * 100 if not pd.isna(pe_pct) else float("nan")
         actual_pb_pct = (1.0 - pb_pct) * 100 if not pd.isna(pb_pct) else float("nan")
 
-        return (
+        text = (
             f"PE历史分位={actual_pe_pct:.0f}%（{pe_label}），"
-            f"PB历史分位={actual_pb_pct:.0f}%，"
-            f"ROE={roe:.1f}%。"
+            f"PB历史分位={actual_pb_pct:.0f}%"
         )
+        # roe_quality 默认不参与合成 → raw_row 里没有这一列。此时不能照旧拼
+        # `ROE={nan}%`：那是把内部缺失原样漏给用户看。
+        if not pd.isna(roe):
+            text += f"，ROE={roe:.1f}%"
+        return text + "。"
 
 
 def _resolve_percentile(
