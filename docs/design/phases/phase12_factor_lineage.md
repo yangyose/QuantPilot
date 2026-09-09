@@ -368,6 +368,7 @@ class SignalLineageResponse(BaseModel):
 `frontend/src/types/api.ts` 的 SignalLineage interface 严格匹配字段，新增 14
 字段（共 19）会让 TS 编译报"对象字面量多余属性"——此时必须更新
 `frontend/src/types/api.ts` 类型定义为 `SignalLineageResponse`（19 字段全列入）。
+⚠️ **V1.5-C C3 起为 20 字段**：L2 增 `low_volatility_score`（第五个策略入 composite）。
 "不改动即可工作"仅对弱类型 JSON 消费成立。
 
 ### 3.2 AttributionService OLS 归因（P12-B）
@@ -763,7 +764,7 @@ def downgrade() -> None:
 
 | 编号 | 文件 | 用例 |
 |------|------|------|
-| **UT-P12-A-01** | `tests/unit/test_lineage_response_schema.py` | `SignalLineageResponse` 序列化字段齐全（**19 字段**：ts_code(1) + L1 5 + L2 9 + L3 4；v1.1 评审 P2-3 重新计数）|
+| **UT-P12-A-01** | `tests/unit/test_lineage_response_schema.py` | `SignalLineageResponse` 序列化字段齐全（**19 字段**：ts_code(1) + L1 5 + L2 9 + L3 4；v1.1 评审 P2-3 重新计数）。**V1.5-C C3 起 20 字段**（L2 → 10，增 `low_volatility_score`）|
 | **UT-P12-A-02** | `tests/unit/test_lineage_response_schema.py` | snapshot 为 None 时 `score_snapshot=null`（区分"无快照"与"NULL 字段"）|
 | **UT-P12-B-01** | `tests/unit/test_attribution_regression.py` | `run_ols` 在样本 < 10×factor 时返回 None |
 | **UT-P12-B-02** | `tests/unit/test_attribution_regression.py` | 因子矩阵奇异 → 返回 None（不抛 LinAlgError）|
@@ -914,6 +915,7 @@ P12-A0 前置补丁：Scorer / SignalService / ScoringService 写入 5 步管线
 P12-A LineageService 后端稳定化（前置）
     ├── P12-A1 SignalLineageResponse pydantic schema + 单元测试 UT-P12-A-01/02
     │         （19 字段：ts_code(1) + L1 5 + L2 9 + L3 4；评审 P2-3 修订）
+    │          V1.5-C C3 起 20 字段：L2 增 low_volatility_score
     ├── P12-A2 LineageService.get_signal_lineage 去 getattr + candidate_pool join + 集成测试 INT-P12-A-01~03
     └── P12-A3 GET /signals/{id}/lineage 加 response_model=SignalLineageResponse（评审 P1-1 改挂归 P12-A）
         ↓

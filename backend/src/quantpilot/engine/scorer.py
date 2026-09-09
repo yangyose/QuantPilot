@@ -440,6 +440,10 @@ class Scorer:
                 momentum_score=_scalar("momentum"),
                 reversion_score=_scalar("mean_reversion"),
                 value_score=_scalar("value"),
+                # ⚠️ 加新策略时这里必须跟着加一行，否则该策略的分数恒为 None、
+                # candidate_pool / signal_score_snapshot 对应列永远 NULL 且不报错。
+                # `test_strategy_score_reaches_db.py` 遍历 STRATEGY_NAMES 钉死这条。
+                low_volatility_score=_scalar("low_volatility"),
                 market_state=market_state,
                 score_breakdown=breakdown_raw,  # 兼容旧字段：等于 breakdown_raw
                 explanation=explanation,

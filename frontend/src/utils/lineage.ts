@@ -38,11 +38,14 @@ export const HYSTERESIS_STATUS_MAP: Record<string, string> = {
   cooled_down: '冷却中',
 }
 
+// ⚠️ 与后端 `core/strategy_registry.py::STRATEGY_NAMES` 对应。
+// 加策略时两边都要改——漏了这边，溯源视图会静默少一行（不报错、不空白）。
 export const STRATEGY_LABELS: Record<string, string> = {
   trend: '趋势跟踪',
   momentum: '动量',
   mean_reversion: '均值回归',
   value: '价值',
+  low_volatility: '低波动',
 }
 
 export function translateTriggerReason(reason: string | null | undefined): string {

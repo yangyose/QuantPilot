@@ -86,11 +86,12 @@ export interface ScoreSnapshotLineage {
   composite_pct_in_market: number | null
   market_state: string | null
   trigger_reason: string | null
-  // L2 ICIR + 中性化（9）
+  // L2 ICIR + 中性化（10；V1.5-C C3 起含 low_volatility）
   trend_score: number | null
   momentum_score: number | null
   reversion_score: number | null
   value_score: number | null
+  low_volatility_score: number | null
   weights_source: string | null
   hysteresis_status: string | null
   score_breakdown: Record<string, unknown> | null

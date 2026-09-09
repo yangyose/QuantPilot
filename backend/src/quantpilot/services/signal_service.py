@@ -182,7 +182,8 @@ class SignalService:
 
         id_map: {(ts_code, signal_type): signal_id}，由 upsert_signals RETURNING 子句提供。
         composite_df: index=ts_code，可选列 composite_score/trend_score/reversion_score/
-                      momentum_score/value_score/market_state（均可缺失，缺失时为 None）。
+                      momentum_score/value_score/low_volatility_score/market_state
+                      （均可缺失，缺失时为 None）。
         信号的 score_breakdown/raw_factors 来自 TradeSignal 本身（由 SignalGenerator 填充）。
         """
         def _safe_float(val: object) -> float | None:
@@ -210,6 +211,7 @@ class SignalService:
                 reversion_score = _safe_float(row_data.get("reversion_score"))
                 momentum_score = _safe_float(row_data.get("momentum_score"))
                 value_score = _safe_float(row_data.get("value_score"))
+                low_volatility_score = _safe_float(row_data.get("low_volatility_score"))
                 market_state = row_data.get("market_state")
                 # Phase 12 P12 评审 P1-4：5 步管线产物落 signal_score_snapshot
                 factor_winsorized = row_data.get("factor_winsorized")
@@ -218,6 +220,7 @@ class SignalService:
             else:
                 composite_score = sig.score
                 trend_score = reversion_score = momentum_score = value_score = None
+                low_volatility_score = None
                 market_state = None
 
             rows.append({
@@ -229,6 +232,7 @@ class SignalService:
                 "reversion_score": reversion_score,
                 "momentum_score": momentum_score,
                 "value_score": value_score,
+                "low_volatility_score": low_volatility_score,
                 "market_state": market_state,
                 "score_breakdown": sig.score_breakdown,
                 "raw_factors": sig.raw_factors,

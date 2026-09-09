@@ -269,10 +269,14 @@ async def test_sapi_05_get_lineage(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# E2E-P12-A-01: GET /signals/{id}/lineage 返回三层 19 字段（Phase 12 §6.3）
+# E2E-P12-A-01: GET /signals/{id}/lineage 返回三层 20 字段（Phase 12 §6.3；V1.5-C C3 +1）
 # ---------------------------------------------------------------------------
 async def test_e2e_p12_a_01_lineage_full_19_fields(client: AsyncClient) -> None:
-    """E2E-P12-A-01: SignalLineageResponse 19 字段齐全（含 L3 factor_orthogonal）。"""
+    """E2E-P12-A-01: SignalLineageResponse 20 字段齐全（含 L3 factor_orthogonal）。
+
+    V1.5-C C3 起 L2 多 `low_volatility_score`。⚠️ 清单写死是有意的——
+    它钉的是对外 API 契约，从 STRATEGY_NAMES 派生就没法发现误增/误删字段。
+    """
     lineage_data = {
         "signal_id": 12345,
         "trade_date": "2026-05-12",
@@ -317,12 +321,13 @@ async def test_e2e_p12_a_01_lineage_full_19_fields(client: AsyncClient) -> None:
     assert resp.status_code == 200
     data = resp.json()["data"]
     snap = data["score_snapshot"]
-    # 19 字段齐全（设计文档 §3.1.3：标识 1 + L1 5 + L2 9 + L3 4）
+    # 20 字段齐全（设计文档 §3.1.3：标识 1 + L1 5 + L2 10 + L3 4）
     expected_fields = {
         "ts_code",
         "composite_score", "composite_z", "composite_pct_in_market",
         "market_state", "trigger_reason",
         "trend_score", "momentum_score", "reversion_score", "value_score",
+        "low_volatility_score",
         "weights_source", "hysteresis_status",
         "score_breakdown", "factor_winsorized", "factor_neutralized",
         "raw_factors", "factor_orthogonal",

@@ -116,6 +116,11 @@ const strategyZTable = computed(() => {
     { strategy: 'momentum', label: STRATEGY_LABELS.momentum, z: fmt(s.momentum_score) },
     { strategy: 'mean_reversion', label: STRATEGY_LABELS.mean_reversion, z: fmt(s.reversion_score) },
     { strategy: 'value', label: STRATEGY_LABELS.value, z: fmt(s.value_score) },
+    {
+      strategy: 'low_volatility',
+      label: STRATEGY_LABELS.low_volatility,
+      z: fmt(s.low_volatility_score),
+    },
   ]
 })
 

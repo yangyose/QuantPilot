@@ -52,7 +52,8 @@ class ScoreSnapshotLineage(BaseModel):
     - L1 业务可解释 5：composite_score / composite_z / composite_pct_in_market /
       market_state / trigger_reason
     - L2 ICIR + 中性化 9：trend_score / momentum_score / reversion_score /
-      value_score / weights_source / hysteresis_status / score_breakdown /
+      value_score / low_volatility_score / weights_source / hysteresis_status /
+      score_breakdown /
       factor_winsorized / factor_neutralized
     - L3 正交化 + 审计 4：raw_factors / factor_orthogonal /
       score_breakdown_raw / score_breakdown_residual
@@ -75,6 +76,7 @@ class ScoreSnapshotLineage(BaseModel):
     momentum_score: float | None = None
     reversion_score: float | None = None
     value_score: float | None = None
+    low_volatility_score: float | None = None
     weights_source: str | None = None
     hysteresis_status: str | None = None
     score_breakdown: dict | None = None

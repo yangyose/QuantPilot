@@ -96,6 +96,7 @@ describe('useSignalStore', () => {
         momentum_score: null,
         reversion_score: null,
         value_score: null,
+        low_volatility_score: null,
         weights_source: null,
         hysteresis_status: null,
         score_breakdown: null,
