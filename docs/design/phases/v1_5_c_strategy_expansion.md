@@ -1,7 +1,11 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
 > 版本：v0.17（C2 回填激活 + Altman 裁定 + C3 交付回写，2026-09-09）
-> 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1 全部已上生产**（2026-08-31，与 P0 退出修复同批，生产 = `2bab523`）——C1-1 约束落点统一 `ac069e5` / C1-2 风险调整动量 `85df015` / C1-3 价格窗口按交易日推导 `be6d6d6`；**C1 面板对比已完成**（2026-08-28，off 5h10m / on 4h57m，497 交易日 × 4 策略，结论见 §3.3——**上线理由是 C1-1 + C1-3 两个缺陷修复，不是 C1-2 验证有效**）；**C2 代码六块全部完成 + 5y 回填已在本地算力中心（5434）激活**（7 列覆盖 94.7~99.9%，9/9 项可判，Altman 备选已裁定放弃，见 §4.4/§4.5）；**C3 低波动策略代码已交付**（`engine/volatility.py` + `strategies/low_volatility.py` + `core/strategy_registry.py` 单一事实来源 + alembic 0029，51 条单测，影子模式 0 权重，`e133d41`）。⚠️ **C2/C3 均未部署**——生产 = `85438a8`（alembic 0027），生产侧回填是下一批部署内容。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。C4-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
+> 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1 全部已上生产**（2026-08-31，与 P0 退出修复同批，生产 = `2bab523`）——C1-1 约束落点统一 `ac069e5` / C1-2 风险调整动量 `85df015` / C1-3 价格窗口按交易日推导 `be6d6d6`；**C1 面板对比已完成**（2026-08-28，off 5h10m / on 4h57m，497 交易日 × 4 策略，结论见 §3.3——**上线理由是 C1-1 + C1-3 两个缺陷修复，不是 C1-2 验证有效**）；**C2 代码六块全部完成 + 5y 回填已在本地算力中心（5434）激活**（7 列覆盖 94.7~99.9%，9/9 项可判，Altman 备选已裁定放弃，见 §4.4/§4.5）；**C3 低波动策略代码已交付**（`engine/volatility.py` + `strategies/low_volatility.py` + `core/strategy_registry.py` 单一事实来源 + alembic 0029，51 条单测，影子模式 0 权重，`e133d41`）。✅ **C2/C3 已于 2026-09-09 上生产**（alembic 至 **0029**；核验见 `docs/ops/deploy_log.md`——
+**此处不再写死 sha**，钉了必然滞后：v0.16 刚立下「本行必须随每次交付/部署同步」的规矩，
+下一轮就又失守一次——上线当天的那个 commit 自己改了本文档正文，却没回头改这一行）。
+⚠️ 该批**选股行为应为零变化**（影子权重 0 + 门控不剔除）；观察期看到跳变才是异常。
+**生产侧 7 列尚未回填**（仍全 NULL → F-Score 全判「不可判」，属设计内可见降级）。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。C4-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
 >
 > ⚠️ **本行必须随每次交付/部署同步**（v0.15 订正）：v0.9~v0.14 六次修订都改了正文却没回写这一行，
 > 它长期停在「C1 未部署 / 面板待起跑」，而同文档 §3.3、`CLAUDE.md §6`、`docs/ops/deploy_log.md`
@@ -596,8 +600,12 @@ def compute_f_score(
 - [x] §8 的 composite 接入项全部通过（影子模式默认 0 权重、正交化矩阵排除、`candidate_pool` 扩列 = alembic **0029**，两张表都要改）
 - [x] 🔴 **`low_volatility_score` 全链路死代码——第三方评审抓出，已修**（2026-09-09）。上一条打勾时它其实是假的：`STRATEGY_NAMES` 登记了、`SCORE_COLUMN_MAP` 映射了、`PoolEntry` 有字段、alembic 0029 给两张表都加了列、契约测试断言列名存在——**而 `Scorer.aggregate()` 从头到尾没把值填进去**（`_scalar("trend"/"momentum"/"mean_reversion"/"value")` 四行都在，唯独漏了第五行），`candidate_pool` / `signal_score_snapshot` 的新列因此永远是 NULL。**1184 条测试全绿**，因为没有一条问过「值到了吗」。这是 CLAUDE.md §4.11 表第 4 例的同型。
   断点共五处，全部已补：`Scorer.aggregate` 赋值行 / `strategy_service` 四处候选池行 dict / `signal_service._build_snapshot_rows` / `schemas/signals.py` / 前端三处（类型、`STRATEGY_LABELS`、溯源视图）。
-  **护栏 4 条**（`tests/unit/test_strategy_score_reaches_db.py`，**遍历 `STRATEGY_NAMES` 而非写死五个名字**，故加第六个策略时同样会红）：①映射完整性；②每个策略的分数都被 `aggregate` 填入；③**改该策略的因子 → 它的分数必须变**（只断言「非 None」拦不住「接到了别的策略上」，实测该变异确实需要这条才红）；④**AST 检查候选池行 dict 的键**——按 §4.11「调用点是否真传参」，构造 `PoolEntry` 再调写入函数是自证式的。2 变异全拦（撤掉赋值行 / 接到 `value` 上）。
-  **另加第 5 条泛化护栏**：拿 ORM 列清单比对写入路径源码，`candidate_pool` / `signal_score_snapshot` 的**每一列都必须有人写**。这次的教训不限于某一列——下次 alembic 加列时会原样重演，且同样不报错。已用变异验证（凭空加一列不接线 → 红）。⚠️ 它只管「有人写」，管不了「写对值」，后者归上面那三条；两层各管一段。
+  **护栏 6 条**（`tests/unit/test_strategy_score_reaches_db.py`，**遍历 `STRATEGY_NAMES` 而非写死五个名字**，故加第六个策略时同样会红）：①映射完整性；②每个策略的分数都被 `aggregate` 填入；③**改该策略的因子 → 它的分数必须变**（只断言「非 None」拦不住「接到了别的策略上」，实测该变异确实需要这条才红）；④**AST 检查候选池行 dict 的键**——按 §4.11「调用点是否真传参」，构造 `PoolEntry` 再调写入函数是自证式的。2 变异全拦（撤掉赋值行 / 接到 `value` 上）。
+  ⑤ **影子权重 0 时分数仍要落库**——**这条与本缺陷最直接相关，却最容易漏写**：生产实际配置就是
+  `low_volatility` 权重 0，只测非零权重的话，「非零有值、影子恒 None」这种失效根本不会被发现，
+  而影子期恰恰是唯一要靠这一列观察的时期。风险不是假想的：C0-6 记过一次零权重策略被
+  `valid_weights` 过滤、连 `score_breakdown_raw` 都进不去。实测确认没踩到，但已钉死。
+  ⑥ **泛化孤儿列扫描**：拿 ORM 列清单比对写入路径源码，`candidate_pool` / `signal_score_snapshot` 的**每一列都必须有人写**。这次的教训不限于某一列——下次 alembic 加列时会原样重演，且同样不报错。已用变异验证（凭空加一列不接线 → 红）。⚠️ 它只管「有人写」，管不了「写对值」，后者归上面那三条；两层各管一段。
   ⚠️ **该缺陷同时说明「契约测试断言字段存在」是不够的**：`test_strategy_registry.py` 当时已经在断言 `low_volatility_score` 存在于 ORM 与 `PoolEntry` 的字段集合里，并且是绿的——**字段存在与值到达是两件事**。
 - [x] 集成测试：断言现有四策略 `z_raw` 与接入前**逐值一致** —— **9 条**（`tests/unit/test_low_volatility_zero_regression.py`）
 - [ ] 生产上线后观测 `scorer_strategy_skipped_*` 无 low_volatility 异常，且日志可见其参与（**待部署**——生产 = `85438a8`，不含 0029）

@@ -367,8 +367,18 @@ DEBUG=false
 
 ### 5.3 自动钩子（`.claude/hooks/`）
 
+⚠️ **两个评审钩子只对 `Edit`/`Write` 生效，对 Bash 写入是瞎的**（2026-09-09 实测）：PostToolUse 的
+matcher 是 `Edit|Write`，且两个脚本都靠 `tool_input.file_path` 定位文件——**Bash 的 tool_input 只有
+`command`、没有 `file_path`** → `path=""` → basename 不匹配 → **静默 `exit 0`**。于是用 heredoc / `sed -i`
+改 CLAUDE.md 或设计文档时，评审**一次都不会触发，且没有任何提示**。本会话十余次 bash 改动全部漏评审，
+是事后才发现的。**已修在源头**：`guard.py` 规则 4 在 PreToolUse 直接 **deny** 「Bash 写这两类文件」，
+逼回 Edit/Write（只拦写、不拦 `grep`/`sed -n`/`cat` 等读操作；`test_guard.py` 正反两面各有用例）。
+判据是跑 `python .claude/hooks/test_guard.py` → **39/39 passed**。
+⚠️ **同一个洞在 `auto_test.sh` 上仍然存在**（它管 `backend/**.py`，未纳入 deny——全拦会挡住正常的脚本
+生成）：**经 Bash 改过 backend 的 .py 后，自动测试不会跑，必须手动跑** `tests/unit/ tests/e2e/`。
+
 **CLAUDE.md 第三方评审**（`claude_md_review.sh` + `.claude/agents/claude-md-reviewer.md`，2026-08-28 加）：
-本文件每次被 Edit/Write 修改后，PostToolUse 钩子自动触发 `claude-md-reviewer` 子 agent 做**冷启动**
+本文件每次被 Edit/Write 修改后（**Bash 写入不触发，见上**），PostToolUse 钩子自动触发 `claude-md-reviewer` 子 agent 做**冷启动**
 评审——它不带主会话上下文，只看文件本身能否自洽地被下一个人读懂。两条主线：**准确性**（自相矛盾 /
 过期 / 缺判据 / 判据作用域 / 声称与现实脱节）+ **信噪比**（冗余、不该写在 CLAUDE.md 的内容、
 该下沉到 memory 或 `docs/` 的内容）——后者是因为本文件**每个会话全文加载**，多一行就是此后每次
@@ -457,7 +467,7 @@ C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
   超阈值、一只 −40.67% 却零卖出信号）。**它是 C1 部署的前置门槛**——C1 改「买什么」，退出缺陷
   决定「能不能卖」，在退出坏掉时部署一个改变选股的变更会放大风险。部署预案见 memory
   `c1_deployment_runbook`，体检报告 `docs/reviews/algo_framework_audit_2026-08-28.md`
-- **C2 六块全完成 + 5y 回填已在本地算力中心激活**（7 列覆盖 94.7~99.9%、9/9 项可判；Altman Z-Score 备选已裁定放弃）/ **C3 低波动策略代码已交付**（51 条单测、影子模式 0 权重、alembic 0029、新建 `core/strategy_registry.py` 单一事实来源）/ C4~C5 待启动。⚠️ **C2/C3 均未部署**；C2 门控经开发集实测**在任何阈值上都无显著收益** → 定为**影子模式**上线（`piotroski_gate_enabled=False`：照常算、照常记日志，不剔除），holdout + 生产影子期独立复现同向改善后再议激活
+- **C2 六块全完成 + 5y 回填已在本地算力中心激活**（7 列覆盖 94.7~99.9%、9/9 项可判；Altman Z-Score 备选已裁定放弃）/ **C3 低波动策略代码已交付**（51 条单测、影子模式 0 权重、alembic 0029、新建 `core/strategy_registry.py` 单一事实来源）/ C4~C5 待启动。**C2/C3 已于 2026-09-09 上生产**（`af94e57`，alembic 至 **0029**；核验见 `docs/ops/deploy_log.md`）。⚠️ **该批选股行为应为零变化**——`low_volatility` 影子权重 0、`piotroski_gate_enabled=False`（照常算、照常记日志，不剔除）；观察期看到 universe/signal_count **跳变才是异常**，不是新功能生效。门控经开发集实测**在任何阈值上都无显著收益**，holdout + 生产影子期独立复现同向改善后再议激活。**生产 7 列尚未回填**（全 NULL → F-Score 全「不可判」），属设计内可见降级且门控是影子模式故对选股无影响；回填需单独 C-1 确认 + `pg_dump` 定点备份
 - **生产版本问 `/health`，本文不再写死 sha**——此处曾写 `a9b7378`，四天内就落后了两次部署（memory 里同一句话也犯过同样的错，已一并删除）。部署历史看 `docs/ops/deploy_log.md`。2026-09-03 那批含：`is_suspended` 缺陷修复（`0869e1e`，见 §4.3 与 `docs/reviews/universe_suspension_defect_2026-09-02.md`；历史 110 万行已回补）/ 通知渠道未配置不再伪装成发送失败（`54aa3fd`）/ `NotificationService` 收敛到 ABC 契约（`c3c4943`）/ 版本戳（`397af23` + `a9b7378`）。同批配置变更：服务器 compose 与仓库**逐字节对齐**、WxPusher 凭证填入。
 - **`is_suspended` 修复（= V1.5-K 的 K-0）已于 2026-09-03 17:30 管线验证**（全过程见 `docs/ops/deploy_log.md`「2026-09-03（傍晚）」节）：universe 实测 **3212**（此前预估 2276 → 2658 **是错的**——该估算用 SQL 近似复算过滤器，报告中已自注 F-5 的 PIT 两期逻辑无法在 SQL 精确复现，故基线与增量同时被低估；**勿再引用 2658**）；当日 `is_suspended` 0/5549、`is_holding=6`、SELL 信号 2 条、`wx_pushed` **55/55**（微信首次真正推送成功）。⚠️ 该次管线**先被 OOM 杀死**（anon-rss 1.34 GiB），生产机因此由 2C2G 升配至 **2C4G**，补跑后 SUCCESS。~~生产没有任何表持久化每日 universe 规模~~ → **已补**：`universe_daily_stat`（alembic 0027，逐日落 total_in/total_out + **逐条规则的边际剔除数**）。⚠️ 只记总数不够——那样「某规则生效但没命中」与「该规则整条静默失效」在数据里无法区分，而 F-4 恰恰在约半数交易日实质未生效过。**该表上线第一次跑真实数据就照出两件事**：F-5 一条剔掉全市场 35~44%（选股面绝对主导项、此前无人量过）、以及 F-5「连续两期」名存实亡（已修，2026-09-07 上生产）
 - 🔴 **历史数据前视偏差（V1.5-L / L-PIT，2026-09-07 发现）**：回填把后来才公布的财报写进了当时的行 → **universe 是用「尚未公布的财报」筛的** → C1 面板 / V1.5-K 两批面板 / 全部历史回测的**绝对水平不可信**。范围经逐字段核实只在日频快照那条路径上，且**实时路径干净**（2026-07 起）→ **当前与今后的实盘决策不受影响**。源头已修，存量 318 万行**已在 5434 与生产库两边修复完毕**（生产复检 `lookahead_violations = 0`）。判据与展开见 §4.3 那条 + roadmap V1.5-L

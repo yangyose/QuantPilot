@@ -27,6 +27,34 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
+def strip_git_heredocs(cmd: str) -> str:
+    """去掉**由 git 命令引入的** heredoc 正文——那是数据（提交信息），不是命令。
+
+    为什么必须区分「谁引入的 heredoc」而不是一律剥掉：
+    `python - <<'PY' ... open(p,"w") ... PY` 的写操作**就在正文里**，
+    一律剥掉会让规则 4 漏掉它自己最该拦的那种形态。
+
+    为什么必须剥 git 那种：描述「刚才用 sed -i 改了 CLAUDE.md」是提交信息里
+    极自然的措辞，不剥就会把一次完全正当的 `git commit -F-` 拦下——
+    2026-09-09 规则首次启用当天就这么误伤了自己两次。
+    """
+    lines = cmd.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = re.search(r"<<-?\s*(['\"]?)(\w+)\1", line)
+        if m and re.search(r"\bgit\b", line):
+            delim = m.group(2)
+            i += 1
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1        # 丢弃正文
+            if i < len(lines):
+                out.append(lines[i])   # 保留结束定界符
+        i += 1
+    return "\n".join(out)
+
+
 def emit(decision: str, reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
@@ -48,6 +76,51 @@ def main() -> None:
     if tool == "Bash":
         cmd = ti.get("command", "") or ""
         low = cmd.lower()
+
+        # 规则 3：用 Bash 改「有评审钩子的文件」= 静默绕过评审（2026-09-09 加）
+        #
+        # PostToolUse 的 matcher 是 `Edit|Write`，且 claude_md_review.sh /
+        # design_doc_review.sh 都靠 `tool_input.file_path` 定位文件。**Bash 的
+        # tool_input 只有 `command`、没有 file_path** → path="" → basename 不匹配
+        # → 脚本静默 exit 0。于是用 heredoc/sed 改 CLAUDE.md 或设计文档时，
+        # 评审**一次都不会触发**，而且没有任何提示——正是 §4.11「接了但没生效」
+        # 那一族：钩子配着、看着对、什么也没做。
+        #
+        # 本会话实测：整场的 CLAUDE.md 与设计文档改动全部走 bash，零次评审被拉起。
+        # 判据不是「钩子装了没」，而是「它生效时会留下的痕迹」——agent 有没有被起。
+        #
+        # 为什么 deny 而不是 ask：2026-08-27 实测，自动放行模式下 ask 不弹确认框
+        # （见规则 1c 的注释）。ask 在这里等于放行。
+        #
+        # ⚠️ 只拦**写**，不拦读：grep/sed -n/cat 这些照常。判据是命令里是否出现
+        # 「写构造」——重定向到该路径 / sed -i / tee / Python 以写模式 open。
+        _PROT = r"(CLAUDE\.md|docs/(design|spec)/[^\s\"']*\.md)"
+        # ⚠️ 先剥掉 git 引入的 heredoc 正文（提交信息是数据，不是命令）。
+        # 不剥会把一次完全正当的 `git commit -F-` 拦下——只要信息里提到
+        # `sed -i` 和 `CLAUDE.md`（描述刚做过的改动时几乎必然提到）。
+        # 2026-09-09 规则首次启用当天连着误伤自己两次，第一次错在「只判命令是否以
+        # git 开头」——而实际命令前面还有 `cd ... &&`，永远匹配不上。
+        # 这正是 §4.12 说的「规则写宽了没人发现」，只不过这次代价当场发作。
+        scan = strip_git_heredocs(cmd)
+        if re.search(_PROT, scan):
+            wrote = (
+                # `> path` / `>> path`（重定向目标就是它）
+                re.search(r">>?\s*[\"']?[^\s\"'|]*" + _PROT, scan)
+                # 就地编辑 / tee —— **必须与路径同处一个命令段**（不跨 ; && || |），
+                # 否则 `sed -i ... other.txt && grep CLAUDE.md` 这种会被误杀
+                or re.search(r"\bsed\s+-i\b[^;&|]*" + _PROT, scan)
+                or re.search(r"\btee\b[^;&|]*" + _PROT, scan)
+                # Python 以写模式打开（路径常在变量里，故只看写模式 + 上面已确认
+                # 命令里出现过受保护路径）。⚠️ 这一条**只能扫未剥的正文**——
+                # python heredoc 的写操作就在正文里，正是本规则最该拦的形态。
+                or re.search(r"open\s*\([^)]*[\"'](w|a)[\"']|write_text\s*\(", scan)
+            )
+            if wrote:
+                emit("deny",
+                     "C-6 评审绕过：用 Bash 写 CLAUDE.md / 设计文档，会让 PostToolUse 的"
+                     "评审钩子静默失效（它只匹配 Edit|Write，且靠 tool_input.file_path "
+                     "定位文件，而 Bash 没有该字段）。请改用 **Edit / Write 工具**——"
+                     "那样评审才会被触发。读操作（grep / sed -n / cat）不受影响。")
 
         # 规则 2：git add -A / . / --all（通用防泄密，不限 prod）
         if re.search(r"\bgit\s+add\s+(-A\b|--all\b|\.(\s|$))", cmd):

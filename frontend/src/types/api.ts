@@ -74,9 +74,10 @@ export interface Signal {
   trigger_reason: string | null
 }
 
-// ── Phase 12 §3.1.3：信号血缘三层 schema（19 字段 score_snapshot + 5 字段 pipeline_run）
+// ── Phase 12 §3.1.3：信号血缘三层 schema（20 字段 score_snapshot + 5 字段 pipeline_run）
 
-/** ScoreSnapshotLineage：score_snapshot 19 字段（标识 1 + L1 5 + L2 9 + L3 4） */
+/** ScoreSnapshotLineage：score_snapshot 20 字段（标识 1 + L1 5 + L2 10 + L3 4）。
+ *  V1.5-C C3 起 L2 由 9 增至 10（新增 low_volatility_score）。 */
 export interface ScoreSnapshotLineage {
   // 标识
   ts_code: string

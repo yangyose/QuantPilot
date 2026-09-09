@@ -83,6 +83,59 @@ CASES = [
       "content": "@pytest.mark.anyio\nasync def test_a(): ..."}, "deny"),
     ("anyio 但非测试目录（不拦）", "Write",
      {"file_path": "backend/src/x.py", "content": "@pytest.mark.anyio"}, None),
+    # ---- 规则 4：Bash 写「有评审钩子的文件」= 静默绕过评审 ----
+    # 正面：四种写构造都要拦住
+    ("bash 重定向覆盖 CLAUDE.md", B,
+     {"command": "echo x > CLAUDE.md"}, "deny"),
+    ("bash 追加写 CLAUDE.md", B,
+     {"command": "cat >> CLAUDE.md <<'EOF'\n新内容\nEOF"}, "deny"),
+    ("sed -i 改设计文档", B,
+     {"command": "sed -i 's/a/b/' docs/design/phases/v1_5_c_strategy_expansion.md"}, "deny"),
+    ("python heredoc 以写模式改 CLAUDE.md（本会话实际用法）", B,
+     {"command": "python - <<'PY'\nimport io\np='CLAUDE.md'\n"
+                 "s=io.open(p,encoding='utf-8').read()\n"
+                 "io.open(p,'w',encoding='utf-8').write(s)\nPY"}, "deny"),
+    ("写 docs/spec 下的 SDD", B,
+     {"command": "python - <<'PY'\nopen('docs/spec/QuantPilot_SDD.md','w').write('x')\nPY"},
+     "deny"),
+    # 反面：读操作必须照常放行——规则写宽了（例如只判「命令里出现 CLAUDE.md」）
+    # 这四条会立刻变红，而写宽了本身不会有任何其他症状。
+    ("grep CLAUDE.md（读，不拦）", B,
+     {"command": "grep -n '判据' CLAUDE.md"}, None),
+    ("grep CLAUDE.md 并重定向到别处（读，不拦）", B,
+     {"command": "grep -n '判据' CLAUDE.md > /tmp/out.txt"}, None),
+    ("sed -n 打印设计文档片段（读，不拦）", B,
+     {"command": "sed -n '1,40p' docs/design/system_design.md"}, None),
+    ("以只读模式 open 设计文档（不拦）", B,
+     {"command": "python -c \"print(open('docs/design/system_design.md').read()[:10])\""},
+     None),
+    # 反面：非受保护路径的写照常放行（规则不该外溢到普通文件）
+    ("写 docs/reviews 下的评审报告（不在评审钩子范围，不拦）", B,
+     {"command": "cat >> docs/reviews/x_2026-09-09.md <<'EOF'\nx\nEOF"}, None),
+    ("写 scratchpad 里的脚本（不拦）", B,
+     {"command": "cat > /tmp/a.py <<'PY'\nprint(1)\nPY"}, None),
+    # ↓ 规则 4 首次启用当天就被自己误伤，这两条是那次的回归用例。
+    # 提交信息里描述「刚才用 sed -i 改了 CLAUDE.md」几乎是必然的措辞，
+    # 全文扫描会把一次完全正当的 git commit 拦下。
+    ("git commit 的信息里提到 sed -i 与 CLAUDE.md（不拦）", B,
+     {"command": "git add CLAUDE.md && git commit -F- <<'EOF'\n"
+                 "fix: 堵住 Bash 绕过评审\n\n正面用例：重定向 / sed -i / CLAUDE.md\nEOF"},
+     None),
+    # 真实误伤复现：命令前面有 `cd ... &&`，所以「命令是否以 git 开头」判不出来。
+    # 第一版规则就栽在这里，连着拦下两次正当提交。
+    ("cd 前缀 + git commit，信息里提 CLAUDE.md 与 sed -i（不拦）", B,
+     {"command": "cd \"D:/x\" && git commit -q -F- <<'EOF'\n"
+                 "fix: xxx\n\n本会话十余次用 heredoc 改 CLAUDE.md；变异：sed -i 退回全文扫描\nEOF"},
+     None),
+    # 反向：非 git 引入的 heredoc **不能**被剥掉——python heredoc 的写就在正文里，
+    # 那正是本规则最该拦的形态。剥错了这条会变绿。
+    ("cd 前缀 + python heredoc 写 CLAUDE.md（仍要拦）", B,
+     {"command": "cd \"D:/x\" && python - <<'PY'\nimport io\np='CLAUDE.md'\n"
+                 "io.open(p,'w').write('x')\nPY"}, "deny"),
+    ("git show 输出里含受保护路径（不拦）", B,
+     {"command": "git show HEAD -- docs/design/system_design.md"}, None),
+    ("sed -i 改别的文件、同命令里 grep 受保护路径（不拦）", B,
+     {"command": "sed -i 's/a/b/' /tmp/x.txt && grep -c 判据 CLAUDE.md"}, None),
 ]
 
 
