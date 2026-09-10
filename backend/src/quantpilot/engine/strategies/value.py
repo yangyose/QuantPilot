@@ -22,6 +22,7 @@ class ValueStrategy(BaseStrategy):
 
     name = "value"
     display_name = "价值"
+    # ⚠️ 生产不读 weights（五步管线因子等权）——改这里选股不会变。见 BaseStrategy.weights
     weights = {"pe_percentile": 0.35, "pb_percentile": 0.30, "roe_quality": 0.35}
 
     def __init__(self, config: ValueStrategyConfig | None = None) -> None:

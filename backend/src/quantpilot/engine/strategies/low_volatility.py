@@ -49,6 +49,7 @@ class LowVolatilityStrategy(BaseStrategy):
 
     name = "low_volatility"
     display_name = "低波动"
+    # ⚠️ 生产不读 weights（五步管线因子等权）——改这里选股不会变。见 BaseStrategy.weights
     weights = {"inv_volatility": 0.55, "inv_beta": 0.45}
 
     def __init__(self, config: LowVolatilityStrategyConfig | None = None) -> None:

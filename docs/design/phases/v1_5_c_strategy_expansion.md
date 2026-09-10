@@ -521,6 +521,14 @@ def compute_f_score(
 - 金融股（`sw_industry_l1 ∈ {银行, 证券, 保险, 多元金融}`，与 `UniverseFilter.FINANCIAL_INDUSTRIES` 同源常量，勿重复定义）：走替代判据 `roe > 0.05` → 通过；否则命中门控。
   - 【降级说明】：SDD 外评原文含「不良贷款率未显著上升」，Tushare `fina_indicator` **无 NPL 字段**，V1.5-C 仅实现 ROE 分支。当前降级内容 = 金融股仅 ROE>5%；原因 = 数据源无 NPL；恢复条件 = 接入含 NPL 的数据源（AKShare 银行专项或第三方）后补第二判据。
 - `f_score = NaN`（不可判）→ **不门控**（保留该股参与均值回归），并计数告警。理由同 §4.3：不可判不等于不合格。
+- ⚠️ **「提前激活」陷阱**（2026-09-09 生产首跑实测发现）：金融股的 ROE 替代分支读
+  `financials["roe"]`，**不依赖那 7 个待回填的列**；而非金融股走 F-Score，回填前全部不可判。
+  生产首跑日志正是这个形态——`piotroski_f_score: judged=0 unjudgeable=3210`，
+  同时 `piotroski_gate_shadow: blocked=71 financial_alt=119`，**那 71 只全是金融股**。
+  即：**在生产回填完成前激活门控 = 只门控金融股、其余全部 fail-open**，
+  一个谁都没设计过的不对称行为。影子模式下无害，但激活前必须解掉。
+  **激活顺序：先回填 7 列 → 确认 `judged` 接近 universe → 再谈激活**；
+  只看「门控代码已上线」不够，判据是 `judged/unjudgeable` 这两个计数。
 - **Altman Z-Score 备选：已决定放弃**（2026-09-09，依 v0.16 预设的 <5% 判据就地裁定，未跨子批推迟）。5434 全量回填后逐年实测「不可判占比」：
 
   | 采样日 | 股票 | 可判 | 不可判 | 不可判占比 |

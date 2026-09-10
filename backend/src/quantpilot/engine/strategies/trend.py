@@ -19,6 +19,7 @@ class TrendStrategy(BaseStrategy):
 
     name = "trend"
     display_name = "趋势跟踪"
+    # ⚠️ 生产不读 weights（五步管线因子等权）——改这里选股不会变。见 BaseStrategy.weights
     weights = {"ma_alignment": 0.40, "macd_signal": 0.30, "price_breakout": 0.30}
 
     def __init__(self, config: TrendStrategyConfig | None = None) -> None:

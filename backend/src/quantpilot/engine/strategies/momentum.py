@@ -48,6 +48,7 @@ class MomentumStrategy(BaseStrategy):
     # 实例化时按 risk_adjusted 覆写（见 __init__）：因子列名随配置切换，weights 的
     # 键必须与产出列名一致，否则 BaseStrategy.score 的 available_cols 会把该因子
     # 静默丢掉，只剩 rs_6m + industry_rs 参与加权。
+    # ⚠️ 生产不读 weights（五步管线因子等权）——改这里选股不会变。见 BaseStrategy.weights
     weights = {"risk_adj_return_3m": 0.40, "rs_6m": 0.35, "industry_rs": 0.25}
 
     # 申万 2021 标准一级行业名称（Tushare stock_industry(src='SW2021') industry_name 值域）

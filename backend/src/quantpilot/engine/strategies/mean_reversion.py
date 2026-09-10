@@ -38,6 +38,7 @@ class MeanReversionStrategy(BaseStrategy):
 
     name = "mean_reversion"
     display_name = "均值回归"
+    # ⚠️ 生产不读 weights（五步管线因子等权）——改这里选股不会变。见 BaseStrategy.weights
     weights = {"rsi_oversold": 0.35, "price_deviation": 0.35, "bb_position": 0.30}
 
     def __init__(self, config: MeanReversionStrategyConfig | None = None) -> None:

@@ -65,7 +65,27 @@ class BaseStrategy(ABC):
 
     name: str
     display_name: str
-    weights: dict[str, float]      # 策略内因子权重，须 sum(weights.values()) == 1.0
+    # 策略内因子权重，须 sum(weights.values()) == 1.0。
+    #
+    # ⚠️⚠️ **生产评分路径根本不读它**（2026-09-09 查明并记录）。
+    # 只有本类的 `score()` 用它，而 `score()` 在生产**从不被调用**：
+    # 五步管线走 `compute_strategy_factors`，`Scorer.aggregate` 是逐列
+    # Winsorize→中性化→Z-score 之后**列向取均值**——即**因子等权**。
+    # 回测里也只有 `legacy_fallback` 降级分支才会走 `score()`
+    # （该分支已被 `BacktestResult.pipeline_mode` 如实标记，不是静默的）。
+    #
+    # 后果：**改这里的数字，生产选股不会有任何变化**，且没有任何报错或告警。
+    # 想调整因子相对重要性，得改 `Scorer.aggregate` 的合成方式，不是改这里。
+    #
+    # ⚠️ 这同时是一处 **SDD 不符**：SDD §7.2 表注写「各策略内因子权重为冷启动默认值，
+    # 稳态期由 §7.4 ICIR 滚动校准生成」——而生产既不用表内权重、ICIR 也只作用到
+    # **策略级**，没有策略内因子级的加权。
+    # ⚠️ 但**别顺手把 aggregate 改成读它**：干净面板实测 momentum 三因子中
+    # `rs_6m`(−0.034) 与 `risk_adj_return_3m`(−0.025) 都是负的、只有 `industry_rs`(+0.020)
+    # 为正，而这里声明的权重恰好把 0.40/0.35 压在两个负因子上——照声明加权会
+    # **比现行等权更差**。「让代码读配置」听起来像修 bug，实则是一次未经验证的行为变更。
+    # 完整数据与处置见 `docs/reviews/scoring_monotonicity_2026-09-09.md` §5/§10。
+    weights: dict[str, float]
 
     @property
     def required_history_days(self) -> int:

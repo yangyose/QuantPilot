@@ -385,3 +385,42 @@ e133d41 feat(v1.5-c): C3 低波动策略（影子模式）+ 策略名单一事�
   `piotroski_gate_shadow` 且 `unjudgeable` 处于高位。这是**设计内的可见降级**
   （C-4），且门控本就是影子模式，对选股无影响。回填是另一件事，
   需单独的 C-1 确认 + `pg_dump -t financial_data` 定点备份。
+
+**观察期第 1 个交易日（2026-09-09 17:30 CST 管线，部署后首跑）**：
+
+| 项 | 部署前 09-08 | 部署后 09-09 | 判读 |
+|---|---|---|---|
+| `pipeline_run.status` | SUCCESS | **SUCCESS** | ✅ |
+| `signal_count` | 51 | **51** | ✅ 完全相同 |
+| 耗时 | 413s | **434s** | +21s（+5%），与多算 F-Score + 低波动两组因子相符 |
+| `universe_daily_stat.total_out` | 3211 | **3210** | ✅ 同量级 |
+| `candidate_pool.is_holding` | 6 | **6** | ✅ = 实际持仓数 |
+| backend error / OOM | — | **无**，可用内存 2150M | ✅ |
+
+**判据是「没有变化」，实测确实没有变化** —— 影子权重 0 + 门控不剔除，本批不该改变选股，
+而 signal_count 与 universe 都对上了。
+
+**`low_volatility_score` 落库已实证**（这是 `af94e57` 那个死代码修复的痕迹判据）：
+
+| trade_date | 行数 | `low_volatility_score` 非空 | `value_score` 非空 |
+|---|---|---|---|
+| 2026-09-09 | 69 | **54** | 54 |
+| 2026-09-08 | 67 | 0 | 54 |
+
+09-07/09-08 为 0 是因为该列由 alembic 0029 在 09-09 才加上（`ADD COLUMN` 后既有行必然 NULL），
+**不构成对修复的证据**；证据是 09-09 那行的 **54 = `value_score` 的 54**。
+若死代码未修，09-09 同样会是 0——那才是修复前的形态。
+
+**影子门控日志已出现**：`piotroski_gate_shadow: blocked=71 unjudgeable=3210 financial_alt=119 threshold=6.0`，
+同时 `piotroski_f_score: judged=0 unjudgeable=3210`（生产 7 列未回填，属设计内可见降级）。
+
+### ⚠️ 由此发现一个「提前激活门控」的陷阱
+
+`judged=0` 却 `blocked=71`——这 71 只**只能来自金融股的 ROE 替代分支**
+（`financial_alt=119` 中 roe ≤ 5% 的那些）。原因是该分支读 `financials["roe"]`，
+**不依赖那 7 个待回填的列**。
+
+即：**在生产回填完成之前激活门控，会变成「只门控金融股、其余全部 fail-open」**——
+一个谁都没设计过的不对称行为（金融股被按替代判据严格筛，非金融股完全不筛）。
+影子模式下无害，但这条必须在激活前解掉：
+**顺序是「先回填 7 列 → 确认 `judged` 接近 universe → 再谈激活」**，不能只看「门控代码已上线」。
