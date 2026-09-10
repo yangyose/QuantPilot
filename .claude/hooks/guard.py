@@ -110,10 +110,20 @@ def main() -> None:
                 # 否则 `sed -i ... other.txt && grep CLAUDE.md` 这种会被误杀
                 or re.search(r"\bsed\s+-i\b[^;&|]*" + _PROT, scan)
                 or re.search(r"\btee\b[^;&|]*" + _PROT, scan)
-                # Python 以写模式打开（路径常在变量里，故只看写模式 + 上面已确认
-                # 命令里出现过受保护路径）。⚠️ 这一条**只能扫未剥的正文**——
-                # python heredoc 的写操作就在正文里，正是本规则最该拦的形态。
-                or re.search(r"open\s*\([^)]*[\"'](w|a)[\"']|write_text\s*\(", scan)
+                # Python 以写模式打开。⚠️ 这一条**只能扫未剥的正文**——python heredoc
+                # 的写操作就在正文里，正是本规则最该拦的形态。
+                #
+                # ⚠️ 但必须**同时**要求受保护路径以「带引号的字符串字面量」出现
+                # （2026-09-10 第三次误伤后加）：只要求「路径在命令里出现过 + 有写模式
+                # open」会把「注释里提到 CLAUDE.md、实际写的是别的文件」也拦下——
+                # 本条注释所在的这次修改自己就被拦了一回。
+                # 判别力来自引号：真要写它必然是 `p='CLAUDE.md'` / `open("docs/design/x.md","w")`；
+                # 行文提及则是 `# 见 CLAUDE.md §4.12` 这种裸文本。
+                # （重定向 / sed -i / tee 三条不需要这个约束——它们已把路径与构造绑在一起。）
+                or (
+                    re.search(r"open\s*\([^)]*[\"'](w|a)[\"']|write_text\s*\(", scan)
+                    and re.search(r"[\"']" + _PROT + r"[\"']", scan)
+                )
             )
             if wrote:
                 emit("deny",

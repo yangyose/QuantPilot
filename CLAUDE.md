@@ -373,9 +373,18 @@ matcher 是 `Edit|Write`，且两个脚本都靠 `tool_input.file_path` 定位�
 改 CLAUDE.md 或设计文档时，评审**一次都不会触发，且没有任何提示**。本会话十余次 bash 改动全部漏评审，
 是事后才发现的。**已修在源头**：`guard.py` 规则 4 在 PreToolUse 直接 **deny** 「Bash 写这两类文件」，
 逼回 Edit/Write（只拦写、不拦 `grep`/`sed -n`/`cat` 等读操作；`test_guard.py` 正反两面各有用例）。
-判据是跑 `python .claude/hooks/test_guard.py` → **39/39 passed**。
-⚠️ **同一个洞在 `auto_test.sh` 上仍然存在**（它管 `backend/**.py`，未纳入 deny——全拦会挡住正常的脚本
-生成）：**经 Bash 改过 backend 的 .py 后，自动测试不会跑，必须手动跑** `tests/unit/ tests/e2e/`。
+判据是跑 `python .claude/hooks/test_guard.py` → **46/46 passed**。
+⚠️ 该规则**首次启用后连着误伤自己三次**，三次都是「路径出现过」被当成「路径被写」：
+①提交信息里提到 `sed -i` + `CLAUDE.md`；②补丁只判「命令是否以 git 开头」而实际命令前有 `cd ... &&`；
+③heredoc 的**注释**里提到 `CLAUDE.md`、真正写的是别的文件。根治靠三件事而非再叠字符串判断：
+**heredoc 正文是数据不是命令**（`strip_git_heredocs`，且只剥 git 引入的那种——python heredoc 的写就在正文里）、
+`sed -i`/`tee` **必须与路径同处一个命令段**、以及 Python 写模式那条**要求路径以带引号的字面量出现**
+（`p='CLAUDE.md'` 拦，`# 见 CLAUDE.md §4.12` 不拦）。每次误伤都补了回归用例。
+⚠️ **`auto_test.sh` 的同一个洞已于 2026-09-10 补上**（它管 `backend/**.py`，**不能照搬 deny**——
+全拦会挡住正常的多文件机械改写脚本），改为「识别 Bash 写入并照常触发」：只认写构造
+（重定向 / `sed -i` / `tee` / 写模式 `open`），`grep` 这类读操作不触发——**触发写宽了会让每条
+Bash 命令都跑一轮两分钟测试，那会把人逼着关掉钩子，比不触发更糟**。
+判据 `python .claude/hooks/test_auto_test.py` → **18/18 passed**（此前它是四个钩子里唯一没有夹具的）。
 
 **CLAUDE.md 第三方评审**（`claude_md_review.sh` + `.claude/agents/claude-md-reviewer.md`，2026-08-28 加）：
 本文件每次被 Edit/Write 修改后（**Bash 写入不触发，见上**），PostToolUse 钩子自动触发 `claude-md-reviewer` 子 agent 做**冷启动**
@@ -410,7 +419,15 @@ matcher 是 `Edit|Write`，且两个脚本都靠 `tool_input.file_path` 定位�
 
 #### 自动测试钩子（`auto_test.sh`）
 
-编辑 `backend/*.py` 后自动跑 `tests/unit/` + `tests/e2e/`；编辑 alembic/integration 文件**且** PG 容器在跑时自动跑 integration。测试失败时 Claude 自动进入调试。
+改动 `backend` 的 `.py` 后自动跑 `tests/unit/` + `tests/e2e/`；碰到 alembic / integration 文件**且**
+`DATABASE_URL` 指向测试库 :5433 时才**额外**跑 integration（不指向就跳过并提示——集成 conftest 会
+`alembic downgrade base` DROP 全表，C-1 红线）。测试失败时 Claude 自动进入调试。
+
+**触发覆盖 `Edit`/`Write` **与** `Bash` 写入**（后者 2026-09-10 补，见 §5.3 开头那条）：
+Bash 只认写构造，`grep`/`sed -n`/`cat` 不触发。**判据 `python .claude/hooks/test_auto_test.py` → 18/18**。
+夹具靠 `QP_AUTO_TEST_DRY_RUN=1` 干跑档验判定逻辑——本钩子真跑一次约 2 分钟，
+十几条用例逐个真跑不可行。⚠️ 该干跑档**只是为夹具存在**，别在真实钩子链里设这个环境变量，
+否则测试永远不跑而表现与「全过」一致。
 
 ### 5.4 推迟判定与三链（C-3 展开）
 

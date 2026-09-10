@@ -132,6 +132,18 @@ CASES = [
     ("cd 前缀 + python heredoc 写 CLAUDE.md（仍要拦）", B,
      {"command": "cd \"D:/x\" && python - <<'PY'\nimport io\np='CLAUDE.md'\n"
                  "io.open(p,'w').write('x')\nPY"}, "deny"),
+    # 第三次误伤复现：heredoc 里**注释**提到 CLAUDE.md，实际写的是别的文件。
+    # 「路径出现过 + 有写模式 open」会把它拦下——判别力必须来自引号。
+    ("python heredoc 写别的文件、注释里提 CLAUDE.md（不拦）", B,
+     {"command": "python3 - <<'PY'\nimport io\n"
+                 "# 不用 python -c：嵌套引号会被吃掉（CLAUDE.md §4.12）\n"
+                 "p='.claude/hooks/auto_test.sh'\n"
+                 "io.open(p,'w',encoding='utf-8').write('x')\nPY"}, None),
+    # 同形态但目标真的是设计文档 → 仍要拦（上一条不能把这条一起放过）
+    ("python heredoc 写设计文档（仍要拦）", B,
+     {"command": "python3 - <<'PY'\nimport io\n"
+                 "p='docs/design/system_design.md'\n"
+                 "io.open(p,'w',encoding='utf-8').write('x')\nPY"}, "deny"),
     ("git show 输出里含受保护路径（不拦）", B,
      {"command": "git show HEAD -- docs/design/system_design.md"}, None),
     ("sed -i 改别的文件、同命令里 grep 受保护路径（不拦）", B,
