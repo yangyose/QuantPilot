@@ -119,6 +119,51 @@ CASES = [
 ]
 
 
+def check_dispatch_config():
+    """`settings.json` 真的把 Bash 事件路由给本钩子了吗。
+
+    ⚠️ **这条是本夹具最重要的一条**，因为其余 18 条都验不出它：它们直接拿构造好的
+    payload 管道喂给脚本，**绕过了整个派发链**。2026-09-10 就栽在这里——脚本侧的
+    Bash 解析写好了、夹具全绿、我还"端到端"跑了一次真 pytest，而 `settings.json` 的
+    matcher 一直是 `Edit|Write`，**Bash 事件从来没被派发过**，整块是死代码。
+    是冷启动评审去读 `settings.json` 才发现的。
+
+    这正是 §4.11「调用点是否真传参」的同型：自己构造调用再验证它，缺陷仍在时照样绿。
+    所以判据必须落在**配置**上，而不是脚本行为上。
+
+    ⚠️ 它仍**不能**证明「派发真的发生了」——改完 `settings.json` 可能要开一次 `/hooks`
+    或重启会话才生效，那一步只有人能做。本条只保证「配置这一环没漏」。
+    """
+    import json as _json
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    cfg = root / ".claude" / "settings.json"
+    if not cfg.exists():
+        return ["找不到 " + str(cfg)]
+    try:
+        data = _json.loads(cfg.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return ["settings.json 不是合法 JSON: " + str(exc)]
+
+    routed = []
+    for entry in (data.get("hooks", {}) or {}).get("PostToolUse", []) or []:
+        matcher = entry.get("matcher", "") or ""
+        cmds = " ".join(h.get("command", "") for h in (entry.get("hooks") or []))
+        if "auto_test.sh" in cmds:
+            routed.append(matcher)
+
+    if not routed:
+        return ["PostToolUse 里没有任何一项运行 auto_test.sh"]
+    joined = "|".join(routed)
+    problems = []
+    if "Bash" not in joined:
+        problems.append("没有 matcher 覆盖 Bash（Bash 写 .py 时钩子收不到事件，"
+                        "脚本里的 Bash 解析成为死代码）；实得 matcher: " + repr(routed))
+    if "Edit" not in joined or "Write" not in joined:
+        problems.append("Edit/Write 覆盖丢了；实得 matcher: " + repr(routed))
+    return problems
+
+
 def run(payload_bytes):
     env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
                QP_AUTO_TEST_DRY_RUN="1",
@@ -138,6 +183,15 @@ def main():
     print("bash = " + BASH)
 
     passed = failed = 0
+
+    cfg_problems = check_dispatch_config()
+    if cfg_problems:
+        failed += 1
+        print("FAIL  " + "dispatch_config".ljust(30) + " | " + "; ".join(cfg_problems))
+    else:
+        passed += 1
+        print("PASS  " + "dispatch_config".ljust(30) + " settings.json 覆盖 Edit|Write + Bash")
+
     for name, payload, want_fire, want_int in CASES:
         rc, out, err = run(json.dumps(payload).encode("utf-8"))
         fired = "WOULD_RUN" in out

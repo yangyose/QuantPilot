@@ -324,7 +324,8 @@ DEBUG=false
 - **`MSYS_NO_PATHCONV=1` 会连 `--env-file` 一起停止转换**：该参数因此必须传 **Windows 路径**（`C:\...`），否则 docker 报 "cannot find the path"。同一条命令里 `-v` 用 Windows 路径、其余参数也得跟着走
 - **`git rev-parse --short HEAD origin/main`（双参数）在本仓 fatal**：改用 `git rev-parse --short HEAD` + `git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/origin/main`
 - **`docker exec` 喂 stdin（heredoc / 管道）必须带 `-i`**：不带 `-i` 时容器内进程拿不到 stdin → SQL 完全没执行，而 psql 退出码仍是 0（`set -e` 抓不到），极易误判"已生效"。多语句 SQL 用 `psql -c "stmt1; stmt2; ..."`（单 `-c` 多语句 = 一个隐式事务，配 `-v ON_ERROR_STOP=1`）或 `docker exec -i`
-- **系统 Python 是红线守卫的隐藏依赖,缺了 fail-open 且不吭声**：`.claude/hooks/guard.sh` 按 `python`→`py`→`python3` 探测解释器,三个全落空就 `exit 0` 放行一切(`git add -A`、生产 DROP 都不再拦),**无任何提示**。uv 托管的解释器**不进 PATH**,所以"只装 uv 不装 Python"会静默拆掉守卫(2026-08-26 配第二台机时发现)。同理 `~/.claude/settings.json` 的 `statusLine` 与两个评审钩子(`claude_md_review.sh` / `design_doc_review.sh`)也调裸 `python`(后两者 fail-open 只是丢掉评审,不涉安全)。判据不是"装了没",而是跑 **`python .claude/hooks/test_guard.py`**(28 条用例,期望 `28/28 passed`)。**别用手敲的 `echo '{...}' | python guard.py` 自检**：`guard.py` 在 JSON 解析失败时**同样静默 `sys.exit(0)`**,而该写法是 Bash 语法、在 cmd.exe 里单引号不是定界符 → JSON 变脏 → 静默放行,与"守卫已死"表现完全相同(2026-08-26 误判过一轮)。改 `guard.py` 规则时必须往夹具补用例,且**正反两面都钉**——只钉"该拦的拦住",规则写宽了没人发现
+- **系统 Python 是红线守卫的隐藏依赖,缺了 fail-open 且不吭声**：`.claude/hooks/guard.sh` 按 `python`→`py`→`python3` 探测解释器,三个全落空就 `exit 0` 放行一切(`git add -A`、生产 DROP 都不再拦),**无任何提示**。uv 托管的解释器**不进 PATH**,所以"只装 uv 不装 Python"会静默拆掉守卫(2026-08-26 配第二台机时发现)。同理 `~/.claude/settings.json` 的 `statusLine` 与两个评审钩子(`claude_md_review.sh` / `design_doc_review.sh`)也调裸 `python`(后两者 fail-open 只是丢掉评审,不涉安全)。判据不是"装了没",而是跑 **`python .claude/hooks/test_guard.py`**，期望**全部通过**（用例数随规则增补而变，故此处**不钉数字**——
+钉了必漂：这里曾写死 `28/28`，而规则几轮收窄后实际已是 46；当前数字只在 §5.3 记一处）。**别用手敲的 `echo '{...}' | python guard.py` 自检**：`guard.py` 在 JSON 解析失败时**同样静默 `sys.exit(0)`**,而该写法是 Bash 语法、在 cmd.exe 里单引号不是定界符 → JSON 变脏 → 静默放行,与"守卫已死"表现完全相同(2026-08-26 误判过一轮)。改 `guard.py` 规则时必须往夹具补用例,且**正反两面都钉**——只钉"该拦的拦住",规则写宽了没人发现
 - **非中文 Windows 上「管道里的中文」会崩,且崩得像「守卫已死」**（2026-08-27 第二台机实测,系统区域 ja-JP → cp932）：控制台直连时 Python 走 `WriteConsoleW`,不受 codepage 影响;**一旦重定向或走管道**就改用 locale 编码 → 中文 `UnicodeEncodeError`。而 Claude Code 跑命令**恰恰全是管道**,所以"手敲能跑、Claude 跑就崩"。三处已治本:① `guard.py` / `test_guard.py` 强制 UTF-8 输出——`guard.py` 崩溃 = 非零退出 = **fail-open**(PreToolUse 只有 exit 2 才拦截),一个编码异常就能把 deny 变成放行;② 夹具 `run()` 改「取字节 + 显式解码」,原 `text=True` 按 locale 解子进程输出,一含非 ASCII 就在 subprocess 内部炸、`p.stdout` 变 `None` → **整轮用例崩溃而不是判 FAIL**,守卫坏了会伪装成夹具坏了;③ 新增用例钉死「guard 输出恒为纯 ASCII」(改 `ensure_ascii` 或在 emit 路径加中文 print 都会在这条露馅)。机器侧另设 `PYTHONUTF8=1` 用户环境变量,兜住 `backend/scripts/*.py` 手工跑的场景(`run_ic_panel.sh` 早已自带 `export PYTHONIOENCODING=utf-8`)
 - **守卫的 `ask` 档可能整档失效,而 `deny` 仍然有效**（2026-08-27 实测）：在「Bash 自动放行」的权限模式下,钩子返回的 `permissionDecision: "ask"` **不会浮出确认框**——同一会话里 `deny` 正常拦截（`git add -A` 被当场挡下），只有 `ask` 被静默通过。**排除了放行名单的干扰**：用不在 `settings.local.json` 名单里的命令（`printf` / `stat` / 自造 `echo` 字符串）复测同样不弹。判据不是"守卫装了没",而是**这条动作真的被拦住了吗**。推论:**凡"不可逆且无处恢复"的动作,不能只靠 `ask`**——`sync_local_backtest_db.sh --force-wipe`（销毁 `ic_baseline_pre_c1` 4940 行 ≈ 57h 重造 + 面板 IC 行,而该库已禁止再 sync）因此提为 `deny`,由人在终端手敲。`ask` 仍适用于"可逆或有备份"的动作（裸 `sync` / `--force` / 生产栈 DROP)
 - **项目解释器由 `backend/.python-version`(=3.12)钉死**,不靠"记得装对版本"：`pyproject` 的 `requires-python = ">=3.12"` 上界开放,系统若装了 3.13/3.14,`uv sync` 可能拿它建 venv → 要么 pandas/asyncpg 无 wheel 现场编译失败,要么**跑起来了但运行时与生产不一致**(算力机上尤其危险:面板 IC 要用于策略决策,数值差异无从归因)
@@ -380,11 +381,11 @@ matcher 是 `Edit|Write`，且两个脚本都靠 `tool_input.file_path` 定位�
 **heredoc 正文是数据不是命令**（`strip_git_heredocs`，且只剥 git 引入的那种——python heredoc 的写就在正文里）、
 `sed -i`/`tee` **必须与路径同处一个命令段**、以及 Python 写模式那条**要求路径以带引号的字面量出现**
 （`p='CLAUDE.md'` 拦，`# 见 CLAUDE.md §4.12` 不拦）。每次误伤都补了回归用例。
-⚠️ **`auto_test.sh` 的同一个洞已于 2026-09-10 补上**（它管 `backend/**.py`，**不能照搬 deny**——
-全拦会挡住正常的多文件机械改写脚本），改为「识别 Bash 写入并照常触发」：只认写构造
-（重定向 / `sed -i` / `tee` / 写模式 `open`），`grep` 这类读操作不触发——**触发写宽了会让每条
-Bash 命令都跑一轮两分钟测试，那会把人逼着关掉钩子，比不触发更糟**。
-判据 `python .claude/hooks/test_auto_test.py` → **18/18 passed**（此前它是四个钩子里唯一没有夹具的）。
+⚠️ **`auto_test.sh` 的同一个洞：脚本与配置两侧已改，但「派发」这最后一公里尚未在真实会话里验证过**
+（2026-09-10）。它管 `backend/**.py`，**不能照搬 deny**——全拦会挡住正常的多文件机械改写脚本，
+故改为「识别 Bash 写入并照常触发」，只认写构造（重定向 / `sed -i` / `tee` / 写模式 `open`），
+`grep` 这类读操作不触发（**触发写宽了会让每条 Bash 命令都跑一轮两分钟测试，那会把人逼着
+关掉钩子，比不触发更糟**）。详见下方「自动测试钩子」小节。
 
 **CLAUDE.md 第三方评审**（`claude_md_review.sh` + `.claude/agents/claude-md-reviewer.md`，2026-08-28 加）：
 本文件每次被 Edit/Write 修改后（**Bash 写入不触发，见上**），PostToolUse 钩子自动触发 `claude-md-reviewer` 子 agent 做**冷启动**
@@ -423,11 +424,22 @@ Bash 命令都跑一轮两分钟测试，那会把人逼着关掉钩子，比不
 `DATABASE_URL` 指向测试库 :5433 时才**额外**跑 integration（不指向就跳过并提示——集成 conftest 会
 `alembic downgrade base` DROP 全表，C-1 红线）。测试失败时 Claude 自动进入调试。
 
-**触发覆盖 `Edit`/`Write` **与** `Bash` 写入**（后者 2026-09-10 补，见 §5.3 开头那条）：
-Bash 只认写构造，`grep`/`sed -n`/`cat` 不触发。**判据 `python .claude/hooks/test_auto_test.py` → 18/18**。
-夹具靠 `QP_AUTO_TEST_DRY_RUN=1` 干跑档验判定逻辑——本钩子真跑一次约 2 分钟，
-十几条用例逐个真跑不可行。⚠️ 该干跑档**只是为夹具存在**，别在真实钩子链里设这个环境变量，
+**判据 `python .claude/hooks/test_auto_test.py` → 18/18**（2026-09-10 新建；此前它是四个钩子里
+唯一没有夹具的）。夹具靠 `QP_AUTO_TEST_DRY_RUN=1` 干跑档验判定逻辑——本钩子真跑一次约 2 分钟，
+十几条用例逐个真跑不可行。⚠️ 该干跑档**只为夹具存在**，别在真实钩子链里设这个环境变量，
 否则测试永远不跑而表现与「全过」一致。
+
+🔴 **`Bash` 写入的派发尚未验证——这一条是「接了但没生效」的现行实例，别当它已经生效**：
+`auto_test.sh` 现在能从 Bash 的 `command` 里认出被改的 `.py`（夹具正反两面各 9 条 + 3 变异全拦），
+`settings.json` 也已加上 `matcher: "Bash"` 的 PostToolUse 项——**但至今没有一次真实会话证明
+钩子确实被派发过**。⚠️ 我一度把「自己构造 Bash payload 管道喂给脚本、看到它跑起 pytest」
+当成端到端验证，那恰恰是 §4.11 点名的**自证式测试**：payload 是我造的，绕过了整个派发链，
+缺陷（matcher 里没有 `Bash`）仍在时它照样绿——而 matcher 当时真的没有 `Bash`，是冷启动评审查
+`settings.json` 才发现的。
+**真正的判据**：用 Bash 写一个 `backend/**.py`（例如 `sed -i` 或 heredoc），看本钩子的输出
+（`━━━ Auto Test: xxx.py ━━━`）有没有出现在 transcript 里。若没出现，多半是 `settings.json` 改动
+需要开一次 `/hooks` 或重启会话才生效（这一步 Claude 自己做不到，得由人来）。
+**在那之前，经 Bash 改过 backend 的 .py 后仍须手动跑** `tests/unit/ tests/e2e/`。
 
 ### 5.4 推迟判定与三链（C-3 展开）
 

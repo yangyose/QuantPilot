@@ -44,6 +44,16 @@
             "statusMessage": "设计文档变更 → 触发第三方评审"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto_test.sh\"",
+            "statusMessage": "Bash 改过 backend 的 .py → 自动跑测试"
+          }
+        ]
       }
     ]
   }
