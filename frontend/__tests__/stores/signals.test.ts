@@ -53,12 +53,28 @@ describe('useSignalStore', () => {
     vi.mocked(signalApi.getSignals).mockResolvedValue({
       signals: [mockSignal],
       tradeDate: '2026-04-15',
+      fundingNote: null,
     })
     const store = useSignalStore()
     await store.fetchSignals()
     expect(store.signals).toEqual([mockSignal])
     expect(store.signalDate).toBe('2026-04-15')
+    expect(store.fundingNote).toBeNull()
     expect(store.loading).toBe(false)
+  })
+
+  // 满仓提示（2026-09-11）：后端在"有买入推荐但全部不可执行"时给出文案，
+  // store 必须如实存下来——否则界面上那 50 条推荐仍然只是留白。
+  it('fetchSignals 写入 fundingNote（满仓提示）', async () => {
+    const note = '当前 50 条买入推荐均不可执行（可用资金 4,336 元 / 总资产 310,277 元）。'
+    vi.mocked(signalApi.getSignals).mockResolvedValue({
+      signals: [mockSignal],
+      tradeDate: '2026-04-15',
+      fundingNote: note,
+    })
+    const store = useSignalStore()
+    await store.fetchSignals()
+    expect(store.fundingNote).toBe(note)
   })
 
   it('fetchSignals 过程中 loading 为 true，完成后恢复 false', async () => {
@@ -69,7 +85,7 @@ describe('useSignalStore', () => {
     const store = useSignalStore()
     const promise = store.fetchSignals()
     expect(store.loading).toBe(true)
-    resolveSignals({ signals: [mockSignal], tradeDate: '2026-04-15' })
+    resolveSignals({ signals: [mockSignal], tradeDate: '2026-04-15', fundingNote: null })
     await promise
     expect(store.loading).toBe(false)
   })

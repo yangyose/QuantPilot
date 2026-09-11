@@ -78,13 +78,17 @@ async def get_signals(
     else:
         signals, target_date = await service.get_latest_signals(signal_type, status)
     signal_dicts = await _enrich_with_names(signals, repo)
-    await view_service.apply_account_overlay(signal_dicts, account_id)
+    # funding_note：存在 BUY 但**全部不可执行**时的满仓提示（2026-09-11 加）。
+    # 生产曾连续 14 个交易日每天 50 条推荐、可执行 0 条，而界面只是把仓位一栏留空
+    # ——用户无从知道一条都动不了、也不知道要先卖出腾仓位。
+    funding_note = await view_service.apply_account_overlay(signal_dicts, account_id)
     return {
         "code": 0,
         "data": {
             "trade_date": target_date.isoformat() if target_date else None,
             "signals": signal_dicts,
             "total": len(signal_dicts),
+            "funding_note": funding_note,
         },
         "msg": "ok",
     }

@@ -9,6 +9,8 @@ export const useSignalStore = defineStore('signals', () => {
   const history = ref<Signal[]>([])
   const loading = ref(false)
   const currentLineage = ref<SignalLineage | null>(null)
+  /** 满仓提示（后端给出，前端不重算）——见 api/signals.ts 的注释 */
+  const fundingNote = ref<string | null>(null)
 
   async function fetchSignals(params?: signalApi.SignalListParams): Promise<void> {
     loading.value = true
@@ -16,6 +18,7 @@ export const useSignalStore = defineStore('signals', () => {
       const res = await signalApi.getSignals(params)
       signals.value = res.signals
       signalDate.value = res.tradeDate
+      fundingNote.value = res.fundingNote
     } finally {
       loading.value = false
     }
@@ -41,5 +44,5 @@ export const useSignalStore = defineStore('signals', () => {
     currentLineage.value = await signalApi.getSignalLineage(id)
   }
 
-  return { signals, signalDate, history, loading, currentLineage, fetchSignals, fetchHistory, updateStatus, fetchLineage }
+  return { signals, signalDate, fundingNote, history, loading, currentLineage, fetchSignals, fetchHistory, updateStatus, fetchLineage }
 })

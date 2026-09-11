@@ -191,6 +191,19 @@ const historyColumns = [
           >
             信号日期：{{ signalStore.signalDate }}
           </div>
+          <!--
+            满仓提示：存在买入推荐但全部不可执行时显示（2026-09-11 加）。
+            生产曾连续 14 个交易日每天 50 条推荐、可执行 0 条，而界面只把仓位一栏留空，
+            用户无从知道一条都动不了、也不知道要先卖出腾仓位。
+            ⚠️ 文案由后端给出，**前端不要重算可执行性**（那会复制一份仓位判定逻辑）。
+          -->
+          <a-alert
+            v-if="signalStore.fundingNote"
+            type="warning"
+            :message="signalStore.fundingNote"
+            show-icon
+            style="margin-bottom: 12px"
+          />
           <template v-if="signalStore.signals.length > 0">
             <SignalCard
               v-for="signal in signalStore.signals"

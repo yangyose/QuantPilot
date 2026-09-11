@@ -47,14 +47,28 @@ class SignalViewService:
 
     async def apply_account_overlay(
         self, signal_dicts: list[dict], account_id: int
-    ) -> None:
+    ) -> str | None:
         """就地为响应 dict 列表叠加 is_holding + suggested_pct（BUY）。
 
         signal_dicts：SignalResponse.model_dump() 产物列表（含 ts_code / signal_type /
-        suggested_pct / is_holding / trade_date 键）。**原地修改**，不返回。
+        suggested_pct / is_holding / trade_date 键）。**原地修改**。
+
+        Returns:
+            满仓提示文案；仅当**存在 BUY 信号且全部不可执行**时返回，否则 None。
+
+            为什么需要它（2026-09-11 生产实测）：连续 14 个交易日每天 50 条买入推荐、
+            **可执行 0 条**。那不是缺陷（账户 cash 4336 / total_assets 31.0 万 = 1.4%，
+            低于 `single_trade_pct × 0.5` 下限，PositionSizer 据此判资金不足），
+            **但这个语义从未传达给用户**——界面上仓位一栏只是留白。用户看到 50 条
+            推荐却不知道一条都动不了，也不知道要先卖出腾仓位。
+
+            ⚠️ 文案**只陈述已知事实**（可用现金 / 总资产 / 不可执行条数），
+            **不断言是哪个约束绑住的**：all-None 也可能由 `max_total_position_pct`
+            触顶导致而非现金不足，在这里重新推导绑定原因等于把 PositionSizer 的
+            判定逻辑复制一份（§4.11 第 2 例「配置的平行副本」）。
         """
         if not signal_dicts:
-            return
+            return None
 
         try:
             positions = await self._account_svc.get_positions(account_id)
@@ -67,7 +81,7 @@ class SignalViewService:
             # ── 仓位建议：仅 BUY 信号，PositionSizer 按账户总资产/现金/持仓计算 ──
             buy_dicts = [d for d in signal_dicts if d.get("signal_type") == "BUY"]
             if not buy_dicts:
-                return
+                return None
 
             trade_date = self._resolve_trade_date(signal_dicts)
             market_state = await self._load_market_state(trade_date)
@@ -110,6 +124,18 @@ class SignalViewService:
             pct_map = {s.ts_code: s.suggested_pct for s in sized}
             for d in buy_dicts:
                 d["suggested_pct"] = pct_map.get(d["ts_code"])
+
+            if all(d["suggested_pct"] is None for d in buy_dicts):
+                logger.info(
+                    "signals_all_unfundable: account_id=%s n_buy=%d cash=%.0f total=%.0f",
+                    account_id, len(buy_dicts), cash, total_assets,
+                )
+                return (
+                    f"当前 {len(buy_dicts)} 条买入推荐均不可执行"
+                    f"（可用资金 {cash:,.0f} 元 / 总资产 {total_assets:,.0f} 元）。"
+                    f"执行任一推荐需先卖出腾出仓位。"
+                )
+            return None
         except Exception:
             # 【降级说明】账户/市场/配置数据加载失败 → 保留共享信号可见（is_holding
             # 缺省、suggested_pct 不叠加），不 500 整个信号页。恢复条件：数据恢复可读。
@@ -117,6 +143,8 @@ class SignalViewService:
                 "apply_account_overlay_failed: account_id=%s n=%d",
                 account_id, len(signal_dicts),
             )
+            # 降级时**不给满仓提示**：此时根本没算过可执行性，提示会是臆测。
+            return None
 
     @staticmethod
     def _resolve_trade_date(signal_dicts: list[dict]) -> date:

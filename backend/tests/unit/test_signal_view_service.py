@@ -154,3 +154,66 @@ async def test_overlay_account_load_failure_degrades() -> None:
 def test_market_state_enum_importable() -> None:
     """守卫：MarketStateEnum 可用（sizing 系数依赖）。"""
     assert MarketStateEnum.OSCILLATION.value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 满仓提示（funding_note）—— 2026-09-11 加
+#
+# 生产实测：连续 14 个交易日每天 50 条买入推荐，**可执行 0 条**。
+# 那不是缺陷（账户 total_assets 31.0 万、cash 仅 4336 元 = 1.4%，低于
+# `single_trade_pct × 0.5` 的下限，PositionSizer 据此判资金不足），
+# **但这个语义从未传达给用户**——界面上 50 条推荐的仓位一栏只是留白，
+# 没有任何一句「你已满仓，要动这些得先卖出」。
+#
+# ⚠️ 刻意的口径选择：提示**只陈述已知事实**（可用现金 / 总资产 / 不可执行条数），
+# **不断言是哪个约束绑住的**。因为 all-None 也可能由 `max_total_position_pct`
+# 触顶导致，而不一定是现金不足；在这里重新推导一遍绑定原因，就是把
+# PositionSizer 的判定逻辑复制一份出来（§4.11 第 2 例「配置的平行副本」）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_overlay_returns_funding_note_when_all_buys_unfundable() -> None:
+    """全部 BUY 都不可执行 → 返回一条满仓提示，并带上现金与条数事实。"""
+    # 现金 1.4%（仿生产：4336/310277），远低于 single_trade_pct×0.5
+    repo, acc_svc, cfg = _make_services(
+        [_position("000001.SZ", 300_000.0)], total_assets=310_277.0, cash=4_336.0
+    )
+    svc = SignalViewService(repo, account_service=acc_svc, config_service=cfg)
+
+    dicts = [_dict("600000.SH"), _dict("600519.SH"), _dict("000858.SZ")]
+    note = await svc.apply_account_overlay(dicts, account_id=1)
+
+    assert all(d["suggested_pct"] is None for d in dicts), "前提不成立：应全部不可执行"
+    assert note, "全部不可执行却没有返回满仓提示"
+    assert "3" in note, f"提示未说明不可执行条数：{note!r}"
+    assert "4,336" in note or "4336" in note, f"提示未带上可用现金事实：{note!r}"
+
+
+async def test_overlay_no_note_when_some_buy_is_fundable() -> None:
+    """只要有一条可执行 → **不提示**（否则满仓提示会在正常情况下刷屏）。"""
+    repo, acc_svc, cfg = _make_services([], total_assets=1_000_000.0, cash=800_000.0)
+    svc = SignalViewService(repo, account_service=acc_svc, config_service=cfg)
+
+    dicts = [_dict("600000.SH"), _dict("600519.SH")]
+    note = await svc.apply_account_overlay(dicts, account_id=1)
+
+    assert any(d["suggested_pct"] is not None for d in dicts), "前提不成立：应有可执行项"
+    assert note is None, f"有可执行项却仍给了满仓提示：{note!r}"
+
+
+async def test_overlay_no_note_when_no_buy_signals() -> None:
+    """只有 SELL（或空列表）→ 不提示：满仓与否与卖出无关。"""
+    repo, acc_svc, cfg = _make_services([], total_assets=310_277.0, cash=4_336.0)
+    svc = SignalViewService(repo, account_service=acc_svc, config_service=cfg)
+
+    assert await svc.apply_account_overlay([_dict("600000.SH", "SELL")], account_id=1) is None
+    assert await svc.apply_account_overlay([], account_id=1) is None
+
+
+async def test_overlay_no_note_when_account_load_fails() -> None:
+    """账户加载失败走降级分支 → 不提示（此时根本没算过可执行性，提示会是臆测）。"""
+    repo, acc_svc, cfg = _make_services([], positions_raises=True)
+    svc = SignalViewService(repo, account_service=acc_svc, config_service=cfg)
+
+    note = await svc.apply_account_overlay([_dict("600000.SH")], account_id=1)
+    assert note is None
