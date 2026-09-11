@@ -286,6 +286,15 @@ const historyColumns = [
           </a-descriptions-item>
           <a-descriptions-item label="综合评分">{{ selectedSignal.score }}</a-descriptions-item>
           <a-descriptions-item label="信号强度">{{ selectedSignal.signal_strength ?? '—' }}</a-descriptions-item>
+          <!--
+            判断依据（2026-09-11 加）：`signal.reason` 一直落库且内容具体
+            （买入「综合评分位列全市场 top 1.1%」/ 卖出「硬止损（浮亏 -8.3%，阈值 -8.0%）」），
+            但**前端此前从未显示过它**——卡片上只有 trigger_reason 翻出来的枚举标签
+            「分位顶部强烈买入」。用户因此看不到量化后的依据。
+          -->
+          <a-descriptions-item v-if="selectedSignal.reason" label="判断依据" :span="2">
+            {{ selectedSignal.reason }}
+          </a-descriptions-item>
           <!-- 推荐价格区间（买入信号有值；卖出信号通常为空） -->
           <a-descriptions-item
             v-if="selectedSignal.signal_type === 'BUY'"
