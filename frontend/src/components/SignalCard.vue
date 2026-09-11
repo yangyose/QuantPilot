@@ -54,6 +54,10 @@ function goLineage(e: Event): void {
     <div v-if="reasonText" style="margin-top: 4px; color: #1677ff; font-size: 12px">
       💡 {{ reasonText }}
     </div>
+    <!-- 流动性提示（SDD §9.1）：2026-09-11 起才真的有值——此前后端从未产生过 -->
+    <div v-if="signal.liquidity_note" style="margin-top: 4px; color: #8c8c8c; font-size: 12px">
+      💧 {{ signal.liquidity_note }}
+    </div>
     <div v-if="signal.t1_warning" style="margin-top: 4px; color: #faad14; font-size: 12px">
       ⚠️ {{ signal.t1_warning }}
     </div>

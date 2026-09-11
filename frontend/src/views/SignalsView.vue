@@ -320,6 +320,15 @@ const historyColumns = [
           </a-descriptions-item>
         </a-descriptions>
 
+        <!-- 流动性提示（SDD §9.1）：2026-09-11 起才真的有值——此前后端从未产生过 -->
+        <a-alert
+          v-if="selectedSignal.liquidity_note"
+          type="info"
+          :message="selectedSignal.liquidity_note"
+          show-icon
+          style="margin-top: 12px"
+        />
+
         <!-- T+1 提示 -->
         <a-alert
           v-if="selectedSignal.t1_warning"

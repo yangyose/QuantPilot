@@ -133,6 +133,12 @@ export const GLOSSARY: Record<string, TermDef> = {
     title: 'T+1 提醒',
     description: 'A 股买入当日不可卖出，最早次一交易日才能成交。',
   },
+  liquidity_note: {
+    title: '流动性提示',
+    description:
+      '按该股近 20 个交易日的日均成交额给出的可交易性提示。成交额越小，' +
+      '大额委托越可能推高买入成本或无法全部成交，此时建议分批下单。',
+  },
 }
 
 /**

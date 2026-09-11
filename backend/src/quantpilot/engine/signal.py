@@ -22,6 +22,59 @@ from quantpilot.engine.market_state import MarketStateEnum
 
 logger = logging.getLogger(__name__)
 
+# 流动性提示的分档倍数（相对 `min_liquidity_amount` 门槛）。
+# 信号本身要求 avg_amount >= 门槛，故这三档都在门槛之上。
+_LIQ_AMPLE_MULT = 10.0   # >= 10× 门槛 → 充足
+_LIQ_OK_MULT = 2.0       # >= 2×  门槛 → 尚可
+# ⚠️ 文案里写死「近20日」，其依据是 `strategy_service` 调
+# `get_avg_amount(..., window=20)`。那边改了这边不改就是**对用户说谎**，
+# 故由 `test_signal_liquidity_note.py::test_liq_06_window_coupling_pinned`
+# 用 AST 在调用点上钉死。
+_LIQ_WINDOW_DAYS = 20
+
+
+def _format_amount_cny(amount: float) -> str:
+    """成交额（元）→ 中文金额串。>= 1 亿用「亿元」，否则「万元」（同 SDD §9.1 例子）。"""
+    if amount >= 1e8:
+        return f"{amount / 1e8:.1f}亿元"
+    return f"{amount / 1e4:.0f}万元"
+
+
+def build_liquidity_note(avg_amount: float | None, min_amount: float) -> str | None:
+    """SDD §9.1 的 `liquidity_note`（流动性提示）。
+
+    例：`"近20日日均成交额2.3亿元，流动性充足"`
+
+    ## 为什么这个函数在 2026-09-11 才出现
+
+    SDD §9.1 把它列为买入信号的展示字段之一，而在此之前**全仓没有任何赋值点**——
+    字段在 `TradeSignal` 上声明了、`signal_service` 把它写进 DB、repository 的 upsert
+    带着它、DB 有列、API schema 暴露它、前端也声明了类型，**唯独没人产生过值**，
+    生产 5904 条信号里非空 0 条。整条管道通着、源头没接，是 CLAUDE.md §4.11
+    「接了但没生效」一族里最彻底的一种。
+
+    ## 口径
+
+    - 成交额未知（NaN / None）→ 返回 **None**，不编一句提示（C-4：不用占位值糊过去）
+    - 分档相对 `min_amount` 门槛，**措辞必须随量级变化**：对一只刚过门槛的标的
+      说「流动性充足」比不给提示更糟，所以三档文案互不相同
+    """
+    if avg_amount is None:
+        return None
+    try:
+        amount = float(avg_amount)
+    except (TypeError, ValueError):
+        return None
+    if amount != amount or amount <= 0:      # NaN / 非正
+        return None
+
+    head = f"近{_LIQ_WINDOW_DAYS}日日均成交额{_format_amount_cny(amount)}"
+    if min_amount > 0 and amount >= min_amount * _LIQ_AMPLE_MULT:
+        return f"{head}，流动性充足"
+    if min_amount > 0 and amount >= min_amount * _LIQ_OK_MULT:
+        return f"{head}，流动性尚可"
+    return f"{head}，流动性偏薄，大额委托建议分批"
+
 
 @dataclass
 class RiskParams:
@@ -358,6 +411,8 @@ class SignalGenerator:
                 suggested_price_high=price_high,
                 stop_loss_price=stop_loss,
                 signal_strength=strength,
+                # SDD §9.1 规定的展示字段，此前从未被赋值（生产 5904 条非空 0 条）。
+                liquidity_note=build_liquidity_note(avg_amount, params.min_liquidity_amount),
                 t1_warning="A股T+1制度：买入当日不可卖出",
                 reason=buy_reason,
                 score_breakdown=score_breakdown,
