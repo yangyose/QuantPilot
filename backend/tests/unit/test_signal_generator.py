@@ -110,6 +110,31 @@ def test_sgn_03_limit_up_no_buy() -> None:
 
 
 # ---------------------------------------------------------------------------
+# SGN-03b: 停牌（is_suspended=True）→ 无 BUY
+#
+# ⚠️ 补于 2026-09-10：`signal.py` 那道 `if is_suspended or limit_up: continue`
+# 的 **`is_suspended` 那一半此前完全没有测试覆盖**——实测把它删掉（只留 limit_up）
+# 后 997 条单测**全绿**。
+#
+# 为什么这半边尤其不能没有护栏：universe 的 **F-3「非停牌」结构性永不命中**
+# （停牌股当天没有 `daily_quote` 行 → `is_suspended` 恒 False，实测 1115 个交易日
+# 边际剔除恒为 0，见 `docs/reviews/universe_f5_loss_filter_2026-09-10.md` 附录）。
+# 也就是说，**「不给停牌股发买入信号」这件事全靠这一行**，
+# 而它的一半原本可以被随手删掉且无人察觉。
+# ---------------------------------------------------------------------------
+def test_sgn_03b_suspended_no_buy() -> None:
+    """SGN-03b: 停牌 → 不产生买入信号（与 SGN-03 对称，覆盖护栏的另一半）"""
+    scores = _make_scores(["000001.SZ"], 90.0)
+    quotes = _make_quotes(["000001.SZ"], is_suspended=True)
+    signals = gen.generate(scores, [], MarketStateEnum.UPTREND, quotes, TRADE_DATE)
+    buy_signals = [s for s in signals if s.signal_type == "BUY"]
+    assert len(buy_signals) == 0, (
+        "停牌标的收到了买入信号 —— universe 的 F-3 永不命中，"
+        "signal.py 的 is_suspended 分支是唯一防线"
+    )
+
+
+# ---------------------------------------------------------------------------
 # SGN-04: 已持仓且盈利（pnl_pct=0.05）→ 生成加仓 BUY
 # ---------------------------------------------------------------------------
 def test_sgn_04_add_position_when_profitable() -> None:

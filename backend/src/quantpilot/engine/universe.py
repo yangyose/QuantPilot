@@ -156,6 +156,23 @@ class UniverseFilter:
         _tally("F-2")
 
         # F-3：非停牌
+        #
+        # ⚠️ **本条结构性永不命中，实测 1115 个交易日边际剔除恒为 0**（2026-09-10 量过）。
+        # 成因：`is_suspended` 落在 `daily_quote` 上，而**全停牌的股票当天根本没有
+        # `daily_quote` 行**（Tushare `daily` 不返回未交易的股票）→ 该列恒 False。
+        # 实测 604 万行 `is_suspended` 全为 False、`vol = 0` 的行一行也没有。
+        #
+        # ⚠️ 别误读成「2026-09-03 那次 `suspend_d` 修复没生效」——两种全 False 成因相反：
+        # 修复**前**是错误地把 818 只正常股标成停牌（它们有行情行，标记写得上去）；
+        # 修复**后**真停牌的股票压根没有行情行可标。
+        #
+        # 意图（别推荐买不进的标的）由 **`engine/signal.py` 的
+        # `if is_suspended or limit_up: continue`** 承担，且那里才是正确落点——
+        # 可买性该在**发信号那一刻**判定。实测在市但当日无行情行的 1~22 只/日
+        # **无一进入候选池**，故本条冗余、无损害。
+        # 🔴 **那道护栏是唯一的一道**：谁若认为「universe 层已经管了」而删掉它，
+        # 保护会完全消失且不报错——而本条从来没管过。
+        # 详见 `docs/reviews/universe_f5_loss_filter_2026-09-10.md` 附录。
         mask &= ~stock_info["is_suspended"].fillna(False).astype(bool)
         _tally("F-3")
 
@@ -265,6 +282,19 @@ class UniverseFilter:
         _tally("F-7")
 
         # F-8：涨停封死过滤（limit_up=True 且 vol=0 → 无法买入）
+        #
+        # ⚠️ **本条结构性永不命中，实测 1115 个交易日边际剔除恒为 0**（2026-09-10 量过）。
+        # 判据与现实不相容：**涨停封死的股票仍然有成交量**（有人买到了，只是买不到更多），
+        # 实测日均 36~73 只涨停股中 `vol = 0` 的恒为 **0.00**。意图对，判据选错了。
+        #
+        # 同 F-3：意图由 `engine/signal.py` 的 `if is_suspended or limit_up: continue`
+        # 承担，实测 5285 条 BUY 信号中**标的当日涨停的为 0**（候选池里倒是有 367 个
+        # 在池且涨停的行——即它们确实进了 universe，只是没拿到买入信号）。
+        # 🔴 同 F-3 那条警告：那道护栏是唯一的一道，删掉即保护全失且不报错。
+        #
+        # ⚠️ **不要顺手把判据改成 `limit_up` 单条**：那会每天多剔 36~73 只，
+        # 是一次无证据的选股变更（可买性已在信号层挡住，universe 层再挡等于收窄可选池
+        # 却换不到任何东西）。详见 `docs/reviews/universe_f5_loss_filter_2026-09-10.md` 附录。
         if "limit_up" in daily_quotes.columns and "vol" in daily_quotes.columns:
             limit_up = daily_quotes["limit_up"].reindex(idx).fillna(False).astype(bool)
             vol = daily_quotes["vol"].reindex(idx).fillna(0)
