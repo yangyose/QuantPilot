@@ -163,3 +163,43 @@ class TestScoreColumnMapIsACheckedContract:
         fields = {f.name for f in dataclasses.fields(PoolEntry)}
         for strategy, col in SCORE_COLUMN_MAP.items():
             assert col in fields, f"{strategy} 的列 {col} 不在 PoolEntry 上"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STRATEGY_DISPLAY_NAMES 契约（2026-09-11 加）
+#
+# 该映射是**第二份**策略名→中文名的副本（第一份是各策略类的 `display_name`）。
+# 之所以容忍这份副本：`core/` 不能反向 import `engine/strategies/`（会成环）。
+# 代价就是它会漂，所以下面这条契约测试**是必需的，不是锦上添花**——
+# §4.11 第 2 例记着「配置的平行副本」正是本仓高发缺陷。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_display_names_match_strategy_classes() -> None:
+    """每个已登记策略的中文名必须与其类的 `display_name` 逐字相等。"""
+    from quantpilot.core.strategy_registry import STRATEGY_DISPLAY_NAMES
+    from quantpilot.services.scoring_factory import build_default_strategies
+
+    by_name = {s.name: s for s in build_default_strategies()}
+    missing = [n for n in STRATEGY_NAMES if n not in STRATEGY_DISPLAY_NAMES]
+    assert not missing, f"STRATEGY_DISPLAY_NAMES 缺策略：{missing}"
+
+    mismatched = []
+    for name in STRATEGY_NAMES:
+        strat = by_name.get(name)
+        if strat is None:
+            continue
+        if STRATEGY_DISPLAY_NAMES[name] != strat.display_name:
+            mismatched.append(
+                f"{name}: registry={STRATEGY_DISPLAY_NAMES[name]!r} "
+                f"class={strat.display_name!r}"
+            )
+    assert not mismatched, "中文名与策略类 display_name 不一致：\n  " + "\n  ".join(mismatched)
+
+
+def test_display_names_have_no_extra_entries() -> None:
+    """反向：不得有 STRATEGY_NAMES 里没有的多余条目（否则是删策略时漏删）。"""
+    from quantpilot.core.strategy_registry import STRATEGY_DISPLAY_NAMES
+
+    extra = set(STRATEGY_DISPLAY_NAMES) - set(STRATEGY_NAMES)
+    assert not extra, f"STRATEGY_DISPLAY_NAMES 有多余条目：{sorted(extra)}"

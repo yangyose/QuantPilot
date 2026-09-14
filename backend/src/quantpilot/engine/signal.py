@@ -18,6 +18,7 @@ from quantpilot.core.config_defaults import (
     SignalConfig,
     UniverseConfig,
 )
+from quantpilot.core.strategy_registry import build_top_drivers
 from quantpilot.engine.market_state import MarketStateEnum
 
 logger = logging.getLogger(__name__)
@@ -401,6 +402,15 @@ class SignalGenerator:
             raw = row.get("raw_factors") if "raw_factors" in composite_scores.columns else None
             score_breakdown = breakdown if isinstance(breakdown, dict) else None
             raw_factors = raw if isinstance(raw, dict) else None
+
+            # SDD §9.1 的 top_contributors：把「主要驱动」补进买入理由。
+            # 此前用户只看到排名（「综合评分位列全市场 top 1.1%」），不知道为什么。
+            # ⚠️ 译名与排序收敛在 `build_top_drivers` 一处——`Scorer.aggregate` 同用；
+            # 两处各写一份必然措辞分叉，而其中一处曾直接拼内部英文键名。
+            # 无 breakdown → 返回 None → **整段省略**，不拼出空的「主要驱动：」。
+            drivers = build_top_drivers(score_breakdown)
+            if drivers:
+                buy_reason = f"{buy_reason}，主要驱动：{drivers}"
 
             signals.append(TradeSignal(
                 ts_code=ts_code,

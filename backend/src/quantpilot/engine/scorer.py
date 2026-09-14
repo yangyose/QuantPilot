@@ -30,6 +30,7 @@ from quantpilot.core.strategy_registry import (
 from quantpilot.core.strategy_registry import (
     STRATEGY_NAMES as _REGISTRY_STRATEGY_NAMES,
 )
+from quantpilot.core.strategy_registry import build_top_drivers
 from quantpilot.engine.factor_pipeline import FactorPipeline
 from quantpilot.engine.market_state import MarketStateEnum
 from quantpilot.engine.orthogonalizer import Orthogonalizer
@@ -406,14 +407,13 @@ class Scorer:
                 return None if v is None or (isinstance(v, float) and pd.isna(v)) else float(v)
 
             # explanation
-            top_sorted = sorted(
-                breakdown_raw.items(),
-                key=lambda kv: kv[1]["contribution"],
-                reverse=True,
-            )[:2]
+            # ⚠️ 原实现直接 `" · ".join(breakdown_raw 的键名)`，而那些键是**内部英文名**
+            # （实测 `{"value": …, "mean_reversion": …}`）→ 会产出「value · mean_reversion」。
+            # 该字段此前零消费者所以没人发现；2026-09-11 接到买入理由上时一并修正，
+            # 并与 `SignalGenerator` 共用 `build_top_drivers`（译名 + 排序只此一处）。
             strength = "强买入信号" if pct_value <= 0.01 else "买入信号"
-            if top_sorted:
-                top_names = " · ".join(name for name, _ in top_sorted)
+            top_names = build_top_drivers(breakdown_raw)
+            if top_names:
                 explanation = (
                     f"该股票位列全市场 top {pct_value * 100:.1f}%（{strength}），"
                     f"主要驱动：{top_names}。"
