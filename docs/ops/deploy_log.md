@@ -491,3 +491,60 @@ universe 逐个相同），此处不再重复归因。
 `liquidity_note` 跑」——**那是错的，它从未部署**。实测 09-11 的 53 条信号
 `liquidity_note` 非空 **0** 条，正因为生产仍是 af94e57。
 判据始终是 `/health` 自报的 sha，不是「我记得提交过」。
+
+## 769e33b — 2026-09-14T04:07:26Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `af94e57` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_769e33b_20260914_130433.tar.gz` |
+| delta | 7 个 commit |
+
+```
+4115ee0 feat(signal): 买入理由补上「主要驱动」——J-EXPL 的实质那一半，并修掉 scorer 的真 bug
+dd6f4e9 feat(signal): 满仓时给出列表级 funding_note——50 条推荐全不可执行而界面只留白
+c013944 feat(signal): 实现 SDD §9.1 的 liquidity_note——规定了却从未产生过值
+76beb60 fix(test): 补上「停牌股不发买入信号」这条唯一防线的测试；F-3/F-8 全量剔除画像
+a2a51b8 docs(review): F-5 实现不符 SDD，但按规范改正会更差——只订正注释，不动过滤行为
+82d5cc0 docs(ops): af94e57 观察期第 1 日全过 + 登记 K-WEIGHT 策略内因子权重不符 SDD
+dcac2e4 fix(guard+docs): 堵住「Bash 改文件绕过评审钩子」+ roe_quality 实测结论反转
+84f6913 feat(value): roe_quality 开关就位（默认不变）——剔除被 SDD 冲突与能力缺口拦下
+```
+
+**部署后核验（2026-09-14 12:07 CST）**：
+
+- `/health` = `769e33b 2026-09-14T04:04:38Z main` ✅
+- `alembic_version` = **0029**（本批**无新迁移**，预期不变）
+- backend 近 10 分钟日志 error/traceback **0** 条；`scheduler_started` 已出现
+- `nginx -s reload` 已执行（脚本第 7 步，防 backend 换 IP 后 502）
+- 可用内存 **2534M**
+- 回滚点 `backend_pre_769e33b_20260914_130433.tar.gz`
+
+**本批预期**：仍是**选股行为零变化**（`low_volatility` 影子权重 0、
+`piotroski_gate_enabled=False` 不剔除）。新增的**可验证痕迹**有两条：
+① 买入 `reason` 里应出现「，主要驱动：…」；② `signal.liquidity_note` 非空数
+应由 0 变为约等于 BUY 条数。两条都在今晚 17:30 管线后核对。
+
+### 🔴 `deploy_prod.sh` 只同步 backend/——本批有三项的 UI 部分**没有上线**
+
+| 改动 | 后端 | 前端渲染 | 本次是否送达用户 |
+|---|---|---|---|
+| `4115ee0` 买入理由「主要驱动」| ✅ | 无需前端 | ✅ **WxPusher 推送即可见** |
+| `c013944` `liquidity_note` | ✅ 落库 + API | ✗ | ⚠️ 只到 API |
+| `dd6f4e9` `funding_note` | ✅ API | ✗ | ⚠️ 只到 API |
+| `4efd7d6` 信号详情「判断依据」| 纯前端 | ✗ | ❌ 完全未上 |
+
+生产前端由服务器上的 `frontend-builder` 容器从 `./frontend` 构建进 `frontend_dist`
+卷、再由 nginx 提供，而 **`deploy_prod.sh` 从不同步 `frontend/`**。
+
+⚠️ **没有改用 `scripts/deploy.sh`**：`deploy_prod.sh` 文件头已记明那个脚本
+**对当前生产是错的**（带 `--pull` / 用 compose 起 nginx 覆盖就地改过的配置 /
+不做 `nginx -s reload` / 完全不同步代码），它本身就属 §4.11「接了但没生效」一族、
+从未用于这套生产。且 `deployment.md` 记着小机上 vite/npm 构建**有 OOM 风险**
+（"需本地预构建 dist 再传"），而运维红线明确「**升配至 2C4G 不解除本条**」。
+
+**即：这套生产目前没有一条经过验证的前端部署路径。** 这是个真实缺口，
+不该在一台有 OOM 红线的机器上临场发明——2026-08-17 打挂站点 43 分钟就是那类操作。
+建议路径（待单独设计与验证）：**本地构建 dist → 传产物 → 换卷 → `nginx -s reload`**，
+本地构建规避 OOM 且产物可校验。
