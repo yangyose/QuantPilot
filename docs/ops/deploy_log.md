@@ -548,3 +548,53 @@ dcac2e4 fix(guard+docs): 堵住「Bash 改文件绕过评审钩子」+ roe_quali
 不该在一台有 OOM 红线的机器上临场发明——2026-08-17 打挂站点 43 分钟就是那类操作。
 建议路径（待单独设计与验证）：**本地构建 dist → 传产物 → 换卷 → `nginx -s reload`**，
 本地构建规避 OOM 且产物可校验。
+
+## 前端 52e22c0 — 2026-09-14T04:22Z（首次使用 `scripts/deploy_frontend.sh`）
+
+**此前这套生产没有任何前端部署路径**：`deploy_prod.sh` 只同步 `backend/`，
+而 `frontend_dist` 卷里的产物停在 **2026-09-03**。此后 5 个 commit 改过 `frontend/`——
+其中 **`af94e57` 的 `low_volatility` 溯源展示**在后端上线后**又卡了 11 天**。
+即一个结构性的「**后端部署成功 ≠ 功能上线**」缺口。
+
+| 项 | 值 |
+|---|---|
+| 入口 JS（部署前 → 后）| `index-Pe0BR4Xj.js` → **`index-uG6xYbOC.js`** |
+| assets 文件数 | 39（与线上结构一致，仅哈希不同）|
+| 回滚点 | `/home/ubuntu/backups/frontend_dist_pre_52e22c0_20260914_132209.tar.gz` |
+
+**生效判据（两层，都过）**：
+1. **公网取回的 `index.html` 引用的入口 JS == 本次构建的入口 JS**，且该文件 200 可取回。
+   ⚠️ 判据不用「文件复制成功」——那在 nginx 缓存旧 fd / 换错卷 / CDN 缓存旧页面时都假阳性；
+   vite 的 asset 名带内容哈希，哈希比对不会。
+2. **功能级痕迹**：新文案确实在线上分片里（且各自在对的分片，说明代码分割没被破坏）
+
+   | 文案 | 分片 | 来自 |
+   |---|---|---|
+   | 判断依据 | `SignalsView-TngAeLvn.js`（原 `BiYQarF-`）| `4efd7d6` |
+   | 流动性提示 | `TermLabel-DX29A-Jw.js` | `c013944` 术语表 |
+   | 低波动 | `lineage-D34s0GEb.js` | `af94e57`（卡了 11 天）|
+
+### 做法与为什么
+
+**本地构建 → 传产物 → 换卷 → `nginx -s reload`**。三条约束决定了这个形状：
+
+- **不在生产机跑 vite**：`deployment.md` 记着小机 npm/vite 构建有 OOM 风险，
+  而红线明确「升配至 2C4G **不解除本条**」
+- **不用 `scripts/deploy.sh`**：它对当前生产是错的（带 `--pull` / 用 compose 起 nginx
+  会覆盖服务器上就地改过的配置 / 不 reload / 完全不同步代码），见 `deploy_prod.sh` 文件头
+- **nginx 以只读挂该卷** ⇒ 必须用一次性容器以读写方式挂同一个卷来替换内容。
+  而 `frontend-builder` 的全部作用本就是 `rm -rf /output/* && cp -r /dist/. /output/`
+  ——它只是搬运工，产物从别处来不冲突，故**无需改 compose**
+
+### 🔴 回退陷阱
+
+`frontend-builder` 镜像里**烤着一份构建期的 dist**。谁若在前端部署之后执行
+`docker compose up -d frontend-builder`，它会清空卷再把**那份旧产物**拷回去，
+**静默回滚且不报错**。真要用它，先重建镜像。判据同上：比对线上入口 JS 哈希。
+
+### 脚本自检（首跑即抓到两个问题，都在碰生产之前）
+
+- 我写的 de-hash `sed` 多了一个 `/` 被当成标志位 → 首次 `--dry-run` 在第 3 步中止。
+  已改用 `|` 作分隔符并就地注明（替换内容本身是 `.`，沿用 `/` 极易多写一个）
+- 专门验证过闸门**真的会拦**：故意制造未提交的 `frontend/` 改动，脚本在第 1 步
+  就拒绝且不进入构建。**未测过的闸门等于装饰品**
