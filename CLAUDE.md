@@ -429,16 +429,24 @@ matcher 是 `Edit|Write`，且两个脚本都靠 `tool_input.file_path` 定位�
 十几条用例逐个真跑不可行。⚠️ 该干跑档**只为夹具存在**，别在真实钩子链里设这个环境变量，
 否则测试永远不跑而表现与「全过」一致。
 
-🔴 **`Bash` 写入的派发尚未验证——这一条是「接了但没生效」的现行实例，别当它已经生效**：
+🔴 **`Bash` 写入的派发实测「不生效」（2026-09-14 复验，含一次会话 resume 之后）——
+这一条是「接了但没生效」的现行实例，别当它已经生效**：
 `auto_test.sh` 现在能从 Bash 的 `command` 里认出被改的 `.py`（夹具正反两面各 9 条 + 3 变异全拦），
 `settings.json` 也已加上 `matcher: "Bash"` 的 PostToolUse 项——**但至今没有一次真实会话证明
 钩子确实被派发过**。⚠️ 我一度把「自己构造 Bash payload 管道喂给脚本、看到它跑起 pytest」
 当成端到端验证，那恰恰是 §4.11 点名的**自证式测试**：payload 是我造的，绕过了整个派发链，
 缺陷（matcher 里没有 `Bash`）仍在时它照样绿——而 matcher 当时真的没有 `Bash`，是冷启动评审查
 `settings.json` 才发现的。
-**真正的判据**：用 Bash 写一个 `backend/**.py`（例如 `sed -i` 或 heredoc），看本钩子的输出
-（`━━━ Auto Test: xxx.py ━━━`）有没有出现在 transcript 里。若没出现，多半是 `settings.json` 改动
-需要开一次 `/hooks` 或重启会话才生效（这一步 Claude 自己做不到，得由人来）。
+⚠️ **判据不能用「transcript 里有没有出现 `━━━ Auto Test: xxx.py ━━━`」**（2026-09-14 订正）：
+钩子成功时只往 stdout 打普通文本，而 PostToolUse 的普通 stdout **不一定注入到对话里**
+——于是「没出现」在「没触发」和「触发了但输出没露面」两种情况下都成立，
+按 §4.11 那条「一个判据若在两种情况下给出相同结果，它就不是判据」，它不合格。
+**有效判据是查痕迹**：钩子会真跑 pytest，故看 `backend/.pytest_cache/v/cache/nodeids`
+的 mtime 有没有被刷新（`stat -c %y`）。
+**2026-09-14 实测结论：不生效。** 一次会话 resume 之后用 `sed -i` 真写了
+`backend/src/quantpilot/engine/scorer.py`，`nodeids` mtime 停在 1 小时 18 分钟前
+——pytest 没跑，即 Bash 事件没被派发。
+⇒ **需要人开一次 `/hooks` 或重启会话让 `settings.json` 生效（Claude 自己做不到）**；
 **在那之前，经 Bash 改过 backend 的 .py 后仍须手动跑** `tests/unit/ tests/e2e/`。
 
 ### 5.4 推迟判定与三链（C-3 展开）
@@ -507,7 +515,7 @@ C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
 **(b) 的「SQL 下推尚未实施」已于 2026-09-04 `b76f3d0` 被推翻**，每日管线峰值主项
 实测 2313MB → 1.5MB）。⚠️ **过期 ≠ 该解除**：在重新论证完成前红线照旧执行。
 三条理由（**均为 2026-09-03 及更早的历史依据**，实测过程见
-`docs/ops/deploy_log.md`「2026-09-03（傍晚）」节）：**(a)** 每日管线跑 universe 3212 时，**峰值一到可用内存只剩约 1 GB**（实测 2246M → 996M），而回填类作业是逐日重复这个峰值；**(b)** `get_pe_pb_history_bulk` 为算 3212 个分位数要拉约 380 万行，峰值随 universe 与 5 年窗口逐年长，**地板没被抬高**（SQL 下推尚未实施）；**(c)** 那次 OOM 触发在 anon-rss **1.34 GiB**，明显**低于** 7 月那批的 1.55~1.58 GiB——swap 先耗尽会让触发点前移，**「上次 1.6G 才死」不能当安全线用**。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。**自 2026-08-26 起「本地算力中心」= 第二台 24h 常开机**（双活纪律与新机 runbook 见 `docs/guides/machine_migration.md`）：长任务须在该机 detached 起（`scripts/run_ic_panel.sh`），产出唯一权威；另一台的 5434 降级为可随时丢弃的 scratch，两台各跑一半会产生「谁都不完整、且无法判断某行出自哪台机/哪个配置」的状态。⚠️ `sync_local_backtest_db.sh` 会 DROP 重建 5434，其 `.last_restore` 标记**不足以充当保护**（钩子每天拉新备份 → 标记次日即失配，而面板要跑 31h、跨天必然）；2026-08-26 起脚本自带「库内已有 `ic_baseline_pre_c1` / `factor_ic_window_state` 数据则拒绝执行」，须显式 `--force-wipe` 才继续，而 `--force-wipe` 已被 `guard.py` 直接 **deny**（2026-08-27 起；不是 ask——见 §4.12 那条「ask 档在自动放行模式下不弹确认」），需要执行时由人在终端手敲。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。**双写的「仓库那一半」最容易漏，且漏了之后 printenv 照样通过**——服务器上就地手改 compose 能让行为立刻正确，于是没人发现 git 里那份是错的。实例：`BACKTEST_ENABLED`（防 4 次 OOM 宕机的那个开关）自 2026-06-29 起只存在于服务器的 compose，`3ffefcb` 没动仓库 compose，直到 2026-08-27 才发现——期间任何「按 git 重建一套生产」都会静默丢掉它、把回测重新打开。**判据：改完在仓库里 grep 一遍那个键名**；服务器上就地改过的任何配置都必须回写仓库，且生产专用开关的 compose 默认值取**失效方向**（如 `${BACKTEST_ENABLED:-false}`），漏配时保持关闭而不是打开。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
+`docs/ops/deploy_log.md`「2026-09-03（傍晚）」节）：**(a)** 每日管线跑 universe 3212 时，**峰值一到可用内存只剩约 1 GB**（实测 2246M → 996M），而回填类作业是逐日重复这个峰值；**(b)** `get_pe_pb_history_bulk` 为算 3212 个分位数要拉约 380 万行，峰值随 universe 与 5 年窗口逐年长，**地板没被抬高**（SQL 下推尚未实施）—— 🔴 **本句已于 2026-09-04 被 `b76f3d0` 推翻**：每日管线改调 `get_pe_pb_percentile_bulk`，该项峰值实测 **2313MB → 1.5MB**。⚠️ 但**下推只覆盖每日管线、没覆盖回测引擎**（`engine/backtest/engine.py` 仍走 `pe_pb_history`，6 交易日回测峰值实测 **3530MB**），故本句对**回测**仍然成立、对**每日管线**已失效；**(c)** 那次 OOM 触发在 anon-rss **1.34 GiB**，明显**低于** 7 月那批的 1.55~1.58 GiB——swap 先耗尽会让触发点前移，**「上次 1.6G 才死」不能当安全线用**。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。**自 2026-08-26 起「本地算力中心」= 第二台 24h 常开机**（双活纪律与新机 runbook 见 `docs/guides/machine_migration.md`）：长任务须在该机 detached 起（`scripts/run_ic_panel.sh`），产出唯一权威；另一台的 5434 降级为可随时丢弃的 scratch，两台各跑一半会产生「谁都不完整、且无法判断某行出自哪台机/哪个配置」的状态。⚠️ `sync_local_backtest_db.sh` 会 DROP 重建 5434，其 `.last_restore` 标记**不足以充当保护**（钩子每天拉新备份 → 标记次日即失配，而面板要跑 31h、跨天必然）；2026-08-26 起脚本自带「库内已有 `ic_baseline_pre_c1` / `factor_ic_window_state` 数据则拒绝执行」，须显式 `--force-wipe` 才继续，而 `--force-wipe` 已被 `guard.py` 直接 **deny**（2026-08-27 起；不是 ask——见 §4.12 那条「ask 档在自动放行模式下不弹确认」），需要执行时由人在终端手敲。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。**双写的「仓库那一半」最容易漏，且漏了之后 printenv 照样通过**——服务器上就地手改 compose 能让行为立刻正确，于是没人发现 git 里那份是错的。实例：`BACKTEST_ENABLED`（防 4 次 OOM 宕机的那个开关）自 2026-06-29 起只存在于服务器的 compose，`3ffefcb` 没动仓库 compose，直到 2026-08-27 才发现——期间任何「按 git 重建一套生产」都会静默丢掉它、把回测重新打开。**判据：改完在仓库里 grep 一遍那个键名**；服务器上就地改过的任何配置都必须回写仓库，且生产专用开关的 compose 默认值取**失效方向**（如 `${BACKTEST_ENABLED:-false}`），漏配时保持关闭而不是打开。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
 
 详细 phase 表 + 历史里程碑（V1.0 整改 3 批次 / V1.0 真机验收 15 bug / Phase 11~15 实施细节）
 → `docs/design/system_design.md §9`。
