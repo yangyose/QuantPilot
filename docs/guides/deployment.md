@@ -599,6 +599,15 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 2GB 小机上 vite/npm 构建有 OOM 风险（需本地预构建 dist 再传）。**Oracle 24GB 机直接在服务器上构建即可**，`frontend-builder` 不必特殊处理。
 
+> ⚠️ **2026-09-14 更新（腾讯生产已 2C2G → 2C4G）**：内存论据在腾讯机上已不再是主因，
+> 但**前端仍应本地构建**——理由换成了两个更强的、与内存无关的：
+> ① `scripts/deploy_frontend.sh` 的闸门能强制「**产物必须能从 git 复现**」
+>    （直接在服务器上构建无从校验当时的源码状态）；
+> ② 本地产物可在上传**之前**自检（`index.html` 引用的 asset 是否都存在、
+>    assets 数是否够——断链会让站点白屏而 nginx 仍返 200）。
+> 故该脚本走「本地构建 → 传产物 → 换卷 → `nginx -s reload`」，**不在生产机跑 node**。
+> 完整推导见 `docs/reviews/memory_premise_after_4gb_2026-09-14.md` §2④。
+
 ### 14.5 Oracle Always Free 专属注意事项
 
 | 事项 | 说明 / 缓解 |

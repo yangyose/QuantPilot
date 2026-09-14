@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # （window_days 护栏只挡长区间，挡不住"短区间也 OOM"）。生产 .env.prod 置 false，
     # 回测统一走本地算力中心 scripts/run_backtest_local.py，跑完经 /backtest/import 回灌。
     # 本地/大内存机默认 True（放开）。
+    #
+    # ⚠️ 2026-09-14 复查（生产已 2C2G → 2C4G，见
+    # `docs/reviews/memory_premise_after_4gb_2026-09-14.md`）：上面那个「~1.5GB」
+    # 是 2GB 时期的数，在 3723M 上不再是「吃掉四分之三」——**该内存论据已失效**。
+    # 但**维持 503 的结构性理由未变**：引擎 lookback ≈ 90 交易日是**固定地板**，
+    # 1 天窗口也要装 45 万行，即「短区间也 OOM」不是调参能解决的
+    # （见 memory `backtest_2gb_memory_wall`）。
+    # 要重新评估须先在**本地算力中心**用 4GB 限额容器实测短区间回测峰值——
+    # ⚠️ **不能在生产上试**，那正是运维红线①禁止的那类作业。
     backtest_enabled: bool = True
 
     # 回测护栏（2026-06-15）：限制单次回测的日历跨度（天）。0 = 不限制。
