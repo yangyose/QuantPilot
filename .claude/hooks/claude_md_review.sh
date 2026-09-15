@@ -11,10 +11,7 @@
 
 INPUT=$(cat)
 
-PYBIN=""
-for c in python py python3; do
-    if "$c" -c "import sys" >/dev/null 2>&1; then PYBIN="$c"; break; fi
-done
+. "$(dirname "${BASH_SOURCE[0]}")/pick_python.sh"
 [ -z "$PYBIN" ] && exit 0
 
 printf '%s' "$INPUT" | PYTHONUTF8=1 "$PYBIN" -c '

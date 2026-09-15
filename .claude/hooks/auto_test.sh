@@ -3,15 +3,9 @@
 # 输出结果直接反馈给 Claude，失败时 Claude 会自动进入调试
 
 # ---------- 0. 选一个真能跑的 Python 解释器 ----------
-# 本机 python3 是坏的 Windows Store 别名桩（输出 "Python" exit 49），
-# 按 python → py → python3 探测；找不到就放行（不阻断编辑流）。
-PYBIN=""
-for c in python py python3; do
-    if "$c" -c "import sys" >/dev/null 2>&1; then
-        PYBIN="$c"
-        break
-    fi
-done
+# 统一走 pick_python.sh（2026-09-14 起）：优先项目 venv，不先探 PATH 上的 python
+# ——那个探测会挂死 10 分钟（见该文件头注）。找不到就放行（不阻断编辑流）。
+. "$(dirname "${BASH_SOURCE[0]}")/pick_python.sh"
 [ -z "$PYBIN" ] && exit 0
 
 # ---------- 1. 解析「本次改了哪个 backend .py」----------
