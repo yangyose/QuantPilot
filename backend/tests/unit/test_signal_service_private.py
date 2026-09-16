@@ -43,7 +43,6 @@ def _snapshot_df(ts_codes: list[str], *, close: float = 10.0):
             "close": [close] * len(ts_codes),
             "is_suspended": [False] * len(ts_codes),
             "limit_up": [False] * len(ts_codes),
-            "avg_amount": [10_000_000.0] * len(ts_codes),
             "sw_industry_l1": ["电子"] * len(ts_codes),
         },
         index=pd.Index(ts_codes, name="ts_code"),
@@ -66,6 +65,11 @@ def _make_repo(
     repo.get_latest_pool_date = AsyncMock(return_value=pool_date)
     repo.get_pool = AsyncMock(return_value=pool)
     repo.get_snapshot_quotes = AsyncMock(return_value=snapshot)
+    # 2026-09-16 起 service 层另取 20 日均成交额并入快照（真实快照没有 avg_amount 列）
+    repo.get_avg_amount = AsyncMock(return_value=pd.DataFrame(
+        {"avg_amount": [10_000_000.0] * len(snapshot)},
+        index=pd.Index(list(snapshot.index), name="ts_code"),
+    ))
     repo.get_latest_market_state = AsyncMock(
         return_value=SimpleNamespace(market_state=market_state, trade_date=TRADE_DATE)
     )

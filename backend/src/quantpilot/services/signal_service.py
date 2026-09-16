@@ -611,6 +611,16 @@ class SignalService:
             market_state = MarketStateEnum.OSCILLATION
 
         snapshot = await self._repo.get_snapshot_quotes(ts_codes, trade_date)
+        # 20 日均成交额并入快照（2026-09-16 补）：`get_snapshot_quotes` 只有当日 amount、
+        # 从不返回 avg_amount，而 SignalGenerator 用 `q.get("avg_amount", nan)` 取值 →
+        # 生产 liquidity_note 全 NULL（2026-09-14/15 两日 BUY 104 条无一非空）、
+        # signal.py 的流动性门槛在 NaN 上恒跳过。universe 那条 F-7 走的是
+        # strategy_service 自己合并的 avg_amount，两条路径互不相通，故这里要再接一次。
+        # window=20 与 `engine/signal._LIQ_WINDOW_DAYS` 文案耦合，由 AST 用例钉死。
+        avg_amount = await self._repo.get_avg_amount(ts_codes, trade_date, window=20)
+        if not avg_amount.empty and "avg_amount" in avg_amount.columns:
+            snapshot = snapshot.copy()
+            snapshot["avg_amount"] = avg_amount["avg_amount"].reindex(snapshot.index)
         signal_cfg = await self._cfg.get_signal_params()
         universe_cfg = await self._cfg.get_universe_params()
 

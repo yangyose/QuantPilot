@@ -53,14 +53,28 @@ def _pool_entry(
 def _snapshot_df(
     ts_codes: list[str], *, close: float = 10.0, industry: str = "电子"
 ) -> pd.DataFrame:
+    """镜像真实 `get_snapshot_quotes` 的列——**刻意不含 avg_amount**。
+
+    2026-09-16 前这里带着一列 avg_amount，而真实 repo 从不返回它 → 生产 104 条 BUY
+    的 liquidity_note 全 NULL、signal.py 的流动性门槛恒 NaN 跳过，单测却全绿
+    （CLAUDE.md §4.11「测试输入比现实更配合」）。avg_amount 由 `get_avg_amount` 另取。
+    """
     return pd.DataFrame(
         {
             "close": [close] * len(ts_codes),
+            "amount": [close * 1e6] * len(ts_codes),
             "is_suspended": [False] * len(ts_codes),
             "limit_up": [False] * len(ts_codes),
-            "avg_amount": [10_000_000.0] * len(ts_codes),
             "sw_industry_l1": [industry] * len(ts_codes),
         },
+        index=pd.Index(ts_codes, name="ts_code"),
+    )
+
+
+def _avg_amount_df(ts_codes: list[str], amount: float = 10_000_000.0) -> pd.DataFrame:
+    """镜像真实 `get_avg_amount` 的返回：index=ts_code, columns=['avg_amount']。"""
+    return pd.DataFrame(
+        {"avg_amount": [amount] * len(ts_codes)},
         index=pd.Index(ts_codes, name="ts_code"),
     )
 
@@ -69,10 +83,15 @@ def _make_repo(
     pool_entries: list[SimpleNamespace],
     snapshot: pd.DataFrame,
     market_state: str = "UPTREND",
+    avg_amount: pd.DataFrame | None = None,
 ) -> MagicMock:
     repo = MagicMock()
     repo.get_pool = AsyncMock(return_value=pool_entries)
     repo.get_snapshot_quotes = AsyncMock(return_value=snapshot)
+    repo.get_avg_amount = AsyncMock(
+        return_value=avg_amount if avg_amount is not None
+        else _avg_amount_df(list(snapshot.index))
+    )
 
     # get_latest_market_state 返回含 market_state 属性的对象；None 视为缺失
     if market_state is None:
@@ -174,6 +193,64 @@ async def test_generate_for_date_market_state_fallback_oscillation() -> None:
     # OSCILLATION 系数 0.75 → 仍可产生信号
     assert len(result) >= 0  # 不抛错即可
     repo.get_latest_market_state.assert_awaited()
+
+
+async def test_generate_for_date_liquidity_note_comes_from_get_avg_amount() -> None:
+    """SGN-LIQ-1：liquidity_note 真的落到 upsert 行里，且 avg_amount 取自 `get_avg_amount`。
+
+    痕迹判据（§4.11 元判据）：生产 2026-09-14/15 两日 BUY 104 条 liquidity_note 全 NULL，
+    是因为快照行情里根本没有 avg_amount。本条断言的是 **upsert 参数**，不是生成器返回值
+    ——生成器在带 avg_amount 的输入下早就能算出文案，缺的是 service 层没把这列接进来。
+    """
+    pool = [_pool_entry("000001.SZ", 85.0), _pool_entry("000002.SZ", 82.0)]
+    codes = ["000001.SZ", "000002.SZ"]
+    repo = _make_repo(pool, _snapshot_df(codes), avg_amount=_avg_amount_df(codes, 6e7))
+    repo.get_signals_by_date = AsyncMock(return_value=[])
+
+    svc = SignalService(repo, config_service=_make_config_service())
+    await svc.generate_for_date(TRADE_DATE)
+
+    rows = repo.upsert_signals.await_args.args[0]
+    assert len(rows) == 2
+    assert all(r["liquidity_note"] and "流动性充足" in r["liquidity_note"] for r in rows), rows
+    # 文案写死「近20日」，取数窗口必须与之一致（与 test_liq_06 的 AST 钉子同源）
+    repo.get_avg_amount.assert_awaited_once()
+    assert repo.get_avg_amount.await_args.kwargs.get("window") == 20
+
+
+async def test_generate_for_date_avg_amount_below_threshold_blocks_buy() -> None:
+    """SGN-LIQ-2：signal.py 的流动性门槛此前因 avg_amount 恒 NaN 从未生效；接通后要真拦。"""
+    pool = [_pool_entry("000001.SZ", 85.0)]
+    repo = _make_repo(
+        pool, _snapshot_df(["000001.SZ"]), avg_amount=_avg_amount_df(["000001.SZ"], 1e6),
+    )
+    repo.get_signals_by_date = AsyncMock(return_value=[])
+
+    svc = SignalService(repo, config_service=_make_config_service())
+    result = await svc.generate_for_date(TRADE_DATE)
+
+    assert result == []
+    repo.upsert_signals.assert_not_awaited()
+
+
+async def test_generate_for_date_avg_amount_missing_degrades_to_no_note() -> None:
+    """SGN-LIQ-3：`get_avg_amount` 返回空（新股 / 数据缺口）→ 仍出信号，liquidity_note 为 None。
+
+    fail-open 只限于提示文案；门槛在 NaN 上不拦，与此前生产行为一致。
+    """
+    pool = [_pool_entry("000001.SZ", 85.0)]
+    empty = pd.DataFrame(
+        {"avg_amount": pd.Series(dtype=float)}, index=pd.Index([], name="ts_code"),
+    )
+    repo = _make_repo(pool, _snapshot_df(["000001.SZ"]), avg_amount=empty)
+    repo.get_signals_by_date = AsyncMock(return_value=[])
+
+    svc = SignalService(repo, config_service=_make_config_service())
+    await svc.generate_for_date(TRADE_DATE)
+
+    rows = repo.upsert_signals.await_args.args[0]
+    assert len(rows) == 1
+    assert rows[0]["liquidity_note"] is None
 
 
 async def test_generate_for_date_low_score_produces_no_buy() -> None:

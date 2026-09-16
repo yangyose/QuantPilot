@@ -127,14 +127,23 @@ def test_liq_06_window_coupling_pinned() -> None:
     按 §4.11「调用点是否真传参」用 AST 查**调用点**，不构造替身。
     这条红了不代表 bug，代表**文案与取数窗口脱钩了**，两边要一起改。
     """
-    src = (pathlib.Path(__file__).resolve().parents[2]
-           / "src/quantpilot/services/strategy_service.py").read_text(encoding="utf-8")
-    calls = [
-        n for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "get_avg_amount"
-    ]
-    assert calls, "找不到 get_avg_amount 调用点（重构过？文案窗口需重新核对）"
-    for c in calls:
+    # ⚠️ 2026-09-16 前只查 strategy_service——那是 universe F-7 的取数点，**不是**喂给
+    # SignalGenerator 的那条路径（signal_service 当时根本没取 avg_amount，文案从未生成，
+    # 这条钉子却一直绿：§4.11「验证覆盖的是不是实际走的那条路径」）。两处都钉。
+    root = pathlib.Path(__file__).resolve().parents[2] / "src/quantpilot/services"
+    calls: list[tuple[str, ast.Call]] = []
+    for fname in ("signal_service.py", "strategy_service.py"):
+        src = (root / fname).read_text(encoding="utf-8")
+        calls += [
+            (fname, n) for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "get_avg_amount"
+        ]
+    files_with_calls = {f for f, _ in calls}
+    assert "signal_service.py" in files_with_calls, (
+        "signal_service 不再取 avg_amount → liquidity_note 又会全 NULL（2026-09-16 那次）"
+    )
+    assert "strategy_service.py" in files_with_calls, "universe F-7 的取数点丢了"
+    for _fname, c in calls:
         kw = {k.arg: k for k in c.keywords}
         assert "window" in kw, "调用点未显式传 window，文案里的「近20日」失去依据"
         assert isinstance(kw["window"].value, ast.Constant), "window 不再是字面量，请人工核对文案"
