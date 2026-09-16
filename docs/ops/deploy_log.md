@@ -598,3 +598,34 @@ dcac2e4 fix(guard+docs): 堵住「Bash 改文件绕过评审钩子」+ roe_quali
   已改用 `|` 作分隔符并就地注明（替换内容本身是 `.`，沿用 `/` 极易多写一个）
 - 专门验证过闸门**真的会拦**：故意制造未提交的 `frontend/` 改动，脚本在第 1 步
   就拒绝且不进入构建。**未测过的闸门等于装饰品**
+
+## f1b93c1 — 2026-09-16T04:24:05Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `769e33b` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_f1b93c1_20260916_132123.tar.gz` |
+| delta | 2 个 commit |
+
+```
+c297d7c fix(signal): 生产 liquidity_note 全 NULL——快照行情从不含 avg_amount，service 层补取 20 日均成交额
+a26b922 fix(review): 订正 4GB 复查自身的过期前提——(b) 早在复查前 10 天就已被推翻
+c26aa1a docs(review): 2C2G → 2C4G 后逐条复查以 2GB 为前提的约束——不放宽任何一条
+```
+
+### 为什么部署（769e33b 的观察期判据）
+
+769e33b（09-14 部署）上线两次管线后查痕迹：`reason` 含「主要驱动」**52/52、52/52 ✓**；
+`liquidity_note` 非空 **0/104 ✗**——快照行情从不含 `avg_amount`，文案从未生成、
+signal.py 的流动性门槛也从未生效。修复 `c297d7c`，本次只此一个功能 commit。
+
+### 本次判据（下一次 17:30 管线后看）
+
+- `select count(*), count(liquidity_note) from signal where trade_date = <当日> and signal_type='BUY'`
+  → 两数应相等（或差额 = 当日 `get_avg_amount` 无数据的新股数）
+- `signal_count` 若较 54 下降，先查「池内 20 日均成交额 < 500 万」的股数——门槛首次生效属预期，
+  **不是**异常；跳变超过该数才是
+- 部署前读到的 4GB 管线峰值（cgroup `memory.peak` 754 MiB，覆盖 09-14/09-15）已入档
+  `docs/reviews/memory_premise_after_4gb_2026-09-14.md` §3；本次重建容器后计数器归零，
+  下一次读到的是新基线
