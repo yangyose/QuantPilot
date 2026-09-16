@@ -523,8 +523,12 @@ C0~C5 六子批、零推迟，实施序 C0→C1→C2→C3→C4→C5）
 **(b) 的「SQL 下推尚未实施」已于 2026-09-04 `b76f3d0` 被推翻**，每日管线峰值主项
 实测 2313MB → 1.5MB）。**4GB 下的管线峰值已于 2026-09-16 实测**（容器 cgroup `memory.peak`，含 page cache 的保守上界）：
 管线增量约 0.5 GB，仅为 2GB 时期的 40%，每日管线 headroom 约 3 倍——数字与口径见该报告 §3。
-⚠️ **过期 ≠ 该解除**：回填类脚本「逐日重复 × 与 19:30 Job 并发」仍无实测；是否放宽由用户按
-该报告 §3 的候选方案拍板，拍板前红线照旧执行。
+**2026-09-16 用户拍板（选项 B，有条件放开回测）**：生产 `BACKTEST_ENABLED=true` +
+`BACKTEST_MAX_WINDOW_DAYS=100`（日历天）+ **`BACKTEST_BLACKOUT_WINDOWS=17:15-18:30,19:15-20:15`**
+（端点层 503，避开 17:30 管线与 19:30 IC Job——回测与它们**叠加**才是本条真正禁的形态；
+回测引擎经 PE/PB 下推后 6~30 日峰值 1.0~1.2 GB，见 `core/config.py` 与该报告 §2②）。
+**其余不变**：回填类脚本仍禁止在生产跑（「逐日重复 × 与 Job 并发」无实测，用户明确不选 C）。
+判据：生产跑一次 6 日回测后读 backend cgroup `memory.peak`，超过 2 GB 即回退 `BACKTEST_ENABLED=false`。
 三条理由（**均为 2026-09-03 及更早的历史依据**，实测过程见
 `docs/ops/deploy_log.md`「2026-09-03（傍晚）」节）：**(a)** 每日管线跑 universe 3212 时，**峰值一到可用内存只剩约 1 GB**（实测 2246M → 996M），而回填类作业是逐日重复这个峰值；**(b)** `get_pe_pb_history_bulk` 为算 3212 个分位数要拉约 380 万行，峰值随 universe 与 5 年窗口逐年长，**地板没被抬高**（SQL 下推尚未实施）—— 🔴 **本句已于 2026-09-04 被 `b76f3d0` 推翻**：每日管线改调 `get_pe_pb_percentile_bulk`，该项峰值实测 **2313MB → 1.5MB**。⚠️ 但**下推只覆盖每日管线、没覆盖回测引擎**（`engine/backtest/engine.py` 仍走 `pe_pb_history`，6 交易日回测峰值实测 **3530MB**），故本句对**回测**仍然成立、对**每日管线**已失效；**(c)** 那次 OOM 触发在 anon-rss **1.34 GiB**，明显**低于** 7 月那批的 1.55~1.58 GiB——swap 先耗尽会让触发点前移，**「上次 1.6G 才死」不能当安全线用**。此类脚本一律只在本地算力中心跑（`docker-compose.backtest-local.yml` + DB:5434 + `scripts/sync_local_backtest_db.sh`），产出再导入生产；生产端只允许 17:30 每日管线那一次自然评分。**"只跑一天""只是标定"不构成例外**——单日就足够 OOM。**自 2026-08-26 起「本地算力中心」= 第二台 24h 常开机**（双活纪律与新机 runbook 见 `docs/guides/machine_migration.md`）：长任务须在该机 detached 起（`scripts/run_ic_panel.sh`），产出唯一权威；另一台的 5434 降级为可随时丢弃的 scratch，两台各跑一半会产生「谁都不完整、且无法判断某行出自哪台机/哪个配置」的状态。⚠️ `sync_local_backtest_db.sh` 会 DROP 重建 5434，其 `.last_restore` 标记**不足以充当保护**（钩子每天拉新备份 → 标记次日即失配，而面板要跑 31h、跨天必然）；2026-08-26 起脚本自带「库内已有 `ic_baseline_pre_c1` / `factor_ic_window_state` 数据则拒绝执行」，须显式 `--force-wipe` 才继续，而 `--force-wipe` 已被 `guard.py` 直接 **deny**（2026-08-27 起；不是 ask——见 §4.12 那条「ask 档在自动放行模式下不弹确认」），需要执行时由人在终端手敲。② 给生产新增 env 变量必须**双写**：`.env.prod` + root `docker-compose.prod.yml` 的 `environment:` **白名单**（非全量透传）；改完先 `docker exec ... printenv` 确认容器拿到值再验证行为。**双写的「仓库那一半」最容易漏，且漏了之后 printenv 照样通过**——服务器上就地手改 compose 能让行为立刻正确，于是没人发现 git 里那份是错的。实例：`BACKTEST_ENABLED`（防 4 次 OOM 宕机的那个开关）自 2026-06-29 起只存在于服务器的 compose，`3ffefcb` 没动仓库 compose，直到 2026-08-27 才发现——期间任何「按 git 重建一套生产」都会静默丢掉它、把回测重新打开。**判据：改完在仓库里 grep 一遍那个键名**；服务器上就地改过的任何配置都必须回写仓库，且生产专用开关的 compose 默认值取**失效方向**（如 `${BACKTEST_ENABLED:-false}`），漏配时保持关闭而不是打开。③ 冒烟跑生产用 `API_BASE_URL=https://quant.portableagi.com`，会写虚拟数据（SMOKE01.SZ 黑名单/0.01 入金）须跑后核查并 void 还原。
 

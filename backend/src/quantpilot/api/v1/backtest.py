@@ -1,7 +1,9 @@
 """回测引擎 API（Phase 8，SDD §7.7）。"""
 from __future__ import annotations
 
+import datetime as _dt
 import logging
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, WebSocket, status
 
@@ -11,6 +13,36 @@ from quantpilot.engine.backtest.engine import BacktestConfig
 from quantpilot.schemas.backtest import BacktestImportRequest, BacktestRunRequest
 from quantpilot.services.backtest_service import BacktestService
 from quantpilot.services.config_service import ConfigService
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _now_shanghai() -> _dt.time:
+    """当前北京时间（时:分）。独立成函数是为了让测试能钉住时刻。"""
+    return _dt.datetime.now(_SHANGHAI).time()
+
+
+def _blackout_hit(spec: str, now: _dt.time) -> str | None:
+    """`now` 落在 `spec`（`HH:MM-HH:MM,...`，左闭右开）任一时段内则返回该段结束时刻串，否则 None。
+
+    格式坏直接 ValueError——配置写错时宁可 500 也不能静默变成「不限制」（§4.11）。
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    for seg in spec.split(","):
+        seg = seg.strip()
+        if not seg:
+            continue
+        try:
+            a, b = seg.split("-", 1)
+            start = _dt.time.fromisoformat(a.strip())
+            end = _dt.time.fromisoformat(b.strip())
+        except ValueError as exc:
+            raise ValueError(f"backtest_blackout_windows 段格式错误: {seg!r}") from exc
+        if start <= now < end:
+            return end.strftime("%H:%M")
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +79,18 @@ async def run_backtest(
                 "回测已在本服务器禁用（内存受限）。请在本地算力中心运行"
                 "（scripts/run_backtest_local.py，数据自动同步自最新远端备份），"
                 "跑完经 POST /backtest/import 回灌结果。"
+            ),
+        )
+
+    # 作业时段禁提交（2026-09-16 选项 B）：回测与 17:30 管线 / 19:30 IC Job 不得叠加。
+    # 放在开关之后、其余护栏之前——它拒绝的是「现在」，不是「这个请求」。
+    _until = _blackout_hit(settings.backtest_blackout_windows, _now_shanghai())
+    if _until is not None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"当前为服务器作业时段（每日管线 / 因子监控），回测暂不接受提交，"
+                f"请在 {_until}（北京时间）之后再试。"
             ),
         )
 

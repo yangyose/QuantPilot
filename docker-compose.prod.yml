@@ -97,6 +97,9 @@ services:
       # 漏了本白名单（服务器上是就地手改的，从未进 git），仓库与生产就此分叉：
       # 谁按 git 重建一套生产，这个开关就会静默消失、回测重新打开。
       BACKTEST_ENABLED: ${BACKTEST_ENABLED:-false}
+      # 回测禁提交时段（2026-09-16，用户拍板有条件放开回测）：避开 17:30 管线与 19:30 IC Job。
+      # 默认值就是生产时段本身——漏配时应**保持限制**（失效方向），不是变成不限制。
+      BACKTEST_BLACKOUT_WINDOWS: ${BACKTEST_BLACKOUT_WINDOWS:-17:15-18:30,19:15-20:15}
       DEBUG: "false"
       LOG_DIR: /app/logs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

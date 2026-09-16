@@ -411,6 +411,55 @@ async def test_bt_09b_run_disabled_returns_503(
         app.dependency_overrides.pop(get_backtest_service, None)
 
 
+async def test_bt_09c_run_blackout_window_returns_503(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2E-BT-09c：作业时段禁提交——`backtest_blackout_windows` 命中 → 503，不进后台任务。
+
+    2026-09-16 用户拍板「有条件放开回测」（选项 B）：生产开回测，但**避开 17:30 管线与
+    19:30 日级 IC Job**——回测本身就是一次全 universe 评分，与它们叠加才是红线①真正
+    禁的形态。时段按 Asia/Shanghai 判，与服务器/调度器同钟；边界两侧都钉。
+    """
+    import datetime as _dt
+
+    from quantpilot.api.v1 import backtest as bt_mod
+    from quantpilot.core.config import settings as cfg_settings
+
+    monkeypatch.setattr(cfg_settings, "backtest_blackout_windows", "17:15-18:30,19:15-20:15")
+    mock_svc = AsyncMock()
+    mock_svc.create_task = AsyncMock(return_value="should-not-be-called")
+    mock_svc.has_active_task = AsyncMock(return_value=False)
+    app.dependency_overrides[get_backtest_service] = lambda: mock_svc
+    try:
+        # 命中：17:30 正是管线时段
+        monkeypatch.setattr(bt_mod, "_now_shanghai", lambda: _dt.time(17, 30))
+        resp = await client.post("/api/v1/backtest/run", json=_VALID_BODY, headers=_auth())
+        assert resp.status_code == 503
+        assert "18:30" in resp.json()["msg"]
+        mock_svc.create_task.assert_not_awaited()
+        # 边界：18:30 整点已出窗（右开）→ 不再因时段拒绝（后续因日历 mock 缺失走别的分支即可）
+        monkeypatch.setattr(bt_mod, "_now_shanghai", lambda: _dt.time(18, 30))
+        resp = await client.post("/api/v1/backtest/run", json=_VALID_BODY, headers=_auth())
+        assert not (resp.status_code == 503 and "时段" in resp.json().get("msg", ""))
+    finally:
+        app.dependency_overrides.pop(get_backtest_service, None)
+
+
+def test_bt_09d_blackout_parser_pins_semantics() -> None:
+    """解析器：左闭右开、跨多段、空串 = 不限制、格式坏 → ValueError（不静默放行）。"""
+    import datetime as _dt
+
+    from quantpilot.api.v1.backtest import _blackout_hit
+
+    assert _blackout_hit("", _dt.time(17, 30)) is None
+    assert _blackout_hit("17:15-18:30", _dt.time(17, 15)) == "18:30"
+    assert _blackout_hit("17:15-18:30", _dt.time(18, 29)) == "18:30"
+    assert _blackout_hit("17:15-18:30", _dt.time(18, 30)) is None
+    assert _blackout_hit("17:15-18:30,19:15-20:15", _dt.time(19, 40)) == "20:15"
+    with pytest.raises(ValueError):
+        _blackout_hit("17:15-", _dt.time(1, 0))
+
+
 async def test_bt_15_run_concurrency_guard_rejects(client: AsyncClient) -> None:
     """E2E-BT-15：并发护栏——已有 RUNNING/PENDING 回测时再提交 → 409，不进后台任务。
 

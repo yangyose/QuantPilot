@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     # 注：backtest_enabled=False 时本项无意义（请求在更前置被 503 拦截）。
     backtest_max_window_days: int = 0
 
+    # 回测禁提交时段（2026-09-16，用户拍板「有条件放开回测」选项 B）：Asia/Shanghai 的
+    # `HH:MM-HH:MM` 逗号分隔，左闭右开；空 = 不限制。生产设 `17:15-18:30,19:15-20:15`，
+    # 避开 17:30 每日管线与 19:30 日级 IC Job——回测本身就是一次全 universe 评分，
+    # 与它们**叠加**才是运维红线①真正禁的形态（4GB 实测：管线增量约 0.5 GB、
+    # 6~30 日回测 1.0~1.2 GB，各自都有余量，叠加就没有）。
+    backtest_blackout_windows: str = ""
+
     # 日志（Phase 10 §8.4 / SDD §15.5）
     log_dir: str = "logs"
     log_level: str = "INFO"
