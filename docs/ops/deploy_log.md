@@ -629,3 +629,45 @@ signal.py 的流动性门槛也从未生效。修复 `c297d7c`，本次只此一
 - 部署前读到的 4GB 管线峰值（cgroup `memory.peak` 754 MiB，覆盖 09-14/09-15）已入档
   `docs/reviews/memory_premise_after_4gb_2026-09-14.md` §3；本次重建容器后计数器归零，
   下一次读到的是新基线
+
+## 57bc966 — 2026-09-16T07:37:34Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `f1b93c1` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_57bc966_20260916_163532.tar.gz` |
+| delta | 0 个 commit |
+
+```
+57bc966 feat(c4): 资金动向数据层 + 策略（V1.5-C C4，影子权重 0）——并修两个 C3 同样中招的既有缺陷
+```
+
+### 本次上下文（2026-09-16 15:35~15:38 CST）
+
+- **alembic 0029 → 0030 → 0031** 由 backend 启动自动执行，日志确认；`alembic_version=0031`，
+  `money_flow` 表建成（0 行）、两表 `money_flow_score` 列存在（information_schema 计 2）。
+- **回滚点（DB）**：0031 改动 `candidate_pool` / `signal_score_snapshot` 两表，部署前定点导出
+  `/home/ubuntu/backups/pre_0031_pool_snapshot_20260916_153504.sql.gz`（30 MB，两段 COPY）。
+  0030 是新表，无需备份。磁盘部署前 76%（14 G 可用）。
+- **⚠️ 选股行为应为零变化**：`money_flow` 影子权重 0；表未回填前策略全 NaN → `Scorer` 跳过。
+  观察期看到 signal_count / universe 跳变才是异常。
+- **2y 回填（C4 步骤 2）在本会话中未能执行**：用户已授权（「都推」），但执行环境的
+  自动分类器两次拒绝「经 ssh 向生产写入」这一动作。**需人在终端手敲**（下条）。
+  在此之前每日管线的 `ingest_daily` 第 5 段会从当天起逐日采集；20 个交易日后策略自然开始有值。
+
+**待人工执行的回填命令**（backend 容器内，约 484 次调用 / 20 分钟，+0.57 GB；避开 17:30 管线）：
+
+```bash
+ssh qp-tencent 'cd /home/ubuntu/QuantPilot && docker compose -f docker-compose.prod.yml --env-file .env.prod \
+  exec -d backend sh -c "cd /app && PYTHONUTF8=1 python scripts/backfill_money_flow.py \
+  --start 2024-09-16 --end 2026-09-16 --skip-confirm > /app/logs/backfill_money_flow_prod.log 2>&1"'
+# 看进度 / 结果：
+ssh qp-tencent 'cd /home/ubuntu/QuantPilot && docker compose -f docker-compose.prod.yml --env-file .env.prod \
+  exec -T backend tail -3 /app/logs/backfill_money_flow_prod.log'
+```
+
+**本次判据（回填完成后 + 下一次 17:30 管线后）**：
+- `select count(*), count(distinct trade_date) from money_flow` → 约 2.5M / 484（+ 每日新增一日）
+- 管线后 `select count(money_flow_score) from candidate_pool where trade_date=<当日> and in_pool`
+  → 应 ≈ 池内行数（回填前为 0 属预期）；`signal_count` 与 universe 不跳变
