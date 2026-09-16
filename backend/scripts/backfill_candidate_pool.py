@@ -55,10 +55,6 @@ from quantpilot.engine.factor_pipeline import FactorPipeline, FactorPipelineConf
 from quantpilot.engine.market_state import MarketStateEngine
 from quantpilot.engine.pool import CandidatePoolManager
 from quantpilot.engine.scorer import Scorer
-from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
-from quantpilot.engine.strategies.momentum import MomentumStrategy
-from quantpilot.engine.strategies.trend import TrendStrategy
-from quantpilot.engine.strategies.value import ValueStrategy
 from quantpilot.engine.universe import UniverseFilter
 from quantpilot.services.factor_monitor_service import FactorMonitorService
 from quantpilot.services.market_state_service import MarketStateService
@@ -151,13 +147,10 @@ def _build_scoring_service(
     """
     from quantpilot.core.config_defaults import (
         DEFAULT_MARKET_STATE,
-        DEFAULT_MEAN_REVERSION_STRATEGY,
-        DEFAULT_MOMENTUM_STRATEGY,
         DEFAULT_STRATEGY_WEIGHTS,
-        DEFAULT_TREND_STRATEGY,
         DEFAULT_UNIVERSE,
-        DEFAULT_VALUE_STRATEGY,
     )
+    from quantpilot.services.scoring_factory import build_default_strategies
 
     repo = MarketDataRepository(session)
     factor_monitor = FactorMonitorService(
@@ -174,12 +167,10 @@ def _build_scoring_service(
     scoring_service = ScoringService(
         repo=repo,
         universe_filter=UniverseFilter(DEFAULT_UNIVERSE),
-        strategies=[
-            TrendStrategy(DEFAULT_TREND_STRATEGY),
-            MomentumStrategy(DEFAULT_MOMENTUM_STRATEGY),
-            MeanReversionStrategy(DEFAULT_MEAN_REVERSION_STRATEGY),
-            ValueStrategy(DEFAULT_VALUE_STRATEGY),
-        ],
+        # 2026-09-16：原先此处自写 4 策略字面量——是设计 §5.2 与 scoring_factory 都没数到的
+        # **第五处组装点**，C3 的 low_volatility 在它写出的池行里恒为 NULL 而无人察觉，
+        # C4 探针跑第一次就照出来。改走工厂，`test_strategy_registry.py` 扫所有组装点钉死。
+        strategies=build_default_strategies(),
         scorer=Scorer(DEFAULT_STRATEGY_WEIGHTS, pipeline=FactorPipeline(fp_cfg)),
         pool_manager=CandidatePoolManager(DEFAULT_UNIVERSE),
         calendar=calendar,

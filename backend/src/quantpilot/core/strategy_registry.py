@@ -47,6 +47,8 @@ STRATEGY_NAMES: tuple[str, ...] = (
     "value",
     # V1.5-C C3（SDD §7.3）——影子模式，权重从 0 起步
     "low_volatility",
+    # V1.5-C C4（SDD §7.3）——影子模式，权重从 0 起步
+    "money_flow",
 )
 
 # 策略 key → `candidate_pool` 的分数列名。
@@ -57,6 +59,7 @@ SCORE_COLUMN_MAP: dict[str, str] = {
     "mean_reversion": "reversion_score",
     "value": "value_score",
     "low_volatility": "low_volatility_score",
+    "money_flow": "money_flow_score",
 }
 
 
@@ -76,6 +79,7 @@ STRATEGY_DISPLAY_NAMES: dict[str, str] = {
     "mean_reversion": "均值回归",
     "value": "价值",
     "low_volatility": "低波动",
+    "money_flow": "资金动向",
 }
 
 

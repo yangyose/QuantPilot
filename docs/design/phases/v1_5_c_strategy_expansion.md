@@ -1,11 +1,11 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.17（C2 回填激活 + Altman 裁定 + C3 交付回写，2026-09-09）
+> 版本：v0.18（C4 资金动向数据层 + 策略代码交付，2026-09-16）
 > 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1 全部已上生产**（2026-08-31，与 P0 退出修复同批，生产 = `2bab523`）——C1-1 约束落点统一 `ac069e5` / C1-2 风险调整动量 `85df015` / C1-3 价格窗口按交易日推导 `be6d6d6`；**C1 面板对比已完成**（2026-08-28，off 5h10m / on 4h57m，497 交易日 × 4 策略，结论见 §3.3——**上线理由是 C1-1 + C1-3 两个缺陷修复，不是 C1-2 验证有效**）；**C2 代码六块全部完成 + 5y 回填已在本地算力中心（5434）激活**（7 列覆盖 94.7~99.9%，9/9 项可判，Altman 备选已裁定放弃，见 §4.4/§4.5）；**C3 低波动策略代码已交付**（`engine/volatility.py` + `strategies/low_volatility.py` + `core/strategy_registry.py` 单一事实来源 + alembic 0029，51 条单测，影子模式 0 权重，`e133d41`）。✅ **C2/C3 已于 2026-09-09 上生产**（alembic 至 **0029**；核验见 `docs/ops/deploy_log.md`——
 **此处不再写死 sha**，钉了必然滞后：v0.16 刚立下「本行必须随每次交付/部署同步」的规矩，
 下一轮就又失守一次——上线当天的那个 commit 自己改了本文档正文，却没回头改这一行）。
 ⚠️ 该批**选股行为应为零变化**（影子权重 0 + 门控不剔除）；观察期看到跳变才是异常。
-**生产侧 7 列尚未回填**（仍全 NULL → F-Score 全判「不可判」，属设计内可见降级）。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。C4-C5 待启动。scope 锁定 C0-C5 六子批、零推迟
+**生产侧 7 列尚未回填**（仍全 NULL → F-Score 全判「不可判」，属设计内可见降级）。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。**C4 资金动向代码已交付（2026-09-16，未部署）**：`money_flow` 表（alembic 0030）+ `money_flow_score` 两表列（0031）+ adapter/repo/`ingest_daily` 第 5 段 + `strategies/money_flow.py`（影子权重 0）+ 回填脚本；本地 5434 已回填 100 日样本并用真实管线重评分验证 `money_flow_score` 落表 50/50；**2y 回填与生产回填未做**（见 §6.7）。C5 待启动。scope 锁定 C0-C5 六子批、零推迟
 >
 > ⚠️ **本行必须随每次交付/部署同步**（v0.15 订正）：v0.9~v0.14 六次修订都改了正文却没回写这一行，
 > 它长期停在「C1 未部署 / 面板待起跑」，而同文档 §3.3、`CLAUDE.md §6`、`docs/ops/deploy_log.md`
@@ -43,6 +43,7 @@
 | **v0.15** | 2026-09-02 | **§3.3 一句过度概括订正**（`design-doc-reviewer` 第三轮抓出，经由下游 `v1_5_k §1.1` 暴露）。v0.14 写「只看朴素 t 会得出**三状态全部高度显著**的错误结论」——但 **OSCILLATION 的朴素 t 仅 0.65，它在朴素法下本就不显著**，谈不上被 HAC「修正掉」。真实形态是 **UPTREND（4.91 → 1.72）与 DOWNTREND（6.83 → 2.32）两个状态**被误判。数值与 C1 上线定性均不变，改的只是这一句措辞。⚠️ 值得记的是**传播路径**：`v1_5_k §1.1` 原样照抄了这句话，直到该文补齐三状态表才与表格当场矛盾而暴露——**上游一句话的松散，下游会照抄，且照抄时不会重新核**。|
 | **v0.16** | 2026-09-02 | **头部状态行回写至真实交付状态**（`design-doc-reviewer` 第四轮，本文档首次进入评审范围即抓出）。头部横幅连写三个「**未部署**」、并称「C1 面板对比**待起跑**」——而同文档 §3.3、`CLAUDE.md §6`、仓库内 `docs/ops/deploy_log.md` 三处都记着**面板 2026-08-28 已完成、C1 2026-08-31 已上生产（`2bab523`）**。该行停在约 v0.9（2026-08-26）的状态，此后 **v0.10~v0.15 六次修订全都改了正文却没回写它** → **同一份文档头尾相反**。已改正并加「本行必须随每次交付/部署同步」的判据。⚠️ 这正是本仓最高发缺陷（文档声称 vs 现实脱节）在**文档内部**的形态：跨文档不一致还有人能撞见，同文档头尾矛盾**读者只会看头部那一眼**。同批把 roadmap §6 V1.5-C 行补上交付状态（它滞后得更多，引用停在 `v0.3`，roadmap v3.5）。⚠️ 该行原本**钉着下游版本号**，第五轮评审指出它在同一批修订里又漂了一次（`v0.3`→`v0.15`，而本文档同批已升 v0.16）——**已改为不钉**（版本以本文档头部为准，同 roadmap 表中 V1.5-A / V1.5-G 两行的既有惯例）。根治的是「钉了必然滞后」这个结构，不是这一次的数值 |
 | **v0.17** | 2026-09-09 | **C2 回填激活 + Altman 裁定 + C3 交付回写**。① C2 第六块（5y 回填）在本地算力中心完成，7 列覆盖 94.7~99.9%（按 `(ts_code, report_period)` 粒度——按行统计会得到 1.6% 这种伪失败读数，已写进 §4.5）；实施中抓到 `fina_indicator` **日期窗口形态有 100 行硬上限**，首版回填脚本因此报 `ok=5515 fail=0` 却只填了最新一期，守卫已加在 `TushareAdapter._call` 并写入 CLAUDE.md §4.3。② `total_share` 回填前 `no_dilution` 恒不可判 → F-Score 中位数被压低 1 分、门控率虚高 76%；回填后 9/9 可判、中位 5.0、门控率 62%——即 §4.3「缺数据 ≠ 低分」那条设计约束的现实验证。③ **Altman Z-Score 备选决定放弃**，依 v0.16 预设的 <5% 判据就地裁定（近三年不可判占比 2.4~4.0%），逐年数据与「结论绑定 fail-open 语义」的前提写入 §4.4。④ C3 代码交付（51 条单测、影子模式 0 权重、alembic 0029）。⚠️ **交付后第三方评审抓出 `low_volatility_score` 全链路死代码**——登记/映射/字段/迁移/契约测试全对，但 `Scorer.aggregate` 没把值填进去，两张表新列恒 NULL，而 1184 条测试全绿。五处断点已补齐（含前端三处），新增 **6** 条遍历 `STRATEGY_NAMES` 的护栏（含 AST 查调用点、ORM 列孤儿扫描），详见 §5.3。**这是本批最重要的一条教训：契约测试断言「字段存在」，与「值到了终点」是两件事。**；**订正 §5.2「实例化三处」——实测四处**，改法是新建 `core/strategy_registry.py` 单一事实来源 + 契约测试，而非把清单抄进文档。⑤ **门控实测是负结果 → 定为影子模式上线**：开发集 28 采样日测 6 个阈值，策略 IC 基本不动、头部 5% 超额不单调且无一显著（|t| ≤ 1.13），F<7 的 +0.0005 代价是 72% 可选池。`piotroski_gate_enabled` 默认 False（算 + 记日志、不剔除），开关与阈值各有「改它 → 结果必须变」的测试、4 变异全拦。⚠️ C2/C3 **均未部署**，生产仍为 `85438a8`（alembic 0027）|
+| **v0.18** | 2026-09-16 | **C4 资金动向数据层 + 策略代码交付（未部署，2y 回填未做）**。① 调用形态真调：`moneyflow(trade_date=)` 单日 5548 行未截断 → 一日一调；100 日样本回填 5434 实测 **212 B/行 → 2y ≈ 0.57 GB**，§6.4 的 2 年窗口维持。② 交付：alembic 0030（`money_flow` 表）/ 0031（两表 `money_flow_score`）、`fetch_money_flow`（万元→元、列裁剪、别日行丢弃）、`upsert_money_flow`（真实 5548 行规模钉 asyncpg 上限）、`ingest_daily` 第 5 段（失败不进 `errors`，三条痕迹）、`scripts/backfill_money_flow.py`（`ingest_history` 断点语义不适用故另写）、`strategies/money_flow.py`（主力净流入占成交额之比 5d/20d，影子权重 0）、registry/权重/字段/组装点/前端三处。③ **痕迹判据照出两个 C3 也中招的既有缺陷**（§6.7）：`backfill_candidate_pool.py` / `slippage_sensitivity.py` 是第五、六处策略组装点；两个 upsert 的 ON CONFLICT SET 手写四列 → 新策略列重跑同日静默保留 NULL。均修在源头并各加一条不数处数的护栏。修后 5434 真实管线重评分 `money_flow_score` 50/50 落表。④ DoD 9 项勾 8，余 2y 回填（C-1）；SDD v1.4-r6 已回写。⑤ 同批经第三方评审订正文档自身残留：§6.2 `hk_hold` 表、§6.5 三因子表与 `north_window`、§1.2 C4 行仍停在 v0.13 之前的北向设计——按实际代码重写为两因子 0.60/0.40；§5.2/§6.5 声称的 `config_key`/`CONFIG_KEY_LEVEL` 登记两个策略都没做且是刻意的，已如实改写 |
 
 ---
 
@@ -67,7 +68,7 @@ V1.5-C 是 V1.0 RC + V1.5-G 多用户 + V1.5-A 回测/数据收尾之后的**策
 | **C1** | SDD-EXT-08 风险调整动量 + **策略约束落点统一**（追高剔除 / 价值陷阱截断迁入五步管线）| 1-1.5 | §3 | 无（Engine 纯函数改 momentum.py / value.py / base.py）| 无（daily_quote 可算）| 1 |
 | **C2** | SDD-EXT-04 均值回归 Piotroski F-Score 硬过滤（F-Score<6 → mean_reversion 因子置 NaN；金融股 ROE>5% 替代）| 2-3 | §4 | **有**（financial_data 扩 6 列 + 5y 回填，C-1 门控）| financial_data 字段扩展（Tushare fina_indicator 增量列）| 2 |
 | **C3** | 低波动策略 `low_volatility.py`（低历史波动率 + 低 Beta）| 2-3 | §5 | **有**（新策略入 composite → candidate_pool 扩列 + 权重激活，**C-1 门控**，见 §8）| 无（复用现有 adj_prices + index_history 窗口）| 3 |
-| **C4** | 资金动向数据层 + 策略（moneyflow / hk_hold adapter+表+采集 + `money_flow.py`）| 3-5 | §6 | **有**（新表 alembic + 采集接线 + 2y 回填，C-1 门控 + 新策略入 composite）| **新 Tushare 接口**（moneyflow / hk_hold；moneyflow_hsgt 市场级备选）| 4 |
+| **C4** | 资金动向数据层 + 策略（moneyflow adapter+表+采集 + `money_flow.py`；~~hk_hold~~ 北向副因子 v0.13 砍掉）| 3-5 | §6 | **有**（新表 alembic + 采集接线 + 2y 回填，C-1 门控 + 新策略入 composite）| **新 Tushare 接口**（moneyflow；~~hk_hold / moneyflow_hsgt~~ 均经实测排除）| 4 |
 | **C5** | 策略插件沙箱 `plugin_runner.py`（SDD §15.2 受限隔离运行时 + 标准接口 + 审计）| 5-8 | §7 | **有**（插件存储/审计表 + L3 用户插件管理端点）| 无 | 5 |
 
 **合计 ~14.5-22 pd**（下界 1+1+2+2+3+5=14；取分项下界保守值 14.5，上界 1.5+1.5+3+3+5+8=22）。相较 v0.2 的 12.5-20 增量 = C0 前置闭环（1-1.5）+ C1 因并入策略约束落点统一而上修（0.5-1 → 1-1.5）。二者均非新需求，而是设计展开期实证发现的**既有生产缺口**，且都卡在本主题主路径上（§2 / §3.1）——按项目宪法 C-3「现在的问题现在处理」就地纳入，不走推迟三链。
@@ -596,7 +597,7 @@ def compute_f_score(
 
 ### 5.2 配置与注册
 
-- 新增 `LowVolatilityStrategyConfig(volatility_window=60, beta_window=120, benchmark="000300.SH")` + `config_key = "strategy_params_low_volatility"`，`CONFIG_KEY_LEVEL` 登记 **L2**（与其余 `strategy_params_*` 一致）。
+- 新增 `LowVolatilityStrategyConfig(volatility_window=60, beta_window=120, benchmark="000300.SH")`。~~`config_key = "strategy_params_low_volatility"`，`CONFIG_KEY_LEVEL` 登记 L2~~ —— **实际未登记、刻意不对用户开放编辑**（v0.18 订正：实现时做了与本行相反的取舍却没回写，第三方评审抓出）。理由：避免「改了存库、界面显示已保存、代码永不读取」那一族（CLAUDE.md §4.4 的 12 个零引用字段）；影子策略权重转正后再议开放。C4 同款，见 §6.5。
 - `ConfigService` 增 getter；`config_snapshot.py` 的 `_CONFIG_MAP` 增一行（Pipeline 快照登记）。
 - ~~策略实例注册三处~~ **实例化实测四处**（实施订正，2026-09-09）：设计漏掉了 `services/scoring_factory.py::build_default_strategies`——**而那正是面板与回填脚本走的路径**，漏了会变成「生产管线 5 策略、离线研究 4 策略」且不报错。四处为 `api/deps.py` / `pipeline/daily_pipeline.py::_cp2_scoring` / `services/backtest_service.py` / `services/scoring_factory.py`。
 - 而「加一个策略要改的地方」远不止实例化：还有策略名清单五处（见 `core/strategy_registry.py` 文件头的表）、权重矩阵三个 state、正交化顺序、`CompositeScore` 字段 + `Scorer.aggregate` 的赋值行、`PoolEntry`、`candidate_pool` 四处写入 dict、`signal_service` 快照行、`schemas/signals.py`、两张表的 DB 列（alembic）。**改法是 `core/strategy_registry.py` 单一事实来源 + 契约测试**，不是把清单抄进文档——抄进来只会多一份必然漂移的副本。
@@ -732,9 +733,9 @@ money_flow(id, ts_code, trade_date,
            updated_at)
   UNIQUE(ts_code, trade_date); INDEX(trade_date); INDEX(ts_code, trade_date DESC)
 
-hk_hold(id, ts_code, trade_date, hold_vol, hold_ratio, updated_at)
-  UNIQUE(ts_code, trade_date); INDEX(trade_date)
 ```
+
+~~`hk_hold(id, ts_code, trade_date, hold_vol, hold_ratio, updated_at)`~~ —— **作废**（v0.13 砍北向副因子；alembic 0030 只建 `money_flow`，此表从未创建）。
 
 **列裁剪依据**：`moneyflow` 原始返回含小单/中单/大单/特大单 × 买卖 × 量额 共 20+ 列；本策略只用「特大+大单净额」与「总净额」，其余列（小单/中单、笔数、成交量口径）不入库。理由见 §6.4 的磁盘预算——每多存一列，5y 回填多约 100-150MB。
 
@@ -763,29 +764,45 @@ hk_hold(id, ts_code, trade_date, hold_vol, hold_ratio, updated_at)
 
 ### 6.5 策略设计（`engine/strategies/money_flow.py`）
 
+> v0.18 按 v0.13 决定（砍北向）与实际交付代码重写；原三因子表（含 `north_hold_chg_20d` 0.25）作废。
+
 | 因子 | 定义 | 覆盖 | 权重 |
 |------|------|------|------|
-| `main_net_inflow_5d` | 近 5 日「特大+大单」净额合计 / 近 5 日成交额合计（标准化，去市值量纲）| 全市场 | 0.45 |
-| `main_net_inflow_20d` | 同上，20 日窗口 | 全市场 | 0.30 |
-| `north_hold_chg_20d` | `hold_ratio(t) - hold_ratio(t-20)` | **仅 Connect 标的** | 0.25 |
+| `main_net_inflow_5d` | 近 5 日「特大+大单」净额合计 / 近 5 日成交额合计（去市值量纲）| 全市场 | 0.60 |
+| `main_net_inflow_20d` | 同上，20 日窗口 | 全市场 | 0.40 |
 
-**覆盖率陷阱与处理（关键）**：`north_hold_chg_20d` 对非 Connect 标的恒为 NaN（占全市场 ~50%+）。`Scorer` 的策略内合成是 `z_df.mean(axis=1, skipna=True)`——只要**至少一个因子有值**，该股的 `money_flow` strategy_z 即非 NaN。因此把全覆盖的主力资金因子设为主因子（合计权重 0.75）可保证 **money_flow 策略本身对全市场几乎零 NaN**。这不是可选优化，而是 §8 陷阱 1 的必要前提：策略级 NaN 会经 Gram-Schmidt 的 `valid_mask` 交集把整行 composite 打到 0。
+权重由原 0.45 / 0.30 归一化而来（⚠️ 生产五步管线**不读** `weights`，因子等权；见 `BaseStrategy.weights` 注释）。分子用「特大+大单」而非 `net_mf_amount`（后者含小/中单，与「主力」语义相悖），分母用 `daily_quote.amount`（元，与资金流同口径）。窗口按**行数**精确截取最近 N 个交易日，不足 N 行 → NaN；分母 ≤ 0（停牌）→ NaN 而非 inf。原「覆盖率陷阱」一节随北向因子作废——两因子均全市场覆盖。
 
-- `MarketSnapshot` 扩两个可选键 `money_flow: pd.DataFrame | None` / `hk_hold: pd.DataFrame | None`（`total=False` 已允许缺键，冷启动/回测不构造时策略返回全 NaN → `Scorer` 记 `scorer_strategy_skipped_all_nan` 并跳过，行为安全）。
-- `ScoringService._build_market_snapshot` 的 `asyncio.gather` 增两个 repo 查询（窗口 = 近 40 交易日，够算 20 日变化）。
-- 配置 `MoneyFlowStrategyConfig(short_window=5, long_window=20, north_window=20)`，`config_key = "strategy_params_money_flow"`，L2。
-- 注册三处（同 §5.2）。
+- `MarketSnapshot` 扩一个可选键 `money_flow: pd.DataFrame | None`（long 格式，含 `amount`；`total=False` 已允许缺键，回测引擎 / 回填未完成时策略返回全 NaN → `Scorer` 记 `scorer_strategy_skipped_all_nan` 并跳过，行为安全）。
+- `ScoringService._build_market_snapshot` 的 `asyncio.gather` 增一个 repo 查询 `get_money_flow_window`（联 `daily_quote.amount`，回看 `lookback_calendar_days=40` 日历天——策略按行数截取故容错高，§4.4 允许的粗略换算）。调用点由 `test_money_flow_strategy.py::TestServiceActuallyFeedsMoneyFlow` 用 AST 钉死。
+- 配置 `MoneyFlowStrategyConfig(short_window=5, long_window=20, lookback_calendar_days=40)`。**刻意不进 `config_service` / 不登记 `CONFIG_KEY_LEVEL`、不对用户开放编辑**（与 C3 同款取舍）：避免「改了存库、界面显示已保存、代码永不读取」那一族（CLAUDE.md §4.4 的 12 个零引用字段）；SDD「L2+ 可配置」对影子策略不构成硬要求，权重转正后再议开放。
+- 注册：`core/strategy_registry.py` 三处 + `StrategyWeightsConfig` 三态 `0.0` + `CompositeScore` 字段 + 两表列（alembic 0031）+ **六**处组装点（§6.7）+ 前端三处。
 
 ### 6.6 C4 DoD
 
-- [ ] RED：因子纯函数单测（标准化口径、窗口不足 → NaN、非 Connect 股 `north_hold_chg` NaN 但策略 z 非 NaN）
-- [ ] adapter 单测：万元→元换算、空返回处理、`logger.exception` 不静默
-- [ ] **bulk upsert 分批单测**：构造 ≥3000 行断言不超 asyncpg 占位符上限（合成小数据会绕过此 bug）
-- [ ] alembic 两表迁移升/降级测试
-- [ ] 集成测试：`ingest_daily` 新段失败不阻断主链路（精确断言行情/财务仍入库）
-- [ ] 回填前 100 日样本实测行宽 → 校正预算 → C-1 授权 → 2y 回填完成，回填后核查覆盖率与磁盘占用并记录
-- [ ] §8 的 composite 接入项全部通过（同 C3）
-- [ ] SDD §5 数据字段表 + §7.3 回写；SDD §7.7.5 记入「资金动向因子回测仅 2y 可回溯」局限
+- [x] RED：因子纯函数单测（`test_money_flow_strategy.py` MF-STR-01~09：占比口径精确值、窗口临界点两侧、改参数结果必变、方向、特大+大单而非总净额、分母 0 → NaN 非 inf、缺快照键 → NaN）。~~非 Connect 股 `north_hold_chg`~~ 已随 v0.13 砍北向作废
+- [x] adapter 单测（`test_money_flow_adapter.py` MF-ADP-01~05：按 trade_date 全市场取、万元→元 + 列裁剪、空返回、别日行丢弃、脏值 → NULL）；`ingest_daily` 段的 `logger.exception` + 指标由 `test_data_service_money_flow.py` MF-ING-02 钉
+- [x] **bulk upsert 分批单测**（`test_money_flow_repository.py` MF-REPO-01：按 2026-09-15 实测规模 **5548 行**真编译每批语句，占位符 < 32767；12 批）
+- [x] alembic 0030（建表）/ 0031（两表加列）升/降级——由集成 conftest 的 `upgrade head` / `downgrade base` 覆盖
+- [x] `ingest_daily` 新段失败不阻断主链路——单测 MF-ING-02 断言 `errors` 不变；集成层沿用既有 `test_int_daily_pipeline`（新段对 mock adapter 无 `fetch_money_flow` 时走 `logger.exception` 路径，主链路断言不变）
+- [x] 回填前 100 日样本实测行宽：**212 B/行**（524,950 行 / 111.2 MB，5434）→ 2y 外推 **0.57 GB**，与 §6.4 估算 0.6 GB 一致，**2 年窗口维持**
+- [ ] C-1 授权 → 2y 回填（先 5434，再生产）→ 回填后核查覆盖率与磁盘占用并记录
+- [x] §8 的 composite 接入项全部通过（同 C3）：registry 三处 + 权重三态 0.0 + `CompositeScore` 字段 + 两表列 + 4（实为 **6**，见 §6.7）处组装点 + 前端三处；`test_strategy_registry.py` / `test_strategy_score_reaches_db.py` 全绿
+- [x] SDD §5 数据字段表 + §7.3 回写；SDD §7.7.5 记入「资金动向因子回测仅 2y 可回溯」局限（SDD v1.4-r6，2026-09-16）
+
+### 6.7 实施期实证（2026-09-16）
+
+**调用形态真调**：`moneyflow(trade_date=)` 全市场单日 **5548 行**（2026-09-15）/ 5550（09-14）/ 5088（2024-01-02），约 1s，均非 `_ROW_CAPS` 里的整数（接口上限 6000）；单码跨 6.7 年 1626 行亦未截断。故采集形态定为**一日一调**，2y ≈ 488 次。
+
+**为什么另写 `scripts/backfill_money_flow.py` 而不走 `ingest_history`**：后者按 daily_quote ∩ financial_data 断点续传，历史日早已「完成」会被整日跳过，资金流永远补不上。新脚本按 `money_flow` 表已有日期续跑、逐日独立 session、限频/瞬时网络错误退避，跑完自动打印 `pg_total_relation_size` 供预算校正。
+
+**`ingest_daily` 第 5 段的取舍**：失败**不进 `errors`**——`errors` 非空会让 `ingest_history` 整日 rollback，把已入库的行情/财务一起回滚，而资金流只是策略增强数据。可见性靠三条痕迹：`logger.exception`、`exception_occurred` 指标（data_type=`money_flow`）、`IngestResult.money_flow_count`；交易日返回 0 行必 WARNING（全市场每天都有资金流，静默 0 就是 §4.11 那一族）。
+
+**痕迹判据（用真实管线重评分 5434 的 2026-08-25）**：首跑 `money_flow_score` **0/55**——照出两个既有缺陷，均与 C4 无关、C3 同样中招：
+1. **第五、第六处策略组装点**：`scripts/backfill_candidate_pool.py` 与 `scripts/slippage_sensitivity.py` 各自写死 4 策略字面量（§5.2 数了三处、`scoring_factory` 补了第四处，仍漏这两处），C3 的 `low_volatility_score` 在它们写出的池行里恒为 NULL 而无人察觉。两处改走 `build_default_strategies()`；`test_strategy_registry.py` 新增**扫描 `src/` 与 `scripts/` 下所有 `strategies=[` 字面量**的护栏，不再靠数处数。
+2. **`upsert_candidate_pool_bulk` / `upsert_signal_snapshots` 的 ON CONFLICT SET 是手写四列白名单**：新策略分数列只在首次 INSERT 时写入，**重跑同一天**（`--force` 回填、管线 resume）静默保留旧值 NULL。生产每天都是新行所以从未露馅。两处改为由 `SCORE_COLUMN_MAP` 派生；`test_strategy_score_reaches_db.py` 真编译语句钉死每个分数列都在 SET 里。
+
+修完第三跑：**50/50 in-pool 行 `money_flow_score` 非空**（0.2~99.9，与 composite 相关 **0.13**——影子策略本该是个不同的信号），`factor_winsorized/neutralized` 均带 `money_flow` 键。另 5 行 NULL 是重评分前 prod 同步来的陈旧 in-pool 行（rank 52~76），本次未触及，非缺陷。
 
 ---
 

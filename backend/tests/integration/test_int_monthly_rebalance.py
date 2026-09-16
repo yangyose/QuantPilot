@@ -242,7 +242,12 @@ async def test_int_p11_rb_06_get_active_weights(db_session: AsyncSession) -> Non
     # ⚠️ 只断言**前四个**——影子策略（权重 0）自然排末尾（设计 §8.4），
     # 写死全表会让每次加策略都假红。
     assert order_b[:4] == ["momentum", "trend", "value", "mean_reversion"]
-    assert order_b[4:] == ["low_volatility"], "权重 0 的影子策略应排最后"
+    # 末尾 = registry 里除这四个之外的全部影子策略（不写死名字，加策略不假红）
+    from quantpilot.core.strategy_registry import STRATEGY_NAMES
+
+    shadow = set(STRATEGY_NAMES) - {"momentum", "trend", "value", "mean_reversion"}
+    assert set(order_b[4:]) == shadow, "权重 0 的影子策略应排最后"
+    assert all(abs(weights_b[s]) < 1e-12 for s in shadow)
 
 
 # ============================================================

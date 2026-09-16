@@ -85,6 +85,7 @@ class CompositeScore:
     # （本类 / `PoolEntry` / `CandidatePool` / `SignalScoreSnapshot`），
     # 契约测试 `TestScoreColumnMapIsACheckedContract` 把它们钉在一起。
     low_volatility_score: float | None = None
+    money_flow_score: float | None = None
     composite_z: float | None = None
     composite_pct_in_market: float | None = None
     # {strategy: {z_raw, weight, contribution}}
@@ -444,6 +445,7 @@ class Scorer:
                 # candidate_pool / signal_score_snapshot 对应列永远 NULL 且不报错。
                 # `test_strategy_score_reaches_db.py` 遍历 STRATEGY_NAMES 钉死这条。
                 low_volatility_score=_scalar("low_volatility"),
+                money_flow_score=_scalar("money_flow"),
                 market_state=market_state,
                 score_breakdown=breakdown_raw,  # 兼容旧字段：等于 breakdown_raw
                 explanation=explanation,

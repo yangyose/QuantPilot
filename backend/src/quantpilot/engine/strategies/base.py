@@ -38,6 +38,10 @@ class MarketSnapshot(TypedDict, total=False):
     f_score: pd.Series | None
     # index=ts_code，至少含 `sw_industry_l1`——C2 金融股 ROE 替代分支要用。
     stock_info: pd.DataFrame
+    # V1.5-C C4：long 格式，列 ts_code/trade_date/五个资金流金额/amount（全部为元），
+    # 近 `MoneyFlowStrategyConfig.lookback_calendar_days` 日历天。未提供（回测引擎 /
+    # 回填未完成）→ MoneyFlowStrategy 全 NaN → Scorer 跳过，行为安全。
+    money_flow: pd.DataFrame | None
 
     # === Phase 11 §3.0 P0-3 新增字段 ===
     industry: dict[str, str]            # ts_code -> 行业代码（来自 StockInfo.sw_industry_l1）

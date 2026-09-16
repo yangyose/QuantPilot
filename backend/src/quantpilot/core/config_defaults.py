@@ -105,14 +105,17 @@ class StrategyWeightsConfig:
     uptrend: dict[str, float] = field(default_factory=lambda: {
         "trend": 0.40, "momentum": 0.25, "mean_reversion": 0.15, "value": 0.20,
         "low_volatility": 0.0,
+        "money_flow": 0.0,
     })
     downtrend: dict[str, float] = field(default_factory=lambda: {
         "trend": 0.10, "momentum": 0.05, "mean_reversion": 0.15, "value": 0.70,
         "low_volatility": 0.0,
+        "money_flow": 0.0,
     })
     oscillation: dict[str, float] = field(default_factory=lambda: {
         "trend": 0.15, "momentum": 0.15, "mean_reversion": 0.40, "value": 0.30,
         "low_volatility": 0.0,
+        "money_flow": 0.0,
     })
 
 
@@ -145,6 +148,27 @@ class LowVolatilityStrategyConfig:
 
 
 DEFAULT_LOW_VOLATILITY_STRATEGY = LowVolatilityStrategyConfig()
+
+
+# ---------------- strategy_params_money_flow（V1.5-C C4 / SDD §7.3）--------------
+@dataclass(frozen=True)
+class MoneyFlowStrategyConfig:
+    """资金动向策略：主力（特大+大单）净流入占成交额之比，5 日与 20 日两个窗口。
+
+    v0.13 起只做 `moneyflow` 主力资金——北向副因子因数据源日频停更（2024-08-19）砍掉。
+    `lookback_calendar_days` 是 Service 取 money_flow 窗口用的**日历天**回看：
+    只需覆盖 `long_window` 个交易日且策略按行数精确截取，容错高，故允许 §4.4 那条
+    粗略换算（20 × 1.5 + 10 ≈ 40）；不足时因子 NaN 而非错值。
+    ⚠️ 与 C3 同：本配置**不对用户开放编辑**（不进 config_service），避免「改了存库、
+    代码不读」那一族（§4.4 12 个零引用字段）。
+    """
+
+    short_window: int = 5
+    long_window: int = 20
+    lookback_calendar_days: int = 40
+
+
+DEFAULT_MONEY_FLOW_STRATEGY = MoneyFlowStrategyConfig()
 
 
 DEFAULT_TREND_STRATEGY = TrendStrategyConfig()
@@ -354,6 +378,7 @@ __all__ = [
     "StrategyWeightsConfig", "DEFAULT_STRATEGY_WEIGHTS",
     "TrendStrategyConfig", "DEFAULT_TREND_STRATEGY",
     "LowVolatilityStrategyConfig", "DEFAULT_LOW_VOLATILITY_STRATEGY",
+    "MoneyFlowStrategyConfig", "DEFAULT_MONEY_FLOW_STRATEGY",
     "MomentumStrategyConfig", "DEFAULT_MOMENTUM_STRATEGY",
     "MeanReversionStrategyConfig", "DEFAULT_MEAN_REVERSION_STRATEGY",
     "ValueStrategyConfig", "DEFAULT_VALUE_STRATEGY",

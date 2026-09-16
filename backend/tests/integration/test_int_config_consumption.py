@@ -259,19 +259,16 @@ async def test_int_cfg_04_strategy_weights_drives_composite_score(
 
     snap_date = date(2026, 4, 15)
     # ⚠️ 必须覆盖 registry 全体——`get_active_weights` 会给缺席策略补 0.0，
-    # 只写四个会让「读回来的 dict」多出一项而假红。
-    custom_uptrend = {
-        "trend": 0.0, "momentum": 0.0, "mean_reversion": 0.0, "value": 1.0,
-        "low_volatility": 0.0,
-    }
-    custom_oscillation = {
-        "trend": 1.0, "momentum": 0.0, "mean_reversion": 0.0, "value": 0.0,
-        "low_volatility": 0.0,
-    }
-    custom_downtrend = {
-        "trend": 0.0, "momentum": 1.0, "mean_reversion": 0.0, "value": 0.0,
-        "low_volatility": 0.0,
-    }
+    # 只写四个会让「读回来的 dict」多出一项而假红。2026-09-16 起直接从 STRATEGY_NAMES
+    # 派生（C3 时手写五个，C4 加第六个策略当场假红——写死清单每加一个策略红一次）。
+    from quantpilot.core.strategy_registry import STRATEGY_NAMES
+
+    def _one_hot(winner: str) -> dict[str, float]:
+        return {s: (1.0 if s == winner else 0.0) for s in STRATEGY_NAMES}
+
+    custom_uptrend = _one_hot("value")
+    custom_oscillation = _one_hot("trend")
+    custom_downtrend = _one_hot("momentum")
 
     pipeline = DailyPipeline(
         session_factory=factory,

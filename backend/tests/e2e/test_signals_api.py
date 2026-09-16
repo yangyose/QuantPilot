@@ -272,9 +272,9 @@ async def test_sapi_05_get_lineage(client: AsyncClient) -> None:
 # E2E-P12-A-01: GET /signals/{id}/lineage 返回三层 20 字段（Phase 12 §6.3；V1.5-C C3 +1）
 # ---------------------------------------------------------------------------
 async def test_e2e_p12_a_01_lineage_full_19_fields(client: AsyncClient) -> None:
-    """E2E-P12-A-01: SignalLineageResponse 20 字段齐全（含 L3 factor_orthogonal）。
+    """E2E-P12-A-01: SignalLineageResponse 21 字段齐全（含 L3 factor_orthogonal）。
 
-    V1.5-C C3 起 L2 多 `low_volatility_score`。⚠️ 清单写死是有意的——
+    V1.5-C C3 起 L2 多 `low_volatility_score`，C4 起多 `money_flow_score`。⚠️ 清单写死是有意的——
     它钉的是对外 API 契约，从 STRATEGY_NAMES 派生就没法发现误增/误删字段。
     """
     lineage_data = {
@@ -327,7 +327,7 @@ async def test_e2e_p12_a_01_lineage_full_19_fields(client: AsyncClient) -> None:
         "composite_score", "composite_z", "composite_pct_in_market",
         "market_state", "trigger_reason",
         "trend_score", "momentum_score", "reversion_score", "value_score",
-        "low_volatility_score",
+        "low_volatility_score", "money_flow_score",
         "weights_source", "hysteresis_status",
         "score_breakdown", "factor_winsorized", "factor_neutralized",
         "raw_factors", "factor_orthogonal",

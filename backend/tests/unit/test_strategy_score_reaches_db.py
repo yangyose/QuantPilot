@@ -262,3 +262,54 @@ def test_every_orm_column_is_written_somewhere() -> None:
         + "\n".join(orphans)
         + "\n（若确属 DB 自管列，加进 _DB_MANAGED 并注明理由）"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-09-16（C4 探针在 5434 照出）：两个 upsert 的 ON CONFLICT SET 子句是手写的四列白名单，
+# 新策略分数列**只在首次 INSERT 时写入**——重跑同一天（`--force` 回填 / 管线 resume）时
+# 静默保留旧值 NULL。生产每天都是新行所以没露馅；本地重评分第一次就撞上。
+# 判据：真编译语句，断言 registry 里每个分数列都出现在 `ON CONFLICT ... DO UPDATE SET` 里。
+# ─────────────────────────────────────────────────────────────────────────────
+async def test_pool_and_snapshot_upserts_update_every_strategy_score_on_conflict() -> None:
+    from datetime import date
+    from unittest.mock import AsyncMock, MagicMock
+
+    from sqlalchemy.dialects import postgresql
+
+    from quantpilot.core.strategy_registry import SCORE_COLUMN_MAP
+    from quantpilot.data.repository import MarketDataRepository
+
+    executed: list = []
+    session = MagicMock()
+
+    async def _execute(stmt):
+        executed.append(stmt)
+        return MagicMock(rowcount=1)
+
+    session.execute = AsyncMock(side_effect=_execute)
+    repo = MarketDataRepository(session)
+
+    pool_row = {
+        "ts_code": "000001.SZ", "trade_date": date(2026, 9, 15), "composite_score": 80.0,
+        **{col: 50.0 for col in SCORE_COLUMN_MAP.values()},
+        "market_state": "UPTREND", "in_pool": True, "is_holding": False,
+        "composite_z": 1.0, "composite_pct_in_market": 0.01, "weights_source": "icir",
+        "hysteresis_status": "stable", "score_breakdown_raw": {}, "score_breakdown_residual": {},
+    }
+    await repo.upsert_candidate_pool_bulk([pool_row])
+    snap_row = {
+        "signal_id": 1, "composite_score": 80.0,
+        **{col: 50.0 for col in SCORE_COLUMN_MAP.values()},
+        "market_state": "UPTREND", "score_breakdown": {}, "raw_factors": {},
+        "factor_winsorized": {}, "factor_neutralized": {}, "factor_orthogonal": {},
+    }
+    await repo.upsert_signal_snapshots([snap_row])
+
+    assert len(executed) == 2
+    for stmt, label in zip(executed, ("candidate_pool", "signal_score_snapshot")):
+        sql = str(stmt.compile(dialect=postgresql.dialect()))
+        set_part = sql.split("DO UPDATE SET", 1)[1]
+        missing = [c for c in SCORE_COLUMN_MAP.values() if f"{c} = excluded.{c}" not in set_part]
+        assert not missing, (
+            f"{label} 的 ON CONFLICT SET 漏了策略分数列 {missing}——重跑同一天时静默保留旧值"
+        )

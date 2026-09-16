@@ -212,6 +212,7 @@ class SignalService:
                 momentum_score = _safe_float(row_data.get("momentum_score"))
                 value_score = _safe_float(row_data.get("value_score"))
                 low_volatility_score = _safe_float(row_data.get("low_volatility_score"))
+                money_flow_score = _safe_float(row_data.get("money_flow_score"))
                 market_state = row_data.get("market_state")
                 # Phase 12 P12 评审 P1-4：5 步管线产物落 signal_score_snapshot
                 factor_winsorized = row_data.get("factor_winsorized")
@@ -221,6 +222,7 @@ class SignalService:
                 composite_score = sig.score
                 trend_score = reversion_score = momentum_score = value_score = None
                 low_volatility_score = None
+                money_flow_score = None
                 market_state = None
 
             rows.append({
@@ -233,6 +235,7 @@ class SignalService:
                 "momentum_score": momentum_score,
                 "value_score": value_score,
                 "low_volatility_score": low_volatility_score,
+                "money_flow_score": money_flow_score,
                 "market_state": market_state,
                 "score_breakdown": sig.score_breakdown,
                 "raw_factors": sig.raw_factors,

@@ -121,6 +121,11 @@ const strategyZTable = computed(() => {
       label: STRATEGY_LABELS.low_volatility,
       z: fmt(s.low_volatility_score),
     },
+    {
+      strategy: 'money_flow',
+      label: STRATEGY_LABELS.money_flow,
+      z: fmt(s.money_flow_score),
+    },
   ]
 })
 

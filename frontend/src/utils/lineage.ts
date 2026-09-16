@@ -46,6 +46,7 @@ export const STRATEGY_LABELS: Record<string, string> = {
   mean_reversion: '均值回归',
   value: '价值',
   low_volatility: '低波动',
+  money_flow: '资金动向',
 }
 
 export function translateTriggerReason(reason: string | null | undefined): string {

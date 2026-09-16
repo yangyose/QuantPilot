@@ -74,10 +74,10 @@ export interface Signal {
   trigger_reason: string | null
 }
 
-// ── Phase 12 §3.1.3：信号血缘三层 schema（20 字段 score_snapshot + 5 字段 pipeline_run）
+// ── Phase 12 §3.1.3：信号血缘三层 schema（21 字段 score_snapshot + 5 字段 pipeline_run）
 
-/** ScoreSnapshotLineage：score_snapshot 20 字段（标识 1 + L1 5 + L2 10 + L3 4）。
- *  V1.5-C C3 起 L2 由 9 增至 10（新增 low_volatility_score）。 */
+/** ScoreSnapshotLineage：score_snapshot 21 字段（标识 1 + L1 5 + L2 11 + L3 4）。
+ *  V1.5-C C3 起 L2 由 9 增至 10（新增 low_volatility_score），C4 起 11（money_flow_score）。 */
 export interface ScoreSnapshotLineage {
   // 标识
   ts_code: string
@@ -87,12 +87,13 @@ export interface ScoreSnapshotLineage {
   composite_pct_in_market: number | null
   market_state: string | null
   trigger_reason: string | null
-  // L2 ICIR + 中性化（10；V1.5-C C3 起含 low_volatility）
+  // L2 ICIR + 中性化（11；V1.5-C C3 起含 low_volatility，C4 起含 money_flow）
   trend_score: number | null
   momentum_score: number | null
   reversion_score: number | null
   value_score: number | null
   low_volatility_score: number | null
+  money_flow_score: number | null
   weights_source: string | null
   hysteresis_status: string | null
   score_breakdown: Record<string, unknown> | null

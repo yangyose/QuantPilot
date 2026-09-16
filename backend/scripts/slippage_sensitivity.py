@@ -29,13 +29,9 @@ import pandas as pd
 from quantpilot.core.config import settings
 from quantpilot.core.config_defaults import (
     DEFAULT_MARKET_STATE,
-    DEFAULT_MEAN_REVERSION_STRATEGY,
-    DEFAULT_MOMENTUM_STRATEGY,
     DEFAULT_SIGNAL_CONFIG,
     DEFAULT_STRATEGY_WEIGHTS,
-    DEFAULT_TREND_STRATEGY,
     DEFAULT_UNIVERSE,
-    DEFAULT_VALUE_STRATEGY,
 )
 from quantpilot.core.database import AsyncSessionLocal
 from quantpilot.data.adapters.tushare import TushareAdapter
@@ -45,12 +41,9 @@ from quantpilot.engine.market_state import MarketStateEngine
 from quantpilot.engine.position import PositionSizer
 from quantpilot.engine.scorer import Scorer
 from quantpilot.engine.signal import SignalGenerator
-from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
-from quantpilot.engine.strategies.momentum import MomentumStrategy
-from quantpilot.engine.strategies.trend import TrendStrategy
-from quantpilot.engine.strategies.value import ValueStrategy
 from quantpilot.engine.universe import UniverseFilter
 from quantpilot.services.backtest_service import BacktestService
+from quantpilot.services.scoring_factory import build_default_strategies
 
 _DEFAULT_OUT_DIR = Path(__file__).parents[1] / "var" / "diagnostics" / "phase14"
 _DEFAULT_SLIPPAGES = (0.0005, 0.002, 0.005)
@@ -66,12 +59,9 @@ def _parse_slippages(s: str) -> tuple[float, ...]:
 
 def _build_engine(calendar: TradingCalendar) -> BacktestEngine:
     return BacktestEngine(
-        strategies=[
-            TrendStrategy(DEFAULT_TREND_STRATEGY),
-            MomentumStrategy(DEFAULT_MOMENTUM_STRATEGY),
-            MeanReversionStrategy(DEFAULT_MEAN_REVERSION_STRATEGY),
-            ValueStrategy(DEFAULT_VALUE_STRATEGY),
-        ],
+        # 2026-09-16：原自写 4 策略字面量（第六处组装点，由 test_strategy_registry 的
+        # 组装点扫描照出）。改走工厂，与生产同一份策略集合。
+        strategies=build_default_strategies(),
         market_state_engine=MarketStateEngine(DEFAULT_MARKET_STATE),
         universe_filter=UniverseFilter(DEFAULT_UNIVERSE),
         scorer=Scorer(DEFAULT_STRATEGY_WEIGHTS),

@@ -32,6 +32,7 @@ from quantpilot.engine.strategies.base import BaseStrategy
 from quantpilot.engine.strategies.low_volatility import LowVolatilityStrategy
 from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
 from quantpilot.engine.strategies.momentum import MomentumStrategy
+from quantpilot.engine.strategies.money_flow import MoneyFlowStrategy
 from quantpilot.engine.strategies.trend import TrendStrategy
 from quantpilot.engine.strategies.value import ValueStrategy
 from quantpilot.engine.universe import UniverseFilter
@@ -66,6 +67,8 @@ def build_default_strategies(
         # V1.5-C C3：影子模式（权重 0）。⚠️ 设计 §5.2 只数了三处组装点，
         # **漏了本处**——而这正是面板脚本与回填脚本走的那条路。
         LowVolatilityStrategy(),
+        # V1.5-C C4：影子模式（权重 0）。
+        MoneyFlowStrategy(),
     ]
 
 

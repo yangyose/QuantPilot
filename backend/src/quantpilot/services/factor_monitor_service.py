@@ -189,6 +189,7 @@ _FACTOR_MAP: dict[str, tuple[str, str]] = {
     # V1.5-C C3（影子模式）。⚠️ 键必须是 **DB 列名**（经 `score_column()`），
     # 不是策略名——`mean_reversion` → `reversion_score` 那条不规则映射就在这里生效。
     "low_volatility_score": ("LowVolatilityStrategy", "low_volatility_score"),
+    "money_flow_score": ("MoneyFlowStrategy", "money_flow_score"),
 }
 
 

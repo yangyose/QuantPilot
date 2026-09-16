@@ -50,6 +50,9 @@ class IngestResult:
     financial_count: int
     snapshot_version: str  # SHA256(trade_date:quote_count:financial_count)
     errors: list[str] = field(default_factory=list)
+    # V1.5-C C4：资金流向行数。它**不参与** snapshot_version，也不进 errors——增强数据，
+    # 失败不阻断主链路；可见性靠本字段 + exception_occurred 指标（data_type="money_flow"）。
+    money_flow_count: int = 0
 
 
 def _build_st_map(
@@ -460,6 +463,9 @@ class DataService:
                         extra={"index_code": idx_code, "trade_date": str(trade_date)},
                     )
 
+        # ── 5. 资金流向（V1.5-C C4，增强数据：失败不阻断、不进 errors）────────
+        money_flow_count = await self._ingest_money_flow(repo, trade_date, errors)
+
         snapshot_version = _make_snapshot_version(trade_date, quote_count, financial_count)
         return IngestResult(
             trade_date=trade_date,
@@ -467,7 +473,42 @@ class DataService:
             financial_count=financial_count,
             snapshot_version=snapshot_version,
             errors=errors,
+            money_flow_count=money_flow_count,
         )
+
+    async def _ingest_money_flow(
+        self, repo: MarketDataRepository, trade_date: date, errors: list[str],
+    ) -> int:
+        """ingest_daily 第 5 段：个股资金流向（Tushare `moneyflow`，设计 §6.3）。
+
+        **不往 `errors` 里写**：`errors` 非空会让 ingest_history 整日 rollback，把已入库的
+        行情/财务一起回滚，而资金流只是策略增强数据。`errors` 参数保留是为了让调用形态与
+        其他段一致、未来若要升级为阻断只改这里。可见性靠三条痕迹：
+        `logger.exception`、`exception_occurred` 指标（data_type="money_flow"）、
+        返回行数（进 `IngestResult.money_flow_count`）。交易日返回 0 行也要 WARNING——
+        全市场每天都有资金流，0 行几乎必然是接口侧问题，静默 0 就是 §4.11 那一族。
+        """
+        exception_value = 0.0
+        count = 0
+        try:
+            df = await self._adapter.fetch_money_flow(trade_date)
+            if df is None or df.empty:
+                logger.warning(
+                    "money_flow_empty: trade_date=%s —— 交易日无资金流数据，疑为接口侧问题",
+                    trade_date,
+                )
+            else:
+                count = await repo.upsert_money_flow(df)
+        except Exception:
+            exception_value = 1.0
+            logger.exception(
+                "money_flow_fetch_failed", extra={"trade_date": str(trade_date)}
+            )
+        finally:
+            await self._record_exception_metric(
+                repo, trade_date, "money_flow", exception_value,
+            )
+        return count
 
     async def ingest_history(
         self,

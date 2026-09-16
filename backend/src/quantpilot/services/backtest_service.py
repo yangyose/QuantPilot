@@ -633,6 +633,7 @@ def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:
     from quantpilot.engine.strategies.low_volatility import LowVolatilityStrategy
     from quantpilot.engine.strategies.mean_reversion import MeanReversionStrategy
     from quantpilot.engine.strategies.momentum import MomentumStrategy
+    from quantpilot.engine.strategies.money_flow import MoneyFlowStrategy
     from quantpilot.engine.strategies.trend import TrendStrategy
     from quantpilot.engine.strategies.value import ValueStrategy
     from quantpilot.engine.universe import UniverseFilter
@@ -655,6 +656,8 @@ def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:
             ValueStrategy(value_cfg),
             # V1.5-C C3：影子模式（权重 0）。四处组装点必须同步。
             LowVolatilityStrategy(),
+            # V1.5-C C4：影子模式（权重 0）。回测快照无 money_flow → 全 NaN → 被跳过。
+            MoneyFlowStrategy(),
         ],
         market_state_engine=MarketStateEngine(ms_cfg),
         universe_filter=UniverseFilter(universe_cfg),

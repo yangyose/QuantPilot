@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.core.config_defaults import DEFAULT_MONEY_FLOW_STRATEGY
 from quantpilot.data.calendar import TradingCalendar
 from quantpilot.data.repository import MarketDataRepository
 from quantpilot.engine.market_state import MarketStateEnum
@@ -230,6 +231,7 @@ class ScoringService:
                 "reversion_score": entry.reversion_score,
                 "value_score": entry.value_score,
                 "low_volatility_score": entry.low_volatility_score,
+                "money_flow_score": entry.money_flow_score,
                 "market_state": entry.market_state,
                 "in_pool": True,
                 "is_holding": entry.is_holding,
@@ -250,6 +252,7 @@ class ScoringService:
                 "reversion_score": None,
                 "value_score": None,
                 "low_volatility_score": None,
+                "money_flow_score": None,
                 "market_state": current_market_state,
                 "in_pool": False,
                 "is_holding": False,
@@ -350,6 +353,7 @@ class ScoringService:
             market_cap_series,
             forecast,
             yoy_pairs,
+            money_flow,
         ) = await asyncio.gather(
             self._repo.get_adj_prices_bulk(ts_codes, start_prices, trade_date),
             self._repo.get_snapshot_quotes(ts_codes, trade_date),
@@ -360,6 +364,12 @@ class ScoringService:
             # V1.5-C C2：Piotroski 门控所需的**同比**配对（不是环比——季报口径下
             # H1 与 Q1 不可比，环比会把季节性读成基本面变化）。
             self._repo.get_financials_yoy_pairs(ts_codes, trade_date),
+            # V1.5-C C4：资金流向窗口（含 daily_quote.amount 作分母）。
+            # ⚠️ 取了必须**放进快照**（下方 "money_flow" 键），否则策略永远全 NaN；
+            # `test_money_flow_strategy.py::TestServiceActuallyFeedsMoneyFlow` 用 AST 钉调用点。
+            self._repo.get_money_flow_window(
+                ts_codes, trade_date, DEFAULT_MONEY_FLOW_STRATEGY.lookback_calendar_days,
+            ),
         )
 
         # A5b（SDD-EXT-03）：信息真空期前瞻 ROE 覆盖——快报/预告已发、正式财报未发时，
@@ -476,6 +486,7 @@ class ScoringService:
             # `sw_industry_l1`——缺它金融股永远走不到替代判据。
             "f_score": f_score,
             "stock_info": snapshot_quotes,
+            "money_flow": money_flow,              # V1.5-C C4（影子期也要喂，否则观察不到）
             "_snapshot_quotes": snapshot_quotes,   # 供 run_daily_scoring 内部使用
         }
         return result
@@ -716,6 +727,7 @@ class ScoringService:
                 "reversion_score": entry.reversion_score,
                 "value_score": entry.value_score,
                 "low_volatility_score": entry.low_volatility_score,
+                "money_flow_score": entry.money_flow_score,
                 "market_state": entry.market_state,
                 "in_pool": True,
                 "is_holding": entry.is_holding,
@@ -751,6 +763,7 @@ class ScoringService:
                     "reversion_score": None,
                     "value_score": None,
                     "low_volatility_score": None,
+                    "money_flow_score": None,
                     "market_state": current_market_state,
                     "in_pool": False,
                     "is_holding": False,

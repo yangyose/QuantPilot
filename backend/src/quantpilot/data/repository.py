@@ -9,6 +9,7 @@ from sqlalchemy import func, nullslast, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantpilot.core.strategy_registry import SCORE_COLUMN_MAP
 from quantpilot.engine.diagnostics.factor_ic import PanelStatPoint
 from quantpilot.engine.market_state import MarketStateRecord
 from quantpilot.models.account import Account, Position
@@ -27,6 +28,7 @@ from quantpilot.models.market import (
     FinancialForecast,
     IndexComponent,
     IndexHistory,
+    MoneyFlow,
     StockInfo,
     TradeCalendar,
 )
@@ -114,6 +116,10 @@ _FINANCIAL_UPDATE_COLS = [
     "assets_turn", "total_share",
 ]
 _INDEX_UPDATE_COLS = ["open", "high", "low", "close", "vol", "pct_chg"]
+# V1.5-C C4 money_flow：同上「白名单」陷阱，加列务必同时改这里（MF-REPO-03 钉死 5 列齐全）
+_MONEY_FLOW_UPDATE_COLS = [
+    "net_mf_amount", "buy_elg_amount", "sell_elg_amount", "buy_lg_amount", "sell_lg_amount",
+]
 
 _BATCH_SIZE = 500
 
@@ -990,6 +996,87 @@ class MarketDataRepository:
             ]
         )
 
+    # ── money_flow（V1.5-C C4 资金流向）────────────────────────────────────────
+
+    async def upsert_money_flow(self, df: pd.DataFrame) -> int:
+        """批量 upsert money_flow，_BATCH_SIZE 行/批。ON CONFLICT (ts_code, trade_date) DO UPDATE。
+
+        ⚠️ 这是全项目最容易踩 asyncpg 32767 占位符上限的写入点：单日全市场 ~5500 行 × 8 列
+        ≈ 44000 > 上限，**用真实日数据就会踩到**（设计 §6.3）。MF-REPO-01 按真实规模钉死。
+        """
+        if df is None or df.empty:
+            return 0
+        total = 0
+        rows = _df_to_dict_with_nulls(df)
+        for i in range(0, len(rows), _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            stmt = pg_insert(MoneyFlow).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["ts_code", "trade_date"],
+                set_={
+                    **{
+                        col: stmt.excluded[col]
+                        for col in _MONEY_FLOW_UPDATE_COLS
+                        if col in df.columns
+                    },
+                    "updated_at": func.now(),
+                },
+            )
+            result = await self._session.execute(stmt)
+            total += result.rowcount
+        return total
+
+    async def get_money_flow_window(
+        self, ts_codes: Sequence[str], end_date: date, lookback_days: int
+    ) -> pd.DataFrame:
+        """取 [end_date - lookback_days 日历天, end_date] 内各股的资金流向（元）+ 当日成交额。
+
+        返回列：ts_code, trade_date, net_mf_amount, buy_elg_amount, sell_elg_amount,
+        buy_lg_amount, sell_lg_amount, **amount**（daily_quote.amount，元——因子分母，
+        MoneyFlowStrategy 用它把净额归一成占比）；按 (ts_code, trade_date) 升序。
+        无数据返回带列名的空表。供 `ScoringService._build_market_snapshot` 组
+        `MarketSnapshot["money_flow"]`。INNER JOIN：没有行情的日子（理论上不存在）不返回。
+        """
+        cols = ["ts_code", "trade_date", *_MONEY_FLOW_UPDATE_COLS, "amount"]
+        if not ts_codes:
+            return pd.DataFrame(columns=cols)
+        start = end_date - timedelta(days=lookback_days)
+        result = await self._session.execute(
+            select(
+                MoneyFlow.ts_code, MoneyFlow.trade_date,
+                MoneyFlow.net_mf_amount, MoneyFlow.buy_elg_amount, MoneyFlow.sell_elg_amount,
+                MoneyFlow.buy_lg_amount, MoneyFlow.sell_lg_amount,
+                DailyQuote.amount,
+            )
+            .join(
+                DailyQuote,
+                (DailyQuote.ts_code == MoneyFlow.ts_code)
+                & (DailyQuote.trade_date == MoneyFlow.trade_date),
+            )
+            .where(
+                MoneyFlow.ts_code.in_(list(ts_codes)),
+                MoneyFlow.trade_date >= start,
+                MoneyFlow.trade_date <= end_date,
+            )
+            .order_by(MoneyFlow.ts_code, MoneyFlow.trade_date)
+        )
+        rows = result.all()
+        if not rows:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(rows, columns=cols)
+        for c in (*_MONEY_FLOW_UPDATE_COLS, "amount"):
+            df[c] = df[c].astype(float)   # NUMERIC → float（§4.4/§4.10）
+        return df
+
+    async def get_money_flow_dates(self, start_date: date, end_date: date) -> set[date]:
+        """money_flow 表在 [start, end] 内已有数据的交易日集合（回填断点续传用）。"""
+        result = await self._session.execute(
+            select(MoneyFlow.trade_date)
+            .where(MoneyFlow.trade_date >= start_date, MoneyFlow.trade_date <= end_date)
+            .distinct()
+        )
+        return {r[0] for r in result.all()}
+
     # ── trade_calendar（权威交易日历，数据完整性核验基准）─────────────────────
 
     async def upsert_trade_calendar(self, rows: list[dict]) -> int:
@@ -1261,10 +1348,10 @@ class MarketDataRepository:
         stmt = pg_insert(CandidatePool).values(entries)
         set_clause = {
             "composite_score": stmt.excluded.composite_score,
-            "trend_score": stmt.excluded.trend_score,
-            "momentum_score": stmt.excluded.momentum_score,
-            "reversion_score": stmt.excluded.reversion_score,
-            "value_score": stmt.excluded.value_score,
+            # 策略分数列由 registry 派生（2026-09-16）：此前手写四列，C3/C4 的新列只在
+            # 首次 INSERT 时写入，重跑同一天（--force 回填 / 管线 resume）静默保留 NULL。
+            # `test_strategy_score_reaches_db.py` 真编译语句钉死每个分数列都在 SET 里。
+            **{col: stmt.excluded[col] for col in SCORE_COLUMN_MAP.values()},
             "market_state": stmt.excluded.market_state,
             "in_pool": stmt.excluded.in_pool,
             "is_holding": stmt.excluded.is_holding,
@@ -1787,10 +1874,8 @@ class MarketDataRepository:
             index_elements=["signal_id"],
             set_={
                 "composite_score": stmt.excluded.composite_score,
-                "trend_score": stmt.excluded.trend_score,
-                "reversion_score": stmt.excluded.reversion_score,
-                "momentum_score": stmt.excluded.momentum_score,
-                "value_score": stmt.excluded.value_score,
+                # 同 upsert_candidate_pool_bulk：策略分数列由 registry 派生
+                **{col: stmt.excluded[col] for col in SCORE_COLUMN_MAP.values()},
                 "market_state": stmt.excluded.market_state,
                 "score_breakdown": stmt.excluded.score_breakdown,
                 "raw_factors": stmt.excluded.raw_factors,

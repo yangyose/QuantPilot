@@ -45,15 +45,15 @@ class SignalStatusUpdate(BaseModel):
 
 
 class ScoreSnapshotLineage(BaseModel):
-    """信号评分快照 L1+L2+L3 完整字段（共 **20** 项）。
+    """信号评分快照 L1+L2+L3 完整字段（共 **21** 项）。
 
     分层依据：phase12_factor_lineage.md §3.1.3
     - 标识 1：ts_code
     - L1 业务可解释 5：composite_score / composite_z / composite_pct_in_market /
       market_state / trigger_reason
-    - L2 ICIR + 中性化 **10**（V1.5-C C3 起含 low_volatility_score）：
+    - L2 ICIR + 中性化 **11**（V1.5-C C3 起含 low_volatility_score，C4 起含 money_flow_score）：
       trend_score / momentum_score / reversion_score /
-      value_score / low_volatility_score / weights_source / hysteresis_status /
+      value_score / low_volatility_score / money_flow_score / weights_source / hysteresis_status /
       score_breakdown /
       factor_winsorized / factor_neutralized
     - L3 正交化 + 审计 4：raw_factors / factor_orthogonal /
@@ -78,6 +78,7 @@ class ScoreSnapshotLineage(BaseModel):
     reversion_score: float | None = None
     value_score: float | None = None
     low_volatility_score: float | None = None
+    money_flow_score: float | None = None
     weights_source: str | None = None
     hysteresis_status: str | None = None
     score_breakdown: dict | None = None

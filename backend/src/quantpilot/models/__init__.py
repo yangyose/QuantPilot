@@ -14,6 +14,7 @@ from quantpilot.models.market import (
     FinancialData,
     IndexComponent,
     IndexHistory,
+    MoneyFlow,
     StockInfo,
     TradeCalendar,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "FinancialData",
     "IndexHistory",
     "IndexComponent",
+    "MoneyFlow",
     "TradeCalendar",
     # business
     "MarketStateHistory",

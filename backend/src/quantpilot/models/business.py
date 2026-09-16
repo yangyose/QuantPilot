@@ -64,6 +64,7 @@ class CandidatePool(Base):
     # 加策略必须同时改：两个 ORM 类 / `PoolEntry` / 迁移——否则分数静默丢失。
     # `SCORE_COLUMN_MAP` 契约测试把它们钉在一起。
     low_volatility_score: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    money_flow_score: Mapped[float | None] = mapped_column(Numeric(5, 2))
     market_state: Mapped[str | None] = mapped_column(String(20))
     in_pool: Mapped[bool] = mapped_column(Boolean, default=True)
     is_holding: Mapped[bool] = mapped_column(Boolean, default=False)  # 持仓标的强制留池
@@ -160,6 +161,7 @@ class SignalScoreSnapshot(Base):
     # 加策略必须同时改：两个 ORM 类 / `PoolEntry` / 迁移——否则分数静默丢失。
     # `SCORE_COLUMN_MAP` 契约测试把它们钉在一起。
     low_volatility_score: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    money_flow_score: Mapped[float | None] = mapped_column(Numeric(5, 2))
     market_state: Mapped[str | None] = mapped_column(String(20))
     score_breakdown: Mapped[dict | None] = mapped_column(JSONB)
     raw_factors: Mapped[dict | None] = mapped_column(JSONB)

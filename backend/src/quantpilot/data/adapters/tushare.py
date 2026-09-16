@@ -853,6 +853,44 @@ class TushareAdapter(DataSourceAdapter):
         df = df[df["cash_div"] > 0]
         return df[["ts_code", "ex_date", "cash_div"]].reset_index(drop=True)
 
+    # ── 资金流向（V1.5-C C4）────────────────────────────────────────────────
+    _MONEY_FLOW_AMOUNT_COLS = (
+        "net_mf_amount", "buy_elg_amount", "sell_elg_amount", "buy_lg_amount", "sell_lg_amount",
+    )
+
+    async def fetch_money_flow(self, trade_date: date) -> pd.DataFrame:
+        """个股资金流向，按 trade_date **全市场一次取**（设计 §6.3）。
+
+        输出列：ts_code, trade_date(date), net_mf_amount, buy_elg_amount, sell_elg_amount,
+        buy_lg_amount, sell_lg_amount —— 金额一律 **元**（Tushare 原始为万元，此处 ×1e4，
+        与 `daily_quote.amount` 同口径；单位靠量级反推确认，见设计 §6.1）。
+
+        调用形态的依据（2026-09-16 真调）：单日全市场 5548 行、约 1s，未触发接口 6000 行
+        上限；单码跨 6.7 年 1626 行亦未截断。按日取是唯一一次调用覆盖全 universe 的形态，
+        2y 回填 = 488 次调用。⚠️ 不用逗号多码——同族接口 `hk_hold` 多码静默返空
+        （`docs/reviews/silent_ignore_audit_2026-08-27.md` 第四例），这里没必要冒这个险。
+
+        原始 20 列（小/中/大/特大 × 买卖 × 量额 + 净量净额）只留 5 个金额列：
+        策略只用「特大+大单净额」与「总净额」，多存一列 2y 回填多约 50MB（设计 §6.2/§6.4）。
+        """
+        df = await self._call(
+            self._pro.moneyflow,
+            trade_date=self._fmt(trade_date),
+        )
+        out_cols = ["ts_code", "trade_date", *self._MONEY_FLOW_AMOUNT_COLS]
+        if df is None or df.empty:
+            return pd.DataFrame(columns=out_cols)
+
+        df = df.copy()
+        df["trade_date"] = df["trade_date"].apply(self._to_date)
+        # §4.3 判据：验返回日期落在入参内，混入的别日行丢弃
+        df = df[df["trade_date"] == trade_date]
+        for col in self._MONEY_FLOW_AMOUNT_COLS:
+            if col not in df.columns:
+                df[col] = float("nan")
+            df[col] = pd.to_numeric(df[col], errors="coerce") * 1e4
+        return df[out_cols].reset_index(drop=True)
+
     async def fetch_namechange(
         self, start_date: date, end_date: date
     ) -> pd.DataFrame:

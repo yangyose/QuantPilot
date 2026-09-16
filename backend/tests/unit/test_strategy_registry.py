@@ -203,3 +203,68 @@ def test_display_names_have_no_extra_entries() -> None:
 
     extra = set(STRATEGY_DISPLAY_NAMES) - set(STRATEGY_NAMES)
     assert not extra, f"STRATEGY_DISPLAY_NAMES 有多余条目：{sorted(extra)}"
+
+
+class TestEveryAssemblySiteCarriesEveryStrategy:
+    """策略实例的**组装点**必须全部含齐 registry 里的每个策略。
+
+    2026-09-16 C4 探针在 5434 跑第一次就照出：`scripts/backfill_candidate_pool.py`
+    自写了一份 4 策略字面量——设计 §5.2 数了三处、`scoring_factory` 又补了一处，
+    **它是第五处**，C3 的 low_volatility 在它写出的池行里恒为 NULL、无人察觉。
+    「改了 N 处漏第 N+1 处」正是本模块存在的理由，故这里不数处数：扫 `src/` 与
+    `scripts/` 下**所有**含 `strategies=[` 字面量的文件，逐个要求含齐全部策略类；
+    走 `build_default_strategies()` 的文件天然通过。
+    """
+
+    @staticmethod
+    def _strategy_class_names() -> set[str]:
+        import importlib
+        import inspect
+
+        from quantpilot.engine.strategies.base import BaseStrategy
+
+        names: set[str] = set()
+        for name in STRATEGY_NAMES:
+            mod = importlib.import_module(f"quantpilot.engine.strategies.{name}")
+            found = [
+                obj.__name__ for _, obj in inspect.getmembers(mod, inspect.isclass)
+                if issubclass(obj, BaseStrategy) and obj is not BaseStrategy
+                and getattr(obj, "name", None) == name
+            ]
+            assert found, f"engine/strategies/{name}.py 里找不到 name == {name!r} 的策略类"
+            names.add(found[0])
+        return names
+
+    def test_every_literal_strategy_list_contains_every_strategy(self) -> None:
+        import ast
+        import pathlib
+
+        backend = pathlib.Path(__file__).resolve().parents[2]
+        wanted = self._strategy_class_names()
+        problems: list[str] = []
+        scanned = 0
+        for py in list((backend / "src").rglob("*.py")) + list((backend / "scripts").rglob("*.py")):
+            src = py.read_text(encoding="utf-8")
+            if "strategies=[" not in src:
+                continue
+            tree = ast.parse(src)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg != "strategies" or not isinstance(kw.value, ast.List):
+                        continue
+                    scanned += 1
+                    present = {
+                        (e.func.id if isinstance(e.func, ast.Name) else getattr(e.func, "attr", ""))
+                        for e in kw.value.elts if isinstance(e, ast.Call)
+                    }
+                    missing = wanted - present
+                    if missing:
+                        rel = py.relative_to(backend).as_posix()
+                        problems.append(f"{rel}:{node.lineno} 缺 {sorted(missing)}")
+        assert scanned >= 3, f"只扫到 {scanned} 处字面量组装点——扫描逻辑可能坏了"
+        assert not problems, (
+            "以下组装点漏了策略（该处算出的 composite 与生产不是同一个）：\n"
+            + "\n".join(problems)
+        )

@@ -218,3 +218,31 @@ class FinancialForecast(Base):
         ),
         Index("idx_forecast_code_announce", "ts_code", "pre_announce_date"),
     )
+
+
+class MoneyFlow(Base):
+    """个股资金流向（V1.5-C C4 / SDD §7.3 资金动向）。来源 Tushare `moneyflow`。
+
+    列裁剪（设计 §6.2）：原始 20 列只留「总净额 + 特大单/大单买卖额」5 列——策略只用
+    「特大+大单净额」与「总净额」，多存一列 2y 回填多约 50MB（生产磁盘 83%）。
+    ⚠️ 单位：Tushare 给的是**万元**，adapter 内换算为**元**，与 `daily_quote.amount` 同口径
+    （量级反推验证见设计 §6.1：600519.SH 净流入 −2.08 亿元占当日成交额 −7.56%，按元解释荒谬）。
+    """
+
+    __tablename__ = "money_flow"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ts_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    net_mf_amount: Mapped[float | None] = mapped_column(Numeric(18, 2))    # 总净流入额（元）
+    buy_elg_amount: Mapped[float | None] = mapped_column(Numeric(18, 2))   # 特大单买入额（元）
+    sell_elg_amount: Mapped[float | None] = mapped_column(Numeric(18, 2))  # 特大单卖出额（元）
+    buy_lg_amount: Mapped[float | None] = mapped_column(Numeric(18, 2))    # 大单买入额（元）
+    sell_lg_amount: Mapped[float | None] = mapped_column(Numeric(18, 2))   # 大单卖出额（元）
+    updated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uq_money_flow_code_date"),
+        Index("idx_money_flow_date", "trade_date"),
+        Index("idx_money_flow_code_date_desc", "ts_code", desc("trade_date")),
+    )

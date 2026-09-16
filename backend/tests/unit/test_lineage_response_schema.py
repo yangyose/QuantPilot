@@ -1,8 +1,8 @@
 """UT-P12-A-01/02: SignalLineageResponse 三层 schema 序列化测试（Phase 12）。
 
 依据 phase12_factor_lineage.md §3.1.3 + §6.1：
-- ScoreSnapshotLineage 共 **20** 字段（ts_code(1) + L1 5 + L2 **10** + L3 4）
-  V1.5-C C3 起 L2 多一个 `low_volatility_score`（第五个策略）
+- ScoreSnapshotLineage 共 **21** 字段（ts_code(1) + L1 5 + L2 **11** + L3 4）
+  V1.5-C C3 起 L2 多一个 `low_volatility_score`（第五个策略），C4 再多 `money_flow_score`（第六个）
 - snapshot 为 None 时 score_snapshot=null，区分"无快照"与"快照字段全 NULL"
 """
 from __future__ import annotations
@@ -32,6 +32,7 @@ _EXPECTED_SNAPSHOT_FIELDS = {
     "reversion_score",
     "value_score",
     "low_volatility_score",     # V1.5-C C3（第五个策略）
+    "money_flow_score",         # V1.5-C C4（第六个策略）
     "weights_source",
     "hysteresis_status",
     "score_breakdown",
@@ -57,10 +58,10 @@ def test_ut_p12_a_01_lineage_response_serializes_19_fields() -> None:
     """UT-P12-A-01: ScoreSnapshotLineage 含 20 字段，序列化齐全。
 
     评审 P2-3 修订：字段数从 17 改为 19（ts_code(1) + L1 5 + L2 9 + L3 4）。
-    V1.5-C C3 再 +1 → **20**：L2 增 `low_volatility_score`（第五个策略入 composite）。
+    V1.5-C C3 再 +1 → 20：L2 增 `low_volatility_score`；C4 再 +1 → **21**：`money_flow_score`。
     """
     assert set(ScoreSnapshotLineage.model_fields.keys()) == _EXPECTED_SNAPSHOT_FIELDS
-    assert len(_EXPECTED_SNAPSHOT_FIELDS) == 20
+    assert len(_EXPECTED_SNAPSHOT_FIELDS) == 21
 
     assert set(PipelineRunLineage.model_fields.keys()) == _EXPECTED_PIPELINE_FIELDS
 
