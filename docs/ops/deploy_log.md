@@ -672,7 +672,49 @@ ssh qp-tencent 'cd /home/ubuntu/QuantPilot && docker compose -f docker-compose.p
 与 5434 样本实测 212~227 一致）；无任何交易日 < 4500 行、`net_mf_amount` 无 NULL；磁盘 79%（13 G 可用）；
 回填期间 available 最低 2201 MB。⚠️ 回填结束时间早于 17:30 管线 1 小时，未与评分作业重叠。
 
+**✅ 17:30 管线痕迹（09-16，17:47 CST 核）**：SUCCESS / signal_count 54（50 BUY + 4 SELL）/ universe 3208 = 昨日；
+`liquidity_note` **50/50**（昨 0/52）；池内 `money_flow_score` **55/55**（昨 0/56）；当日 `money_flow` 日采 5550 行；
+容器 `memory.peak` 629 MiB。管线耗时 7m52s（昨 3m02s，多出资金流窗口查询与日采，观察是否稳定）。
+
+## a730ac2 — 2026-09-16T09:01Z（17:01 CST）：回测有条件放开（用户拍板选项 B）
+
+| 项 | 值 |
+|---|---|
+| 基线 | `57bc966` |
+| delta | 1 个 commit：`a730ac2` 作业时段禁提交护栏 + compose/.env.prod.example 双写 |
+| 配置（脚本不碰，手工）| `.env.prod`：`BACKTEST_ENABLED=true` / `BACKTEST_MAX_WINDOW_DAYS=100`（原 7）/ 新增 `BACKTEST_BLACKOUT_WINDOWS=17:15-18:30,19:15-20:15`；服务器 compose 与仓库 md5 一致 `9f807444…`；两文件改前均备份至 `backups/*.pre_backtest_enable_*` |
+| 生效核验 | 容器 `printenv` 三项到位；`/health` = `a730ac2` |
+
+### 验收（20:23~21:20 CST，禁提交时段之外，容器内 `run_backtest_local.py` 不带 `--push`）
+
+| 窗口 | 耗时 | 容器 `memory.peak` | 判据 ≤ 2 GB |
+|---|---|---|---|
+| 基线（含当日 17:30 管线 + 19:30 IC Job）| — | 769 MiB | — |
+| 6 交易日（09-05 ~ 09-12）| 4m33s | **1619 MiB**（增量 ≈ 1.03 GB，与本机实测 1056 MB 一致）| ✅ |
+| **100 日历天上限**（06-04 ~ 09-12，68 交易日）| **52 min**（≈ 45 s/交易日，2 核）| **1686 MiB** | ✅ |
+
+结论：**开关维持 true、上限维持 100**。窗口加长几乎不抬峰值（+67 MiB），只加时间；
+swap 期间用到 671 MB、无 OOM 压力信号，`/health` 全程 200，容器无重启。
+⚠️ 上限窗口一次要 52 分钟——若用户体感太慢，是性能问题不是内存问题，可后续做
+（每日 3 次 SQL 分位查询各 ~3.5 s 是主项）。
+⚠️ 教训：>10 分钟的 ssh 长命令会被对端重置（本次 100 日那条），进程在容器内照常跑完，
+但**下次一律 `exec -d` + 落盘日志再轮询**，别把 ssh 当执行器。
+
 **本次判据（回填完成后 + 下一次 17:30 管线后）**：
 - `select count(*), count(distinct trade_date) from money_flow` → 约 2.5M / 484（+ 每日新增一日）
 - 管线后 `select count(money_flow_score) from candidate_pool where trade_date=<当日> and in_pool`
   → 应 ≈ 池内行数（回填前为 0 属预期）；`signal_count` 与 universe 不跳变
+
+## a730ac2 — 2026-09-16T09:03:49Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `57bc966` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_a730ac2_20260916_180135.tar.gz` |
+| delta | 1 个 commit |
+
+```
+a730ac2 feat(backtest): 作业时段禁提交护栏 + 生产有条件放开回测（用户拍板选项 B）
+e99c86b perf(backtest): PE/PB 分位下推 + 流式加载，6 日回测峰值 3530 → 1056 MB；守卫覆盖 PowerShell 工具
+```
