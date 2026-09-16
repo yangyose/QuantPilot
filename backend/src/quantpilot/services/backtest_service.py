@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
-from sqlalchemy import func, select
+from sqlalchemy import Float, cast, func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -384,33 +384,53 @@ class BacktestService:
         fin_lookback_start = config.start_date - timedelta(days=400)
 
         # ── 1. daily_quotes 全字段加载（B3-1） ───────────────────────────────
-        dq_rows = (await self._session.execute(
-            select(DailyQuote)
+        # 2026-09-16 内存修法：原 `select(DailyQuote)...scalars().all()` 把窗口内 ~76 万行
+        # 实例化成 ORM 对象（每个含 identity-map 簿记 + 20 余个 Decimal），再 list-of-dicts
+        # 转 DataFrame——两份都是 GB 级，是 6 日回测峰值 3.5 GB 的主项（财务切片改流式后
+        # 只降到 3.2 GB，说明大头在这里）。改为列裁剪 + 服务端游标分块 + 每块立即转 float。
+        _dq_cols = [
+            "trade_date", "ts_code", "open", "high", "low", "close", "vol", "amount",
+            "adj_factor", "is_suspended", "is_st", "limit_up", "limit_down",
+            "turnover_rate", "float_mkt_cap",
+        ]
+        dq_stmt = (
+            select(
+                DailyQuote.trade_date, DailyQuote.ts_code,
+                # NUMERIC 在 SQL 内 cast 成 float8：asyncpg 于是返回 Python float 而不是 Decimal。
+                # 2026-09-16 实测：Decimal 版每 5 万行块驻留约 40 MB（数据本身 9 MB），
+                # 是分配器碎片——对象释放了、工作集不降；改 cast 后不产生这批对象。
+                cast(DailyQuote.open, Float), cast(DailyQuote.high, Float),
+                cast(DailyQuote.low, Float), cast(DailyQuote.close, Float),
+                cast(DailyQuote.vol, Float), cast(DailyQuote.amount, Float),
+                cast(DailyQuote.adj_factor, Float),
+                DailyQuote.is_suspended, DailyQuote.is_st, DailyQuote.limit_up,
+                DailyQuote.limit_down,
+                # SDD-EXT-02s（V1.5-A A2）：无量一字板判定所需换手率（入库为小数）
+                cast(DailyQuote.turnover_rate, Float),
+                # Phase 14 §14-3：market_cap 中性化所需 PIT 流通市值
+                cast(DailyQuote.float_mkt_cap, Float),
+            )
             .where(DailyQuote.trade_date >= lookback_start)
             .where(DailyQuote.trade_date <= config.end_date)
-        )).scalars().all()
+        )
+        _dq_chunks: list[pd.DataFrame] = []
+        _dq_stream = await self._session.stream(dq_stmt.execution_options(yield_per=50_000))
+        async for _part in _dq_stream.partitions(50_000):
+            _df = pd.DataFrame(_part, columns=_dq_cols)
+            for c in ("open", "high", "low", "close", "turnover_rate", "float_mkt_cap"):
+                _df[c] = pd.to_numeric(_df[c], errors="coerce")
+            # 与原实现的缺省语义一致：vol/amount 缺 → 0，adj_factor 缺 → 1.0
+            _df["vol"] = pd.to_numeric(_df["vol"], errors="coerce").fillna(0.0)
+            _df["amount"] = pd.to_numeric(_df["amount"], errors="coerce").fillna(0.0)
+            _df["adj_factor"] = pd.to_numeric(_df["adj_factor"], errors="coerce").fillna(1.0)
+            for c in ("is_suspended", "is_st", "limit_up", "limit_down"):
+                _df[c] = _df[c].fillna(False).astype(bool)
+            _dq_chunks.append(_df)
+        del _dq_stream
+        dq_rows = bool(_dq_chunks)   # 下游只当布尔用（原为 ORM 行列表）
         if dq_rows:
-            dq_df = pd.DataFrame([{
-                "trade_date": r.trade_date,
-                "ts_code": r.ts_code,
-                "open": float(r.open) if r.open is not None else None,
-                "high": float(r.high) if r.high is not None else None,
-                "low": float(r.low) if r.low is not None else None,
-                "close": float(r.close) if r.close is not None else None,
-                "vol": float(r.vol) if r.vol is not None else 0,
-                "amount": float(r.amount) if r.amount is not None else 0.0,
-                "adj_factor": float(r.adj_factor) if r.adj_factor is not None else 1.0,
-                "is_suspended": bool(r.is_suspended),
-                "is_st": bool(r.is_st),
-                "limit_up": bool(r.limit_up),
-                "limit_down": bool(r.limit_down),
-                # SDD-EXT-02s（V1.5-A A2）：无量一字板判定所需换手率（入库为小数）
-                "turnover_rate": (
-                    float(r.turnover_rate) if r.turnover_rate is not None else None
-                ),
-                # Phase 14 §14-3：market_cap 中性化所需 PIT 流通市值
-                "float_mkt_cap": float(r.float_mkt_cap) if r.float_mkt_cap is not None else None,
-            } for r in dq_rows])
+            dq_df = pd.concat(_dq_chunks, ignore_index=True)
+            del _dq_chunks
 
             # B3-8：DataValidator 校验 + 剔除无效行
             validator = DataValidator()
@@ -481,43 +501,85 @@ class BacktestService:
         #   (2) 列裁剪 select（只取 8 列、返回轻量 Row 元组，不进 identity map）；
         #   (3) pe_pb_history 从 fin_df 列子集派生，不再二次 materialize 全量。
         from quantpilot.models.market import FinancialData
-        fin_rows = (await self._session.execute(
+        _fin_cols = [
+            "ts_code", "report_period", "publish_date",
+            "net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb", "roe",
+        ]
+        _fin_num = ("net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb", "roe")
+        fin_stmt = (
             select(
                 FinancialData.ts_code,
                 FinancialData.report_period,
                 FinancialData.publish_date,
-                FinancialData.net_profit_yoy,
-                FinancialData.total_equity,
-                FinancialData.debt_to_asset,
-                FinancialData.pe_ttm,
-                FinancialData.pb,
+                cast(FinancialData.net_profit_yoy, Float),
+                cast(FinancialData.total_equity, Float),
+                cast(FinancialData.debt_to_asset, Float),
+                cast(FinancialData.pe_ttm, Float),
+                cast(FinancialData.pb, Float),
                 # ⚠️ 别再把 roe 从这里裁掉：列裁剪优化（2026-06-12）漏掉过一次 →
                 # 回测 value 策略整个被跳过。原因当时是 roe_quality 因子依赖它；
                 # **2026-09-09 起 roe_quality 默认不入合成，但 roe 仍然必需**——
                 # `ValueStrategy.apply_constraints` 的价值陷阱护栏（SDD §7.2.4）读它。
                 # 即：那条注释的理由变了，结论没变，裁掉照样出事。
-                FinancialData.roe,
+                cast(FinancialData.roe, Float),
             )
             .where(FinancialData.publish_date >= fin_lookback_start)
             .where(FinancialData.publish_date <= config.end_date)
-        )).all()
-        if fin_rows:
-            fin_df = pd.DataFrame(fin_rows, columns=[
-                "ts_code", "report_period", "publish_date",
-                "net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb", "roe",
-            ])
-            # NUMERIC → float（Decimal/None → float/NaN，与原 float(...)/None 行为等价）
-            for c in ("net_profit_yoy", "total_equity", "debt_to_asset", "pe_ttm", "pb", "roe"):
-                fin_df[c] = pd.to_numeric(fin_df[c], errors="coerce")
+        )
+        # 2026-09-16 内存修法（回测 6 日峰值 3530 MB 的主项）：原 `.all()` 把 ~150 万行
+        # 先实例化成 SQLAlchemy Row（内含 Decimal）再整体转 DataFrame——Row 列表本身就是
+        # GB 级。改为服务端游标流式分块，每块立即 to_numeric 成 float 再 concat：
+        # 峰值 = 一块 Row（5 万行）+ 已转好的 float 表（150 万 × 9 × 8B ≈ 108 MB）。
+        _chunks: list[pd.DataFrame] = []
+        _stream = await self._session.stream(fin_stmt.execution_options(yield_per=50_000))
+        async for _part in _stream.partitions(50_000):
+            _df = pd.DataFrame(_part, columns=_fin_cols)
+            for c in _fin_num:
+                _df[c] = pd.to_numeric(_df[c], errors="coerce")
+            _chunks.append(_df)
+        del _stream
+        if _chunks:
+            fin_df = pd.concat(_chunks, ignore_index=True)
+            del _chunks
             financials = fin_df.set_index(["ts_code", "report_period"])
-            # 3b. pe_pb_history（B3-3 ValueStrategy 真实分位数）——从 fin_df 派生
-            pe_pb_history = (
-                fin_df[["ts_code", "publish_date", "pe_ttm", "pb"]]
-                .set_index(["ts_code", "publish_date"]).sort_index()
-            )
         else:
             financials = pd.DataFrame()
-            pe_pb_history = pd.DataFrame()
+        # 3b. pe_pb_history 不再派生（留空）：分位改在 PostgreSQL 内算，见下方 3d。
+        pe_pb_history = pd.DataFrame()
+
+        # ── 3d. PE/PB 历史分位：逐交易日在 PostgreSQL 内算（2026-09-16，与生产同路）────
+        # 生产 2026-09-04 起走 `get_latest_financial`（当前 pe/pb）→ `get_pe_pb_percentile_bulk`
+        # （5 年窗口、SQL 内 1 - pct_rank）；回测此前还在内存里用 ~400 天的 pe_pb_history 现算
+        # ——既是峰值主项，也是与生产**不同口径**（400 天 vs 5 年）的静默偏差。这里按日复用
+        # 生产那两个 repo 方法，结果按 trade_date 放进 bundle，引擎逐日塞进 MarketSnapshot。
+        # 成本：每日约 3.7s + 2 × 3.4s（5434 实测，~4000 码）；6 日回测约 1 分钟，可接受。
+        # 交易日 = 窗口内 daily_quote 实际存在的日期（无行情的日子引擎本就不评分）。
+        from quantpilot.data.repository import MarketDataRepository
+        from quantpilot.services.strategy_service import _PE_PB_HISTORY_YEARS
+
+        pe_percentile_by_date: dict[date, pd.Series] = {}
+        pb_percentile_by_date: dict[date, pd.Series] = {}
+        _repo = MarketDataRepository(self._session)
+        _bt_days = sorted(
+            d for d in set(dq_df["trade_date"]) if config.start_date <= d <= config.end_date
+        ) if dq_rows else []
+        _all_codes = list(stock_info.index) if not stock_info.empty else []
+        for _td in _bt_days:
+            _fin_t = await _repo.get_latest_financial(_all_codes, _td)
+            if _fin_t.empty:
+                continue
+            _start = _td - timedelta(days=365 * _PE_PB_HISTORY_YEARS)
+            for _col, _sink in (("pe_ttm", pe_percentile_by_date), ("pb", pb_percentile_by_date)):
+                if _col not in _fin_t.columns:
+                    continue
+                _curr = {
+                    str(code): float(v)
+                    for code, v in _fin_t[_col].items()
+                    if v is not None and not pd.isna(v)
+                }
+                if not _curr:
+                    continue
+                _sink[_td] = await _repo.get_pe_pb_percentile_bulk(_curr, _start, _td, _col)
 
         # ── 3c. financial_forecast（SDD-EXT-03 A5b 前瞻 ROE 覆盖）─────────────
         # 全量预加载业绩预告/快报（pre_announce_date 在 [fin_lookback_start, end_date]），
@@ -613,6 +675,8 @@ class BacktestService:
             hs300_history=hs300_history,
             daily_quotes=daily_quotes,
             pe_pb_history=pe_pb_history,
+            pe_percentile_by_date=pe_percentile_by_date,
+            pb_percentile_by_date=pb_percentile_by_date,
             index_adj_prices=index_adj_prices,
             active_weights_history=active_weights_history,
             forecast=forecast,

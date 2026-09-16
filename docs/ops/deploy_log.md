@@ -667,6 +667,11 @@ ssh qp-tencent 'cd /home/ubuntu/QuantPilot && docker compose -f docker-compose.p
   exec -T backend tail -3 /app/logs/backfill_money_flow_prod.log'
 ```
 
+**✅ 回填已由用户手敲执行（2026-09-16 15:44 → 16:29 CST，5.6 s/日）**：`ok=484 fail=0`；
+`money_flow` **2,503,091 行 / 484 个交易日（2024-09-18 ~ 2026-09-15）/ 536 MB**（225 B/行，
+与 5434 样本实测 212~227 一致）；无任何交易日 < 4500 行、`net_mf_amount` 无 NULL；磁盘 79%（13 G 可用）；
+回填期间 available 最低 2201 MB。⚠️ 回填结束时间早于 17:30 管线 1 小时，未与评分作业重叠。
+
 **本次判据（回填完成后 + 下一次 17:30 管线后）**：
 - `select count(*), count(distinct trade_date) from money_flow` → 约 2.5M / 484（+ 每日新增一日）
 - 管线后 `select count(money_flow_score) from candidate_pool where trade_date=<当日> and in_pool`

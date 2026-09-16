@@ -73,9 +73,13 @@ def main() -> None:
     tool = data.get("tool_name", "")
     ti = data.get("tool_input", {}) or {}
 
-    if tool == "Bash":
+    # 2026-09-16：PowerShell 工具也走这条分支。此前它完全不在视野内——2026-09-14 我自己
+    # 就用它绕过了挂死的钩子，也就同时绕过了本分支的全部保护（防误传凭证 / 生产 DROP /
+    # 规则 3）。语法无关的规则（git / docker / sql 关键字）原样适用；写文件的动词见规则 3。
+    if tool in ("Bash", "PowerShell"):
         cmd = ti.get("command", "") or ""
         low = cmd.lower()
+        is_ps = tool == "PowerShell"
 
         # 规则 3：用 Bash 改「有评审钩子的文件」= 静默绕过评审（2026-09-09 加）
         #
@@ -124,6 +128,13 @@ def main() -> None:
                     re.search(r"open\s*\([^)]*[\"'](w|a)[\"']|write_text\s*\(", scan)
                     and re.search(r"[\"']" + _PROT + r"[\"']", scan)
                 )
+                # PowerShell 的写动词（2026-09-16）：Set-Content / Add-Content / Out-File
+                # 与路径同段；.NET 的 WriteAllText/WriteAllLines 要求路径以带引号字面量出现
+                # （与上面 Python 那条同一个理由：行文提及 vs 真要写）。
+                or (is_ps and re.search(
+                    r"\b(Set-Content|Add-Content|Out-File)\b[^;|]*" + _PROT, scan, re.I))
+                or (is_ps and re.search(r"WriteAll(Text|Lines)\s*\(", scan)
+                    and re.search(r"[\"']" + _PROT + r"[\"']", scan))
             )
             if wrote:
                 emit("deny",
@@ -133,7 +144,9 @@ def main() -> None:
                      "那样评审才会被触发。读操作（grep / sed -n / cat）不受影响。")
 
         # 规则 2：git add -A / . / --all（通用防泄密，不限 prod）
-        if re.search(r"\bgit\s+add\s+(-A\b|--all\b|\.(\s|$))", cmd):
+        # ⚠️ 扫剥掉 git heredoc 之后的 `scan`，不扫原文（2026-09-16 第四次误伤）：
+        # 提交信息里描述「拦下了一次 git add -A」就会把这次提交本身拦下。
+        if re.search(r"\bgit\s+add\s+(-A\b|--all\b|\.(\s|$))", scan):
             emit("deny",
                  "C-1 防误传凭证：禁止 git add -A / . / --all，"
                  "请按文件名逐个 add（防 .env/密钥/大二进制误入仓库）。")
@@ -171,6 +184,12 @@ def main() -> None:
                 r"|[/\\]\*(\s|$)",
                 cmd, re.I):
             always = ("rm -r 的目标是 根/家目录/盘符根/未解析变量/宽泛通配 之一"
+                      "（个人全局规则明令禁止）")
+        elif is_ps and re.search(r"\bRemove-Item\b[^;|]*-Recurse", cmd, re.I) and re.search(
+                r"(\s|['\"])([a-z]:[\\/]?|~|\$env:USERPROFILE|\$HOME)(['\"]|\s|$)"
+                r"|[\\/]\*(['\"]|\s|$)",
+                cmd, re.I):
+            always = ("Remove-Item -Recurse 的目标是 盘符根/家目录/宽泛通配 之一"
                       "（个人全局规则明令禁止）")
 
         if always:

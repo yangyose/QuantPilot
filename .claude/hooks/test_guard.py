@@ -41,6 +41,12 @@ CASES = [
      {"command": "bash scripts/sync_local_backtest_db.sh --force-wipe"}, "deny"),
     ("sync 脚本 --force（仍是 ask）", B,
      {"command": "bash scripts/sync_local_backtest_db.sh --force"}, "ask"),
+    # 规则 2 的误伤回归（2026-09-16 第四次）：提交信息里**提到** git add -A 不算用了它
+    ("commit 信息提到 git add -A（不拦）", B,
+     {"command": "git add CLAUDE.md && git commit -F - <<'EOF'\n"
+                 "fix: 守卫拦下了一次 git add -A\nEOF"}, None),
+    ("commit 信息之外真的 git add -A（拦）", B,
+     {"command": "git add -A && git commit -F - <<'EOF'\nchore: x\nEOF"}, "deny"),
     ("reset --hard", B, {"command": "git reset --hard origin/main"}, "ask"),
     ("push --force", B, {"command": "git push --force origin main"}, "ask"),
     ("push -f", B, {"command": "git push -f origin main"}, "ask"),
@@ -148,6 +154,29 @@ CASES = [
      {"command": "git show HEAD -- docs/design/system_design.md"}, None),
     ("sed -i 改别的文件、同命令里 grep 受保护路径（不拦）", B,
      {"command": "sed -i 's/a/b/' /tmp/x.txt && grep -c 判据 CLAUDE.md"}, None),
+    # ---- PowerShell 工具（2026-09-16 加）：此前完全不在守卫视野内 ----
+    # 2026-09-14 我自己就用它绕过了挂死的钩子——也就同时绕过了 git add -A / DROP /
+    # 规则 3 的全部保护。语法无关的规则原样适用；写文件的动词换成 PowerShell 的。
+    ("PS git add -A（拦）", "PowerShell", {"command": "git add -A; git commit -m x"}, "deny"),
+    ("PS --force-wipe（拦）", "PowerShell",
+     {"command": "bash scripts/sync_local_backtest_db.sh --force-wipe"}, "deny"),
+    ("PS 生产栈 DROP（问）", "PowerShell",
+     {"command": "docker compose -f docker-compose.prod.yml --env-file .env.prod exec db "
+                 "psql -c 'DROP TABLE signal'"}, "ask"),
+    ("PS Set-Content 写 CLAUDE.md（拦）", "PowerShell",
+     {"command": "Set-Content -Path CLAUDE.md -Value 'x' -Encoding utf8"}, "deny"),
+    ("PS WriteAllText 写设计文档（拦）", "PowerShell",
+     {"command": "[System.IO.File]::WriteAllText('docs/design/system_design.md', $s, $enc)"},
+     "deny"),
+    ("PS 重定向写 SDD（拦）", "PowerShell",
+     {"command": "'x' > docs/spec/QuantPilot_SDD.md"}, "deny"),
+    ("PS Get-Content 读 CLAUDE.md（不拦）", "PowerShell",
+     {"command": "Get-Content CLAUDE.md -TotalCount 20"}, None),
+    ("PS Select-String 搜设计文档（不拦）", "PowerShell",
+     {"command": "Select-String -Path docs/design/*.md -Pattern 'C4'"}, None),
+    ("PS Remove-Item -Recurse 根目录（问）", "PowerShell",
+     {"command": "Remove-Item -Recurse -Force D:\\"}, "ask"),
+    ("PS 普通命令（不拦）", "PowerShell", {"command": "Get-Date -Format HH:mm:ss"}, None),
 ]
 
 
@@ -214,7 +243,24 @@ def main() -> int:
     print(f"{'PASS' if ok else 'FAIL'}  {'窄编码下输出仍为纯 ASCII':34s} "
           f"want={'deny':5s} got={str(got):5s} rc={rc}")
 
-    total = len(CASES) + 1
+    # 派发配置：规则写对了 ≠ 守卫会看到——settings.json 的 PreToolUse matcher 必须含
+    # 本夹具覆盖的每个工具名（2026-09-16 加 PowerShell 时，规则先绿了、matcher 还没有它）。
+    tools_covered = sorted({t for _, t, _, _ in CASES})
+    try:
+        cfg = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        matchers = [h.get("matcher", "") for h in cfg["hooks"]["PreToolUse"]
+                    if any("guard.sh" in x.get("command", "") for x in h.get("hooks", []))]
+        missing = [t for t in tools_covered
+                   if not any(t in m.split("|") for m in matchers)]
+        got = "ok" if not missing else "missing=" + ",".join(missing)
+    except Exception as exc:  # settings.json 坏了 = 全部钩子静默失效，同样判 FAIL
+        got = f"error={exc!s:.60}"
+    ok = got == "ok"
+    fail += 0 if ok else 1
+    print(f"{'PASS' if ok else 'FAIL'}  {'settings.json matcher 含全部被测工具':34s} "
+          f"want={'ok':5s} got={got}")
+
+    total = len(CASES) + 2
     print(f"\n{total - fail}/{total} passed, {fail} failed")
     return 1 if fail else 0
 

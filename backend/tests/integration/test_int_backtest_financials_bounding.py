@@ -83,14 +83,22 @@ async def test_int_financials_bounded_to_window(db_session: AsyncSession) -> Non
     assert abs(float(fin["pe_ttm"].iloc[0]) - 15.0) < 1e-9
 
 
-async def test_int_pe_pb_history_derived_in_window(db_session: AsyncSession) -> None:
-    """pe_pb_history 从同一窗口派生，索引 (ts_code, publish_date) 仅含窗口内日期。"""
+async def test_int_pe_pb_percentiles_pushed_down_per_backtest_day(
+    db_session: AsyncSession,
+) -> None:
+    """2026-09-16 起：`pe_pb_history` 不再进内存（留空），分位改为逐回测日在 SQL 内算。
+
+    种子里每股有 3 行 pe_ttm（窗口前 99.0 / 窗口内 15.0 / 窗口后 1.0）。回测日 2024-06-03/04
+    的「当前值」= PIT 最新一行 = 15.0；5 年窗口内的历史 = {99.0, 15.0}（1.0 在未来，不可见）
+    → 严格小于 15.0 的 0 个 / 非空 2 个 → pct_rank 0 → 返回 1 − 0 = **1.0**（最便宜）。
+    这一条同时验证：窗口后的行没有泄漏进分位（否则 1.0 < 15.0 会把结果拉到 2/3）。
+    """
     await _seed(db_session)
     bundle = await BacktestService(session=db_session, engine=None)._load_data_bundle(_cfg())
 
-    pe_pb = bundle.pe_pb_history
-    assert not pe_pb.empty
-    pubs = set(pe_pb.index.get_level_values("publish_date"))
-    assert pubs == {_IN_WINDOW}
-    assert set(pe_pb.columns) == {"pe_ttm", "pb"}
-    assert len(pe_pb) == len(_TS)
+    assert bundle.pe_pb_history.empty, "pe_pb_history 又被拉进内存了"
+    assert set(bundle.pe_percentile_by_date) == {date(2024, 6, 3), date(2024, 6, 4)}
+    assert set(bundle.pb_percentile_by_date) == {date(2024, 6, 3), date(2024, 6, 4)}
+    for td, pe in bundle.pe_percentile_by_date.items():
+        for c in _TS:
+            assert abs(float(pe.loc[c]) - 1.0) < 1e-9, (td, c, pe.loc[c])

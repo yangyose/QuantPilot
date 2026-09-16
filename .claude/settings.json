@@ -14,7 +14,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write",
+        "matcher": "Bash|PowerShell|Edit|Write",
         "hooks": [
           {
             "type": "command",
@@ -46,12 +46,12 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto_test.sh\"",
-            "statusMessage": "Bash 改过 backend 的 .py → 自动跑测试"
+            "statusMessage": "Bash/PowerShell 改过 backend 的 .py → 自动跑测试"
           }
         ]
       }

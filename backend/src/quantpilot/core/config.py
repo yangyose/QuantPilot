@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # ⇒ **放宽的前置条件是算法（`get_pe_pb_history_bulk` 的 SQL 下推），不是内存**；
     # 在那之前任何扩容都只是推迟撞墙时间。
     # ⚠️ 复测一律在本地算力中心，**不能在生产上试**——那正是红线①禁的那类作业。
+    #
+    # ✅ 2026-09-16 下推已做（同一 6 日窗口同一测法）：**3530 MB → 1056 MB**；30 日窗口
+    # 1159 MB（约 +4 MB/交易日，100 日 ≈ 1.45 GB）。三步：财务切片流式分块、daily_quotes
+    # 由 ORM 对象改列裁剪流式、NUMERIC 在 SQL 内 cast float8（Decimal 碎片是大头）；分位
+    # 改走生产同款 `get_pe_pb_percentile_bulk`（顺带把回测分位窗口从 ~400 天对齐到 5 年）。
+    # ⇒ 上面那条「算法前置」已满足。**503 仍维持**：剩下的门槛不再是内存，而是运维红线①
+    # （回测就是一次全 universe 评分作业）——放开与否由用户按
+    # `docs/reviews/memory_premise_after_4gb_2026-09-14.md` §3 拍板，不在代码里自行放开。
     backtest_enabled: bool = True
 
     # 回测护栏（2026-06-15）：限制单次回测的日历跨度（天）。0 = 不限制。

@@ -116,6 +116,22 @@ CASES = [
         "cd backend && uv run pytest tests/unit/ -q"}}, False, False),
     ("bash_write_scratchpad_py", {"tool_name": "Bash", "tool_input": {"command":
         "cat > /tmp/probe.py <<'PY'" + chr(10) + "print(1)" + chr(10) + "PY"}}, False, False),
+    # ---------- PowerShell（2026-09-16 补）：同一个洞的第二个入口 ----------
+    # 2026-09-14 我用 PowerShell 写过钩子脚本（当时 Bash 挂死）；它不在任何 matcher 里，
+    # 写 backend .py 同样不会触发测试。写动词换成 PS 的，读动词同样不触发。
+    ("ps_set_content_src", {"tool_name": "PowerShell", "tool_input": {"command":
+        "Set-Content -Path backend/src/quantpilot/engine/scorer.py -Value $s"}}, True, False),
+    ("ps_writealltext_test", {"tool_name": "PowerShell", "tool_input": {"command":
+        "[System.IO.File]::WriteAllText('backend/tests/unit/test_x.py', $s, $enc)"}},
+     True, False),
+    ("ps_redirect_alembic", {"tool_name": "PowerShell", "tool_input": {"command":
+        "$body | Out-File backend/alembic/versions/0032_x.py -Encoding utf8"}}, True, True),
+    ("ps_get_content_read", {"tool_name": "PowerShell", "tool_input": {"command":
+        "Get-Content backend/src/quantpilot/engine/scorer.py -TotalCount 5"}}, False, False),
+    ("ps_select_string_read", {"tool_name": "PowerShell", "tool_input": {"command":
+        "Select-String -Path backend/src/quantpilot/*.py -Pattern 'x'"}}, False, False),
+    ("ps_write_non_py", {"tool_name": "PowerShell", "tool_input": {"command":
+        "Set-Content -Path docs/ops/x.md -Value 'x'"}}, False, False),
 ]
 
 
@@ -159,6 +175,9 @@ def check_dispatch_config():
     if "Bash" not in joined:
         problems.append("没有 matcher 覆盖 Bash（Bash 写 .py 时钩子收不到事件，"
                         "脚本里的 Bash 解析成为死代码）；实得 matcher: " + repr(routed))
+    if "PowerShell" not in joined:
+        problems.append("没有 matcher 覆盖 PowerShell（2026-09-16 起脚本能认它的写动词，"
+                        "但事件没派发照样是死代码）；实得 matcher: " + repr(routed))
     if "Edit" not in joined or "Write" not in joined:
         problems.append("Edit/Write 覆盖丢了；实得 matcher: " + repr(routed))
     return problems

@@ -68,7 +68,15 @@ class BacktestDataBundle:
     # B3-1：完整字段日线，index=(trade_date, ts_code)
     daily_quotes: pd.DataFrame = field(default_factory=pd.DataFrame)
     # B3-3：(ts_code, publish_date) 历史 PE/PB（ValueStrategy 真实分位数）
+    # ⚠️ 2026-09-16 起 Service **不再填它**（留空 DataFrame）：6 交易日回测把 ~150 万行
+    # 拉进内存是峰值 3530 MB 的主项。分位改在 PostgreSQL 内算好、按日放进下面两个 dict
+    # （与生产 `_build_market_snapshot` 同一条路）。字段保留是为了旧 bundle / 单测兼容：
+    # 两个 dict 都空时 ValueStrategy 仍会回落到读它。
     pe_pb_history: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # 2026-09-16：trade_date → 当日 `1 - pct_rank` 分位 Series（index=ts_code），
+    # 由 `get_pe_pb_percentile_bulk` 在 SQL 内算出（5 年窗口，与生产同口径）。
+    pe_percentile_by_date: dict[date, pd.Series] = field(default_factory=dict)
+    pb_percentile_by_date: dict[date, pd.Series] = field(default_factory=dict)
     # B3-3：HS300 后复权累计价（Momentum.rs_6m 真实计算；index=trade_date）
     index_adj_prices: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     # Phase 14 §14-3：5y 月末 rebalance active_weights 时序，键 (state_str, effective_date)。
@@ -348,6 +356,11 @@ class BacktestEngine:
                     "daily_quotes": quotes_t,
                     "financials": financials_t,
                     "pe_pb_history": pe_pb_t,
+                    # 2026-09-16：预计算分位（SQL 下推）。键**必须存在**且与生产
+                    # `_build_market_snapshot` 同名——ValueStrategy 见到就不读 pe_pb_history。
+                    # 没预计算（旧 bundle）→ None → 回落历史路径。
+                    "pe_percentile": data.pe_percentile_by_date.get(trade_date),
+                    "pb_percentile": data.pb_percentile_by_date.get(trade_date),
                     "index_adj_prices": idx_adj_t,
                     "industry": industry_map,
                     "market_cap": market_cap_series,

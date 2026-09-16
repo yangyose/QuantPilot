@@ -33,12 +33,16 @@ _WRITE = re.compile(
     r"|\btee\b"
     r"|open\s*\([^)]*[\"'](?:w|a)[\"']"
     r"|write_text\s*\("
+    # PowerShell 的写动词（2026-09-16）——同一个洞的第二个入口：09-14 用它写过脚本，
+    # 而它当时不在任何 matcher 里。读动词（Get-Content / Select-String）不在此列。
+    r"|\b(?:Set-Content|Add-Content|Out-File)\b"
+    r"|WriteAll(?:Text|Lines)\s*\("
 )
 
 
 def target_py_path(data):
     ti = data.get("tool_input") or {}
-    if data.get("tool_name") == "Bash":
+    if data.get("tool_name") in ("Bash", "PowerShell"):
         cmd = ti.get("command") or ""
         if not _WRITE.search(cmd):
             return ""
