@@ -765,3 +765,37 @@ F-Score 「不可判」自此不再是「缺数据」，今晚 17:30 起 `piotro
 10,194 行（含 `redis://:<密码>@` 明文）切走归档到 `backups/quantpilot.log.pre20260903_20260917_125740`
 （600 权限）；用「截断 + 追加」而非 `mv`，uvicorn 的 FileHandler 仍写同一 inode（切完后新行照常落盘）。
 切后活文件 390 行、明文匹配 **0**。
+
+## 4aead26 — 2026-09-17T08:41:32Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `5d20c34` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_4aead26_20260917_173930.tar.gz` |
+| delta | 6 个 commit |
+
+```
+4aead26 feat(backtest): universe 取数对齐生产口径——F-5 传两期财务历史、F-7 用 20 日均成交额（L-FID，用户拍板 6-A）
+d7eb790 fix(test): e2e 禁触 DB 护栏改 function scope——session 级在 CI 单会话里活到进程结束，拦掉了集成测试
+e339ec9 feat(config): F-SI 收口——ma_short/ma_long 接线为 MA 阶梯（默认逐位不变），FactorMonitor 四个旧字段摘掉（用户拍板 5a-A / 5b-A）
+3e37db1 perf(backtest): PIT 日期掩码向量化——6 日回测 910 万次逐行 lambda（24 s）归零，结果逐位不变
+1cc8580 test(e2e): 结构性禁止 e2e 触达真实 DB——engine do_connect 监听器统一报 E2ETouchedDatabase
+479373c fix(config): ValueStrategyConfig.pe_pb_history_years 真正决定 PE/PB 分位窗口（F-SI 欠账收口）
+52a9c4f fix(tushare): index_weight 恰好 1000 行是结构性的（CSI500 × 2 月末快照），豁免每日假告警；roadmap J-EXPL 收口；dev_setup 5433 旧容器凭证提示
+```
+
+### 本次上下文（2026-09-17 16:39~16:44 CST，后端 + 前端同批）
+
+**选股行为预期零变化**：`ma_short/ma_long` 接线在默认 20/60 下与旧阶梯逐位一致，且生产
+`system_config` / `user_config` 对 `strategy_params_trend` / `factor_monitor_params` /
+`strategy_params_value` **无任何覆盖值**（部署前查过）；`pe_pb_history_years` 默认 5 = 原常量。
+今晚 17:30 管线若 universe / signal_count 跳变即异常。
+
+**回测口径变化（有意）**：`4aead26` 起网站回测的 universe 与生产同口径（F-5 两期 / F-7 20 日均量），
+此前提交的回测任务结果**不再可比**。前端：设置页删掉「因子质量监控」整段（三个零引用旋钮）、
+信号溯源页新增「资金动向」一行。
+
+**判据（17:49 CST 核）**：管线 SUCCESS、universe ≈ 3208、signal_count 不跳变、`liquidity_note` 与
+`money_flow_score` 继续满、`piotroski_f_score judged` 由 0 变为约 3000+（7 列回填后首次）、
+`tushare_row_cap_suspected` 只剩 `fina_indicator` 拆批告警（`index_weight 1000` 已豁免）。
