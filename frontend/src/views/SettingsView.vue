@@ -207,20 +207,12 @@ const CONFIG_CATALOG: ConfigDefinition[] = [
       { key: 'slippage_rate', label: '滑点估算', type: 'percent', default: 0.001, min: 0, max: 0.01, step: 0.0005, tier: 'expert' },
     ],
   },
-  // expert：因子监控
-  {
-    config_key: 'factor_monitor_params',
-    requiredLevel: 'L3',
-    title: '因子质量监控',
-    description: 'IC 窗口 / 告警阈值 / 半衰期窗口（月末计算）',
-    consumer: 'FactorMonitorService',
-    tier: 'expert',
-    fields: [
-      { key: 'ic_window', label: 'IC 窗口', type: 'integer', default: 20, min: 5, max: 60, step: 1, suffix: '日', tier: 'expert', tooltipTerm: 'ic' },
-      { key: 'ic_alert_threshold', label: 'IC 告警阈值（绝对值）', type: 'number', default: 0.02, min: 0, max: 0.1, step: 0.005, tier: 'expert', tooltipTerm: 'ic' },
-      { key: 'half_life_window', label: '半衰期窗口', type: 'integer', default: 60, min: 30, max: 250, step: 5, suffix: '日', tier: 'expert', tooltipTerm: 'half_life' },
-    ],
-  },
+  // expert：因子监控 —— 2026-09-17 整段摘掉（用户拍板 5b-A）：
+  // 原三项 ic_window / ic_alert_threshold / half_life_window 是 Phase 7 日频 IC 时代的概念，
+  // 现行月度监控用写死的 3 月窗口 / 连续 3 月负 IC / 半衰期 < 5 月 / IR < 0.3，
+  // 三个旋钮语义上没有落点（后端零引用），留在界面上就是「拧了没反应且不报错」。
+  // 真正被消费的字段（ic_window_days / icir_lag_days / state_min_samples /
+  // persistent_decay_*）是否对用户开放属产品决策，此处不顺手加。
 ]
 
 // strategy_weights 单独处理（嵌套 dict，矩阵编辑）

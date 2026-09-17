@@ -420,3 +420,49 @@ class TestPePbHistoryYearsConsumed:
             }
             assert "resolve_pe_pb_history_years" in called, fn.__qualname__
             assert "_PE_PB_HISTORY_YEARS" not in src, fn.__qualname__ + " 仍读写死常量"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TrendStrategyConfig.ma_short / ma_long（F-SI 最后一项接线，用户 2026-09-17 拍板 5a-A）
+# 设置页可编辑，但 `ma_alignment` 写死 5/10/20/60 四档。改为 5 / 10 / ma_short / ma_long，
+# 默认 20/60 → 与此前逐位一致（选股行为在默认值下零变化）。
+# ─────────────────────────────────────────────────────────────────────────────
+class TestTrendMaLadderConsumed:
+    @staticmethod
+    def _ma(cfg: TrendStrategyConfig | None, **kw) -> float:
+        universe, snap = _price_snapshot(**kw)
+        df = TrendStrategy(config=cfg).compute_raw_factors(universe, snap)
+        return float(df.loc["000001.SZ", "ma_alignment"])
+
+    def test_ma_short_long_change_result(self) -> None:
+        """改参数 → 结果必须变：用单调上行序列，MA 阶梯全部满足 → 1.0；
+        把 ma_long 调到比 ma_short 还短（60 → 8），MA20 > MA8 在上行序列里为假 → 档数掉。"""
+        base = self._ma(None, period=1e9, drift=0.5)              # 近似直线上行
+        swapped = self._ma(TrendStrategyConfig(ma_short=20, ma_long=8), period=1e9, drift=0.5)
+        assert base == 1.0, base
+        assert swapped < base, "改 ma_long 结果没变 —— 阶梯仍写死 5/10/20/60"
+
+    def test_defaults_reproduce_the_old_fixed_ladder(self) -> None:
+        """默认 20/60 必须与旧写死阶梯逐位一致——用一组随机序列比对，防「接线顺手改口径」。"""
+        rng = np.random.default_rng(7)
+        for _ in range(20):
+            n = 120
+            universe = pd.Index(["000001.SZ"], name="ts_code")
+            cols = [date(2025, 1, 1) + timedelta(days=i) for i in range(n)]
+            close = 100 + rng.normal(0, 1, n).cumsum()
+            adj = pd.DataFrame([close], columns=cols, index=universe)
+            snap = {"trade_date": cols[-1], "adj_prices": adj}
+            got = float(TrendStrategy(config=None).compute_raw_factors(universe, snap)
+                        .loc["000001.SZ", "ma_alignment"])
+            s = pd.Series(close)
+            ma5, ma10, ma20, ma60 = (s.rolling(w).mean().iloc[-1] for w in (5, 10, 20, 60))
+            expected = sum([ma5 > ma10, ma10 > ma20, ma20 > ma60]) / 3.0
+            assert got == expected
+
+    def test_required_history_follows_ma_long(self) -> None:
+        """C1-3 教训：策略必须自报窗口深度。ma_long 拉到 250 时不自报 → 价格窗口只有 ~120 列
+        → 因子静默全 NaN 且无告警。"""
+        from quantpilot.engine.strategies.base import DEFAULT_REQUIRED_HISTORY_DAYS
+
+        assert TrendStrategy(config=None).required_history_days == DEFAULT_REQUIRED_HISTORY_DAYS
+        assert TrendStrategy(TrendStrategyConfig(ma_long=250)).required_history_days >= 255

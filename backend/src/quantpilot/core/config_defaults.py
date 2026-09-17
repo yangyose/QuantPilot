@@ -285,11 +285,13 @@ DEFAULT_NOTIFICATION = NotificationConfig()
 class FactorMonitorConfig:
     """因子监控（v1.1 评审 G-3 新增 + Phase 11 §4.1 滚动 ICIR 窗口扩展）。
 
-    旧 Phase 7~10 字段（ic_window / ic_alert_threshold / half_life_window）保留：
-    `FactorMonitorService.run_monthly` 旧路径仍消费；Phase 11 新方法
-    （rolling_icir_state / apply_monthly_rebalance）使用新字段。
+    ⚠️ **已废弃、代码不读**（2026-09-17，用户拍板 5b-A）：`ic_window` / `ic_alert_threshold` /
+    `half_life_window` / `half_life_window_days`。原注释称「`run_monthly` 旧路径仍消费」——
+    **不属实**：`run_monthly` 用写死的 3 月窗口，告警阈值在 `FactorMonitorEngine.detect_alert`
+    里写死（连续 3 月负 IC / 半衰期 < 5 月 / IR < 0.3），四个字段全仓零引用。已从设置页摘掉；
+    字段本身保留只为让库里存过的旧 JSON 仍能 `{**asdict(default), **db_value}` 合并不报错。
     """
-    # Phase 7~10 字段（保留兼容）
+    # 已废弃（见类文档）：保留字段名仅为兼容存量 JSON，勿再接线、勿再暴露给用户
     ic_window: int = 20
     ic_alert_threshold: float = 0.02
     half_life_window: int = 60
@@ -299,7 +301,7 @@ class FactorMonitorConfig:
     icir_warmup_days: int = 272      # = ic_window_days + icir_lag_days
     state_min_samples: int = 60
     ic_bootstrap_iterations: int = 1000
-    half_life_window_days: int = 504
+    half_life_window_days: int = 504     # 已废弃，同上
     # V1.5-A A4（R13-P3-3）：因子衰减持续告警阈值/月数收纳（原硬编码在
     # FactorMonitorService.PERSISTENT_DECAY_THRESHOLD/MONTHS，Phase 13 P3 推迟项）
     persistent_decay_threshold: float = 0.05

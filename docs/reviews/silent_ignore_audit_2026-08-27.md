@@ -204,3 +204,14 @@ AST 断言「除工厂外不得直接构造」。这正是 CLAUDE.md §4.11 表�
 
 ⚠️ 原文此处曾列「6 个零消费者 key」并声称由白名单护栏钉住——**该条已随 §6.2 撤回**，
 护栏也已删除（前提是错的）。留在这里的只有经人工逐个核实过的字段级欠账。
+
+### 6.4 2026-09-17 收口：两项欠账按用户拍板处置，F-SI 关闭
+
+| 欠账 | 拍板 | 处置 |
+|---|---|---|
+| `TrendStrategyConfig.ma_short` / `ma_long` | **5a-A 接线** | MA 阶梯改为 `5 / 10 / ma_short / ma_long`，默认 20/60 与旧写死阶梯**逐位一致**（随机序列对照钉死）；`ma_long` 可调到 250 → 策略自报 `required_history_days = max(65, ma_long+5)`，否则价格窗口不足会重演 C1-3 的静默全 NaN |
+| `FactorMonitorConfig.ic_window` / `ic_alert_threshold` / `half_life_window` / `half_life_window_days` | **5b-A 摘掉** | 从设置页整段删除（该段只有这三项）；dataclass 保留字段名仅为存量 JSON 合并不报错，类文档标「已废弃、代码不读」。⚠️ 原注释「`run_monthly` 旧路径仍消费」**不属实**——月度监控用写死的 3 月窗口，阈值写死在 `detect_alert` |
+| `ValueStrategyConfig.pe_pb_history_years` | 无需拍板 | 2026-09-17 `479373c` 接线：每日管线与回测都经 `resolve_pe_pb_history_years` |
+
+至此 §6.1 的 14 项零引用字段：**10 项接线并各配「改参数 → 结果必变」测试，4 项摘掉**。
+本报告立下的唯一护栏（每项一条行为测试，不靠扫描）仍然成立。

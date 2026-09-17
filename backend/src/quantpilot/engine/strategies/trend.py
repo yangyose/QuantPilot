@@ -5,7 +5,11 @@ import pandas as pd
 import pandas_ta as ta  # type: ignore[import-untyped]
 
 from quantpilot.core.config_defaults import DEFAULT_TREND_STRATEGY, TrendStrategyConfig
-from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot
+from quantpilot.engine.strategies.base import (
+    DEFAULT_REQUIRED_HISTORY_DAYS,
+    BaseStrategy,
+    MarketSnapshot,
+)
 
 
 class TrendStrategy(BaseStrategy):
@@ -25,6 +29,16 @@ class TrendStrategy(BaseStrategy):
     def __init__(self, config: TrendStrategyConfig | None = None) -> None:
         self._cfg = config or DEFAULT_TREND_STRATEGY
 
+    @property
+    def required_history_days(self) -> int:
+        """自报窗口深度 = max(默认 65, ma_long + 5)。
+
+        `ma_long` 在设置页可调到 250；不自报的话 `ScoringService` 的价格窗口只按其他策略
+        取（约 120 列），MA(ma_long) 算不出 → `ma_alignment` 静默全 NaN 且无告警——
+        C1-3（`rs_6m` 0/2274）那一族。
+        """
+        return max(DEFAULT_REQUIRED_HISTORY_DAYS, self._cfg.ma_long + 5)
+
     def compute_raw_factors(
         self,
         universe: pd.Index,
@@ -43,7 +57,11 @@ class TrendStrategy(BaseStrategy):
                 continue
 
             close = adj_prices.loc[ts_code].dropna().astype(float)
-            if len(close) < 65:  # 至少需要 60 日计算 MA60
+            # MA 阶梯 5 / 10 / ma_short / ma_long（2026-09-17 接线 F-SI 最后一项，用户拍板 5a-A）：
+            # 此前写死 5/10/20/60，`ma_short`/`ma_long` 在设置页可编辑却零引用。默认 20/60
+            # 与旧阶梯逐位一致（`TestTrendMaLadderConsumed` 用随机序列对照钉死）。
+            ma_short, ma_long = self._cfg.ma_short, self._cfg.ma_long
+            if len(close) < max(65, ma_long + 5):  # 至少要算得出最长的 MA
                 results[ts_code] = {
                     "ma_alignment": float("nan"),
                     "macd_signal": float("nan"),
@@ -51,17 +69,17 @@ class TrendStrategy(BaseStrategy):
                 }
                 continue
 
-            # ── MA 排列（MA5>MA10>MA20>MA60 满足条件数 / 3）────────────────────
+            # ── MA 排列（MA5 > MA10 > MA(ma_short) > MA(ma_long) 满足条件数 / 3）────────
             ma5 = close.rolling(5).mean().iloc[-1]
             ma10 = close.rolling(10).mean().iloc[-1]
-            ma20 = close.rolling(20).mean().iloc[-1]
-            ma60 = close.rolling(60).mean().iloc[-1]
+            ma_s = close.rolling(ma_short).mean().iloc[-1]
+            ma_l = close.rolling(ma_long).mean().iloc[-1]
             last_close = close.iloc[-1]
 
             conditions_met = sum([
                 ma5 > ma10,
-                ma10 > ma20,
-                ma20 > ma60,
+                ma10 > ma_s,
+                ma_s > ma_l,
             ])
             ma_alignment = conditions_met / 3.0
 
