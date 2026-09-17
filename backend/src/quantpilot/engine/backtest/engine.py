@@ -133,6 +133,21 @@ def _sell_proceeds_per_unit(price: float, config: BacktestConfig) -> float:
 # BacktestEngine
 # ---------------------------------------------------------------------------
 
+def _pit_mask(col: pd.Series, trade_date: date) -> pd.Series:
+    """`publish_date <= trade_date` 的向量化判定，语义与原逐行 lambda 逐元素相同。
+
+    原实现 `col.apply(lambda d: d is not None and pd.notna(d) and pd.Timestamp(d).date() <= td)`
+    在 6 日回测里被调 910 万次、占 24 秒——Engine 主循环里唯一纯 Python 逐行的地方。
+    `pd.to_datetime(errors="coerce")` 把 None / NaT / NaN / 非法值统一成 NaT → False；
+    `.dt.normalize()` 对齐到日与 `.date()` 比较等价。`test_backtest_forecast_override.py`
+    用六种输入逐元素对照原 lambda 钉死。
+    """
+    ts = pd.to_datetime(col, errors="coerce")
+    if getattr(ts.dt, "tz", None) is not None:
+        ts = ts.dt.tz_localize(None)
+    return (ts.dt.normalize() <= pd.Timestamp(trade_date)).fillna(False).astype(bool)
+
+
 class BacktestEngine:
     """
     回测主引擎（SDD §7.7.1）。
@@ -635,10 +650,7 @@ class BacktestEngine:
         # 若有 publish_date 列，按公告日过滤
         if "publish_date" in financials.columns:
             try:
-                mask = financials["publish_date"].apply(
-                    lambda d: d is not None and pd.notna(d) and pd.Timestamp(d).date() <= trade_date
-                )
-                pit = financials[mask]
+                pit = financials[_pit_mask(financials["publish_date"], trade_date).to_numpy()]
                 # 按 ts_code 取最新一期
                 if isinstance(pit.index, pd.MultiIndex):
                     pit = pit.copy()
@@ -661,10 +673,7 @@ class BacktestEngine:
         if forecast is None or forecast.empty or "pre_announce_date" not in forecast.columns:
             return pd.DataFrame()
         try:
-            mask = forecast["pre_announce_date"].apply(
-                lambda d: d is not None and pd.notna(d) and pd.Timestamp(d).date() <= trade_date
-            )
-            pit = forecast[mask]
+            pit = forecast[_pit_mask(forecast["pre_announce_date"], trade_date).to_numpy()]
             if pit.empty:
                 return pd.DataFrame()
             # 升序排序后 drop_duplicates keep="last" 取每股最后一行（= 报告期最新、同期

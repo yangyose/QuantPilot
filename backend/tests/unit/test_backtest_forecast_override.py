@@ -90,3 +90,28 @@ def test_a5b_bt_chain_overrides_roe_in_vacuum() -> None:
     out = apply_forecast_roe_override(fin_t, fc_t)
     # roe = est_net_profit / total_equity = 2.0e8 / 1.0e9 = 0.20（覆盖原三季报 0.10）
     assert abs(out.at["000001.SZ", "roe"] - 0.20) < 1e-9
+
+
+def test_pit_date_mask_vectorized_equals_row_lambda() -> None:
+    """`_pit_mask`（2026-09-17 向量化）必须与原逐行 lambda 逐元素一致——含 None / NaT / NaN /
+    date / Timestamp / 字符串日期 / 边界当天，六种输入都钉。原实现 6 日回测调 910 万次 lambda，
+    24 秒；这是 Engine 主循环里唯一纯 Python 逐行的地方。"""
+    import numpy as np
+
+    from quantpilot.engine.backtest.engine import _pit_mask
+
+    td = date(2025, 11, 15)
+    col = pd.Series([
+        date(2025, 11, 15),            # 边界当天 → True
+        date(2025, 11, 16),            # 次日 → False
+        pd.Timestamp("2025-01-01"),    # 早 → True
+        None, pd.NaT, np.nan,          # 缺失 → False
+        "2025-11-14",                  # 字符串（历史脏值）→ True
+        date(2020, 2, 29),             # 闰日 → True
+    ], dtype=object)
+    expected = col.apply(
+        lambda d: d is not None and pd.notna(d) and pd.Timestamp(d).date() <= td
+    ).astype(bool)
+    got = _pit_mask(col, td)
+    assert list(got) == list(expected)
+    assert got.dtype == bool
