@@ -220,6 +220,7 @@ def _stub_universe_filter(universe_size: int) -> object:
             quotes: pd.DataFrame,
             trade_date: date,
             calendar: object,
+            **kwargs: object,   # 真实 UniverseFilter 还收 financials_history / min_avg_amount
         ) -> pd.Index:
             return stock_info.index[:universe_size]
 

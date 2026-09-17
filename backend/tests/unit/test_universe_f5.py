@@ -185,22 +185,18 @@ class TestServiceSuppliesEnoughPeriods:
         )
 
 
-class TestBacktestDivergenceIsExplicit:
-    """回测走的是无历史的降级分支，口径与生产**不同**——把它钉成显式事实。
+class TestDegradedBranchStillExists:
+    """`filter()` 不传 `financials_history` 时仍是「单期为负即剔」降级分支（供无历史数据的调用方）。
 
-    `BacktestEngine` 调 `filter()` 时不传 `financials_history`，故走 `else` 分支
-    「单期为负即剔」。2026-09-07 生产侧改为「最近 2 个有值期皆负才剔」之后，
-    两者分歧变大：**回测的 universe 比生产更小**。
-
-    不静默改回测（会改变所有历史回测结果），但也不能让这个分歧无声存在——
-    没有这条测试，下一个人读 `filter()` 会以为回测和生产用的是同一条规则。
-    已登记 roadmap V1.5-L 回测保真度。
+    ⚠️ 2026-09-17 起**回测不再走这条**（用户拍板 6-A，L-FID）：`BacktestEngine` 在内存里复现
+    `get_latest_n_financials(n=4)` 传给 F-5，与生产同口径——等价性由
+    `test_backtest_universe_parity.py` 钉。原「钉分歧」三条测试随之退役；这里只保留降级分支
+    本身的语义，防止有人把它当死代码删掉。
     """
 
     def test_degraded_branch_still_excludes_on_single_negative(
         self, calendar: TradingCalendar
     ) -> None:
-        """不传历史 → 单期为负即剔（回测口径）。"""
         idx = pd.Index([CODE], name="ts_code")
         info = pd.DataFrame({
             "is_st": [False], "list_date": [date(2020, 1, 1)],
@@ -213,29 +209,10 @@ class TestBacktestDivergenceIsExplicit:
             {"amount": [1e7], "vol": [1e4], "limit_up": [False]}, index=idx
         )
         got = UniverseFilter().filter(info, fin, quotes, TODAY, calendar)
-        assert CODE not in got, "降级分支的口径被改了——所有历史回测结果会随之变化"
+        assert CODE not in got
 
-    def test_same_stock_passes_under_production_rule(
+    def test_same_stock_passes_under_two_period_rule(
         self, calendar: TradingCalendar
     ) -> None:
-        """同一只股票在生产口径下**通过**——分歧的具体形状。"""
+        """同一只股票在两期口径下**通过**——回测与生产现在都走这条。"""
         assert _run(UniverseFilter(), calendar, _hist([float("nan"), -5.0])) is True
-
-    def test_backtest_engine_does_not_pass_history(self) -> None:
-        """钉住「回测确实不传历史」这个前提；它一旦变了，上面两条的解读就失效。"""
-        import ast
-        import pathlib
-
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "quantpilot" / "engine" / "backtest" / "engine.py"
-        ).read_text(encoding="utf-8")
-        kwargs = {
-            kw.arg
-            for n in ast.walk(ast.parse(src))
-            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "filter"
-            for kw in n.keywords
-        }
-        assert "financials_history" not in kwargs, (
-            "回测开始传历史了 —— 请更新本组测试与 universe.py 里的分歧说明"
-        )

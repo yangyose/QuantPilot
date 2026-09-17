@@ -245,13 +245,10 @@ class UniverseFilter:
                 mask &= (yoy_ok | is_financial)
         else:
             # ⚠️ **无历史数据时的降级分支：单期为负即剔除**，与上面「最近 2 个有值期」
-            # 口径**不同**。这不是疏忽，是有意不动它——`BacktestEngine` 走的正是这条
-            # （它不传 `financials_history`），改了会静默改变所有历史回测结果。
-            #
-            # 但这意味着**回测与生产用的不是同一条 F-5**，2026-09-07 修复后分歧变大
-            # （生产：两个有值期皆负才剔；回测：一期为负即剔 → 回测 universe 更小）。
-            # 属回测保真度问题，已登记 roadmap V1.5-L；在那之前，
-            # **回测结论不可直接外推到生产选股面**。
+            # 口径**不同**。2026-09-17 起（用户拍板 6-A，L-FID）`BacktestEngine` **不再走这条**
+            # ——它在内存里复现 `get_latest_n_financials(n=4)` 传进来，回测与生产同一条 F-5
+            # （等价性由 `test_backtest_universe_parity.py` 钉）。本分支只剩给真的没有历史
+            # 数据的调用方兜底；`test_universe_f5.py::TestDegradedBranchStillExists` 保住其语义。
             yoy = _get_col(financials, "net_profit_yoy", idx)
             _warn_if_low_coverage(yoy, "net_profit_yoy", "F-5 连亏过滤")
             yoy_ok = yoy.isna() | (yoy >= 0)

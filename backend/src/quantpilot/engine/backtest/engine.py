@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from quantpilot.engine.backtest.report import DISCLAIMER, BacktestReport
@@ -148,6 +149,46 @@ def _pit_mask(col: pd.Series, trade_date: date) -> pd.Series:
     return (ts.dt.normalize() <= pd.Timestamp(trade_date)).fillna(False).astype(bool)
 
 
+def _financials_history_at(financials: pd.DataFrame, trade_date: date, n: int = 4) -> pd.DataFrame:
+    """内存里复现生产 `repository.get_latest_n_financials(n)` 的语义（L-FID，2026-09-17 拍板 6-A）。
+
+    `publish_date <= trade_date` → 每 (ts_code, report_period) 只留 publish_date 最新一行 →
+    按 report_period 倒序每股取前 n。输出 MultiIndex(ts_code, report_period)，供
+    `UniverseFilter.filter(financials_history=...)` 做 F-5「最近 2 个有值期皆负才剔」——
+    此前引擎不传它，F-5 走「单期为负即剔」降级分支，回测 universe 比生产少约 977 只
+    （2026-08-25 实测）。`test_backtest_universe_parity.py` 钉语义与调用点。
+    """
+    if financials is None or financials.empty or "publish_date" not in financials.columns:
+        return pd.DataFrame()
+    df = financials[_pit_mask(financials["publish_date"], trade_date).to_numpy()]
+    if df.empty:
+        return pd.DataFrame()
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.reset_index()
+    if "ts_code" not in df.columns or "report_period" not in df.columns:
+        return pd.DataFrame()
+    df = df.sort_values(
+        ["ts_code", "report_period", "publish_date"], ascending=[True, False, False]
+    )
+    df = df.drop_duplicates(subset=["ts_code", "report_period"], keep="first")
+    df = df.groupby("ts_code", sort=False).head(n)
+    return df.set_index(["ts_code", "report_period"])
+
+
+def _avg_amount_before(amount_wide: pd.DataFrame, trade_date: date, window: int = 20) -> pd.Series:
+    """复现生产 `repository.get_avg_amount(window)`：`trade_date` **之前**（不含当日）最近
+    `window` 个交易日的 `AVG(amount)`（SQL AVG 忽略 NULL；一行都没有 → NaN）。
+    `amount_wide`：index=trade_date（DatetimeIndex 或 date），columns=ts_code。
+    """
+    if amount_wide is None or amount_wide.empty:
+        return pd.Series(dtype=float)
+    idx = pd.to_datetime(amount_wide.index)
+    before = amount_wide[idx < pd.Timestamp(trade_date)]
+    if before.empty:
+        return pd.Series(np.nan, index=amount_wide.columns, dtype=float)
+    return before.tail(window).mean(axis=0, skipna=True)
+
+
 class BacktestEngine:
     """
     回测主引擎（SDD §7.7.1）。
@@ -208,6 +249,14 @@ class BacktestEngine:
                 performance=BacktestReport.generate({}, [], config),
                 disclaimer=DISCLAIMER,
             )
+
+        # L-FID：成交额宽表（index=trade_date, columns=ts_code）只建一次，逐日切 20 日均量给 F-7
+        amount_wide = pd.DataFrame()
+        if not data.daily_quotes.empty and "amount" in data.daily_quotes.columns:
+            try:
+                amount_wide = data.daily_quotes["amount"].unstack("ts_code").sort_index()
+            except Exception:
+                logger.exception("backtest_amount_wide_failed")
 
         # 预处理：adj_prices 转 index=trade_date
         adj_prices = data.adj_prices
@@ -288,11 +337,27 @@ class BacktestEngine:
                 elif _pit_col not in stock_info_t.columns:
                     stock_info_t[_pit_col] = False
 
-            # ---------- d. Universe 过滤 ----------
+            # ---------- d. Universe 过滤（L-FID：与生产同口径）----------
+            # F-7 用 20 日均成交额（生产 `get_avg_amount(window=20)`），不是单日 amount；
+            # F-5 传最近 4 个报告期的 PIT 历史（生产 `get_latest_n_financials(n=4)`），
+            # 让「最近 2 个有值期皆负才剔」在回测里同样生效。
+            if not amount_wide.empty:
+                quotes_t = quotes_t.copy()
+                quotes_t["avg_amount"] = _avg_amount_before(
+                    amount_wide, trade_date, window=20
+                ).reindex(quotes_t.index)
+            financials_hist_t = _financials_history_at(data.financials, trade_date, n=4)
             try:
                 universe_idx = self._universe_filter.filter(
                     stock_info_t, financials_t, quotes_t, trade_date, self._calendar,
+                    financials_history=(
+                        financials_hist_t if not financials_hist_t.empty else None
+                    ),
                 )
+            except TypeError:
+                # 签名不匹配是编码错误，不是「当日没数据」——吞成空 universe 会让整段回测
+                # 静默变成零信号（2026-09-17 加 financials_history 时替身没跟上，就是这个形态）。
+                raise
             except Exception:
                 logger.exception("backtest_universe_filter_error date=%s", trade_date)
                 universe_idx = stock_info_t.index[:0]
