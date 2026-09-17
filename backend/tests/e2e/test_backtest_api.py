@@ -429,6 +429,12 @@ async def test_bt_09c_run_blackout_window_returns_503(
     mock_svc = AsyncMock()
     mock_svc.create_task = AsyncMock(return_value="should-not-be-called")
     mock_svc.has_active_task = AsyncMock(return_value=False)
+    # 出窗那一跳要走到日历那一步：给一个「无交易日」的日历 mock，让它确定性地 400 停下，
+    # 而不是继续往下碰真实 DB（首版没 mock，本机 5432 恰好开着时绿、关了就连接拒绝）。
+    mock_calendar = MagicMock()
+    mock_calendar.get_trade_dates = MagicMock(return_value=[])
+    original_calendar = getattr(app.state, "calendar", None)
+    app.state.calendar = mock_calendar
     app.dependency_overrides[get_backtest_service] = lambda: mock_svc
     try:
         # 命中：17:30 正是管线时段
@@ -437,12 +443,14 @@ async def test_bt_09c_run_blackout_window_returns_503(
         assert resp.status_code == 503
         assert "18:30" in resp.json()["msg"]
         mock_svc.create_task.assert_not_awaited()
-        # 边界：18:30 整点已出窗（右开）→ 不再因时段拒绝（后续因日历 mock 缺失走别的分支即可）
+        # 边界：18:30 整点已出窗（右开）→ 不再因时段拒绝，走到日历步被 400 挡下
         monkeypatch.setattr(bt_mod, "_now_shanghai", lambda: _dt.time(18, 30))
         resp = await client.post("/api/v1/backtest/run", json=_VALID_BODY, headers=_auth())
-        assert not (resp.status_code == 503 and "时段" in resp.json().get("msg", ""))
+        assert resp.status_code == 400, resp.json()
+        mock_svc.create_task.assert_not_awaited()
     finally:
         app.dependency_overrides.pop(get_backtest_service, None)
+        app.state.calendar = original_calendar
 
 
 def test_bt_09d_blackout_parser_pins_semantics() -> None:
