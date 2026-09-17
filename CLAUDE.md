@@ -232,6 +232,7 @@ DEBUG=false
 - **`asyncio_mode = "auto"` 下禁止 `@pytest.mark.anyio`** 装饰任何 test/fixture：marker 被 anyio runner 接管（loop B），fixture 仍归 pytest-asyncio（loop A）→ asyncpg waiter future 在 A 创建、test body 在 B 唤醒 → `RuntimeError: Future attached to a different loop`。**CI Linux 必现，Windows 偶发不报**。新写 async 测试一律 plain `async def test_xxx()`，不加任何 marker
 - **集成测试 async engine fixture**：必须 `poolclass=NullPool`（防跨 loop 复用连接）+ **function scope**（禁 `scope="session"`）。schema 建表用单独的**同步** fixture（`scope="session"`）跑 alembic
 - **禁止让全局 app engine（QueuePool）跨 loop**：测试若直接 `from quantpilot...import AsyncSessionLocal`（或调用内部自建该 session 的生产脚本）做真 commit，全局 engine 的 QueuePool + `pool_pre_ping=True` 会把**上一个测试 loop** 的连接留在池里；本测试复用时 pre_ping/close 打到已关闭的旧 loop → asyncpg `'NoneType' object has no attribute 'send'` / `RuntimeError: Event loop is closed`，且**炸在首个 DB 操作处**（极易误读成该处业务 bug）。根治：集成目录 `conftest.py` autouse fixture 每测试前 `await app_engine.dispose(close=False)`（只换池、不在当前 loop 关旧连接，残连交 GC）
+- **e2e 目录任何触达真实 DB 的路径一律以 `E2ETouchedDatabase` 失败**（2026-09-17，`tests/e2e/conftest.py` 给全局 engine 挂 `do_connect` 监听器）：BT-09c 首版漏 mock 日历，本机 5432 恰好开着就绿、CI 无 DB 就报上面那条「different loop」——**同一根因在两个环境长两张脸**，三个 commit 的 CI 连红才追到。e2e 的「无 DB」此前靠 `client` fixture 逐个 stub 查库依赖，漏一个就靠环境碰运气；现在漏了就在连接这一层同一句话失败并指名该 mock 谁。判据：`tests/e2e/test_e2e_forbids_database.py`，以及**别给测试机起 DB 去让 e2e 变绿**
 
 **测试隔离类**
 
