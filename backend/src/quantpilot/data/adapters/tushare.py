@@ -106,6 +106,11 @@ class TushareAdapter(DataSourceAdapter):
     _ROW_CAPS = frozenset({100, 1000, 2000, 3000, 4000, 5000, 6000, 10000})
     # fina_indicator 单次上限（两种调用形态都是它），`fetch_financial_by_stock` 命中即拆批
     _FINA_ROW_CAP = 100
+    # 已实证「恰好等于整数是结构性的」的 (接口, 行数)，不告警（2026-09-17）：
+    #   · index_weight 按 60 天窗口取恒含 2 个月末快照，CSI500 500×2 = 1000——生产每天一次
+    #     假告警。真调核对：同窗口 000852 返 2000、000300 返 600，逐月分拆行数一致，非截断。
+    # 每天响的告警等于没有告警。⚠️ 只能逐对豁免，不能把 1000 从上限集合里整个拿掉。
+    _ROW_CAP_VERIFIED_LEGIT = frozenset({("index_weight", 1000)})
 
     @classmethod
     def _warn_if_row_capped(cls, interface: str, result: Any, kwargs: dict) -> None:
@@ -119,7 +124,7 @@ class TushareAdapter(DataSourceAdapter):
             n = len(result)
         except TypeError:
             return
-        if n in cls._ROW_CAPS:
+        if n in cls._ROW_CAPS and (interface, n) not in cls._ROW_CAP_VERIFIED_LEGIT:
             logger.warning(
                 "tushare_row_cap_suspected: interface=%s rows=%d params=%s"
                 " —— 行数恰好等于已知单次上限，很可能被静默截断（换分批/换调用形态）",

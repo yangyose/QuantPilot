@@ -442,3 +442,27 @@ class TestInterfaceNameResolution:
             await adapter._call(fn)
         assert "fina_indicator" in caplog.text
         assert "unknown" not in caplog.text
+
+    async def test_row_cap_verified_legit_pairs_do_not_warn(
+        self, adapter: TushareAdapter, caplog
+    ) -> None:
+        """已实证「恰好等于整数是结构性的」的 (接口, 行数) 不告警，其余整数照常告警。
+
+        `index_weight` 按 60 天窗口取，恒含 2 个月末快照：CSI500 500×2 = **1000** 行，
+        生产每天一次假告警（2026-09-11~16 逐日出现）。每天响的告警等于没有告警，
+        故按真调核对（同窗口 000852 返 2000、000300 返 600，逐月分拆行数一致）加豁免。
+        豁免必须**逐对**列，不能把 1000 整个从上限集合里拿掉——别的接口 1000 仍可疑。
+        """
+        import functools
+
+        weights = pd.DataFrame({"con_code": [f"{i:06d}.SZ" for i in range(1000)]})
+        fn = functools.partial(lambda name, **kw: weights, "index_weight")
+        with caplog.at_level("WARNING"):
+            await adapter._call(fn, index_code="000905.SH")
+        assert "tushare_row_cap_suspected" not in caplog.text
+
+        caplog.clear()
+        other = functools.partial(lambda name, **kw: weights, "some_other_api")
+        with caplog.at_level("WARNING"):
+            await adapter._call(other)
+        assert "tushare_row_cap_suspected" in caplog.text

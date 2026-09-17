@@ -296,6 +296,13 @@ DATABASE_URL=postgresql+asyncpg://quantpilot:quantpilot@localhost:5433/quantpilo
 docker stop qp-test-db-5433                    # --rm，停即销毁
 ```
 
+⚠️ **先看有没有同名旧容器**（2026-09-16 踩到）：`docker ps -a | grep qp-test-db-5433`。
+本机曾有一个 `Exited` 的旧容器（机器重启后 `--rm` 未生效），其 env 是
+`POSTGRES_USER=test / POSTGRES_PASSWORD=test / POSTGRES_DB=quantpilot_test`——与上面的
+`quantpilot/quantpilot/quantpilot` **不同**，照抄上面的 `DATABASE_URL` 会 `role "quantpilot" does not exist`。
+判据：`docker inspect -f '{{.Config.Env}}' qp-test-db-5433 | tr ' ' '\n' | grep POSTGRES_` 看真实凭证，
+`docker start` 复用即可（conftest 会 upgrade head / downgrade base，里面的数据无所谓）。
+
 不必手动跑 alembic：`tests/conftest.py` 的 session 级 `_ensure_schema` 会在**子进程**里
 `alembic upgrade head` 建表，收尾再 `alembic downgrade base`。
 
