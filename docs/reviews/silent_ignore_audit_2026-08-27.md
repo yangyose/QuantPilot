@@ -213,5 +213,17 @@ AST 断言「除工厂外不得直接构造」。这正是 CLAUDE.md §4.11 表�
 | `FactorMonitorConfig.ic_window` / `ic_alert_threshold` / `half_life_window` / `half_life_window_days` | **5b-A 摘掉** | 从设置页整段删除（该段只有这三项）；dataclass 保留字段名仅为存量 JSON 合并不报错，类文档标「已废弃、代码不读」。⚠️ 原注释「`run_monthly` 旧路径仍消费」**不属实**——月度监控用写死的 3 月窗口，阈值写死在 `detect_alert` |
 | `ValueStrategyConfig.pe_pb_history_years` | 无需拍板 | 2026-09-17 `479373c` 接线：每日管线与回测都经 `resolve_pe_pb_history_years` |
 
-至此 §6.1 的 14 项零引用字段：**10 项接线并各配「改参数 → 结果必变」测试，4 项摘掉**。
-本报告立下的唯一护栏（每项一条行为测试，不靠扫描）仍然成立。
+**逐项对账（第三方评审当天订正——此前的「14 项 10+4」把 §6.3 里同一批 4 个字段既算进「已接线」
+又算进「欠账」，且从未把 `macd_signal`（§4 盲点发现）与 `pe_pb_history_years`（§6.3 顺带发现）计入分母）**：
+
+| 类 | 字段 | 处置 |
+|---|---|---|
+| `FactorMonitorConfig` | `ic_window_days` / `icir_lag_days` / `icir_warmup_days` / `state_min_samples` / `ic_bootstrap_iterations` | 接线（09-07）|
+| `FactorMonitorConfig` | `ic_window` / `ic_alert_threshold` / `half_life_window` / `half_life_window_days` | 摘掉（09-17；前三项从设置页删除，第四项本就不在 UI，四项均 dataclass 标废弃）|
+| `TrendStrategyConfig` | `macd_fast` / `macd_slow` / `macd_signal` | 接线（09-07）|
+| `TrendStrategyConfig` | `ma_short` / `ma_long` | 接线（09-17）|
+| `ScoringPipelineConfig` | `hysteresis_enabled` | 接线（09-07）|
+| `ValueStrategyConfig` | `pe_pb_history_years` | 接线（09-17）|
+
+**合计 16 项：12 接线 + 4 摘掉**，接线的每项各配一条「改参数 → 结果必变」测试
+（`test_config_actually_consumed.py`）。本报告立下的唯一护栏（每项一条行为测试，不靠扫描）仍然成立。

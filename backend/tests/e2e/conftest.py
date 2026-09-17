@@ -34,8 +34,16 @@ def _refuse_connect(*_args: object, **_kwargs: object) -> None:
     )
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True)
 def _e2e_forbid_database() -> Generator[None, None, None]:
+    """⚠️ 必须是 **function** scope（2026-09-17 CI 连红 4 次才发现）：
+
+    首版写成 `scope="session"`——本目录的 conftest 只让 e2e 用例**触发**它，但 session 级
+    fixture 的**生命周期**是整个 pytest 进程：CI 把 `tests/unit tests/e2e tests/integration`
+    放在一个会话里跑，第一条 e2e 起了监听器，之后所有走全局 engine 的集成测试全部
+    `E2ETouchedDatabase`。本机三个目录一直分开跑，所以看不见。
+    function scope = 只在 e2e 用例执行期间挂着，用例结束即摘，`event.listen/remove` 开销可忽略。
+    """
     sync_engine = engine.sync_engine
     event.listen(sync_engine, "do_connect", _refuse_connect)
     try:
