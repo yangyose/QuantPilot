@@ -718,3 +718,50 @@ swap 期间用到 671 MB、无 OOM 压力信号，`/health` 全程 200，容器�
 a730ac2 feat(backtest): 作业时段禁提交护栏 + 生产有条件放开回测（用户拍板选项 B）
 e99c86b perf(backtest): PE/PB 分位下推 + 流式加载，6 日回测峰值 3530 → 1056 MB；守卫覆盖 PowerShell 工具
 ```
+
+## 5d20c34 — 2026-09-17T02:36:29Z
+
+| 项 | 值 |
+|---|---|
+| 分支 | `main` |
+| 基线（部署前） | `a730ac2` |
+| 回滚点 | `/home/ubuntu/backups/backend_pre_5d20c34_20260917_113417.tar.gz` |
+| delta | 1 个 commit |
+
+```
+5d20c34 test(backtest): BT-09c 出窗那一跳给日历 mock 确定性 400，不再碰真实 DB（本机 5432 关着时假红）
+5dc1e24 fix(tushare): fina_indicator 定期调用同样受 100 行截断——命中上限即对半拆批重取，两条路径共用
+```
+
+### 本次上下文：生产 Piotroski 7 列回填（用户 2026-09-16 拍板「回填」，C-1 已确认）
+
+**回滚点**：`/home/ubuntu/backups/pre_piotroski_financial_data_20260916_170434.sql.gz`
+（`--data-only -t financial_data`，156 MB，6,743,620 行与表一致）。回填前 7 列非空基线：
+roa 27,249 / ocfps 27,741 / total_share 27,747（均只来自 C2 上线后的每日采集）。
+
+**第一次（09-17 09:44 CST，用户手敲，代码 `a730ac2`）被我停掉**：3 期各只写 ~4,900 行，
+`tushare_row_cap_suspected(fina_indicator, 100)` 302 次。真调复现：**`period=` 定期调用同样被
+100 行截断**——80 码一批恰好 100 行、只剩 55 个 ts_code；50 码 × 每码 2 行（update_flag 0/1）
+恰好 100 就是边界。⚠️ **每日 17:30 管线的 `fetch_financial_data` 走的是同一形态**，此前每天都可能
+悄悄丢若干只股票的基本面。修法 `5dc1e24`：命中上限即对半拆批重取，两条路径共用一个入口
+（TD-13/14 用「>100 行只返前 100」替身钉死、变异验证）。已随 `5d20c34` 部署。
+
+**第二次（10:37 → 11:51 CST，代码 `5d20c34`，我起的）**：22 期全部 `ok≈5,500`（首次截断时 ~4,900），
+拆批告警 606 次（= 拆批次数，不是丢行）。**总行数 6,743,620 → 6,776,518**（+32,898：拆批取回的
+第二行 update_flag 与 2021 年后上市股的历史期）。
+
+**独立核验（不信脚本自报，按 `(ts_code, report_period)` 粒度，121,192 对）**：
+roa **96.4%** / ocfps 96.3 / eps 96.5 / current_ratio 94.8 / grossprofit_margin 96.1 / assets_turn 96.5
+——与 5434 的 94.7~99.9% 一致。`total_share` 回填前 4.6%（它来自 `daily_basic`，另一脚本
+`backfill_total_share.py`，12:19 CST 起跑、22 次调用约 3 分钟）。
+
+**`total_share`（12:19 → 12:23 CST，`backfill_total_share.py`，22 次 `daily_basic` 调用）**：
+逐期 4,217 → 5,482；按 `(ts_code, report_period)` 粒度 **92.7%**（分母含该期末尚未上市的码），
+**7 列同时非空 89.3%**（121,208 对）。总行数 6,776,518 → **6,866,343**（+89,825 期末快照行）。
+F-Score 「不可判」自此不再是「缺数据」，今晚 17:30 起 `piotroski_f_score: judged` 应由 0 变为约 3,000+
+（门控仍是影子模式，不剔除）。
+
+**日志轮转（用户 2026-09-17 拍板「清」）**：`/app/logs/quantpilot.log` 2026-09-03 SecretFilter 修复前的
+10,194 行（含 `redis://:<密码>@` 明文）切走归档到 `backups/quantpilot.log.pre20260903_20260917_125740`
+（600 权限）；用「截断 + 追加」而非 `mv`，uvicorn 的 FileHandler 仍写同一 inode（切完后新行照常落盘）。
+切后活文件 390 行、明文匹配 **0**。
