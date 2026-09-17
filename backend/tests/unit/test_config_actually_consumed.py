@@ -383,3 +383,40 @@ class TestPipelineUsesFrozenSnapshotNotLiveConfig:
         assert {"config", "scoring_config"} <= kwargs, (
             f"CP2 未传冻结配置，会现读 ConfigService：{kwargs}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ValueStrategyConfig.pe_pb_history_years（F-SI 欠账，2026-09-17 接线）
+# 此前两处各写死 `_PE_PB_HISTORY_YEARS = 5`：每日管线 `_build_market_snapshot` 与回测
+# `_load_data_bundle` 的分位窗口都不读它，而它对用户可编辑——旋钮拧了没反应且不报错。
+# ─────────────────────────────────────────────────────────────────────────────
+class TestPePbHistoryYearsConsumed:
+    def test_resolver_reads_value_strategy_config(self) -> None:
+        """改参数 → 结果必须变：3 年 / 7 年给出不同窗口；没有 value 策略回落默认 5。"""
+        from quantpilot.core.config_defaults import ValueStrategyConfig
+        from quantpilot.engine.strategies.value import ValueStrategy
+        from quantpilot.services.strategy_service import resolve_pe_pb_history_years
+
+        three = [ValueStrategy(ValueStrategyConfig(pe_pb_history_years=3))]
+        seven = [ValueStrategy(ValueStrategyConfig(pe_pb_history_years=7))]
+        assert resolve_pe_pb_history_years(three) == 3
+        assert resolve_pe_pb_history_years(seven) == 7
+        assert resolve_pe_pb_history_years([]) == 5
+
+    def test_both_call_sites_use_the_resolver_not_a_constant(self) -> None:
+        """调用点：两条路径都必须经 `resolve_pe_pb_history_years`，且模块级常量不得再被引用。"""
+        import ast
+        import inspect
+
+        from quantpilot.services import backtest_service, strategy_service
+
+        for fn in (strategy_service.ScoringService._build_market_snapshot,
+                   backtest_service.BacktestService._load_data_bundle):
+            src = inspect.getsource(fn)
+            tree = ast.parse(src.lstrip())
+            called = {
+                (getattr(n.func, "attr", None) or getattr(n.func, "id", None))
+                for n in ast.walk(tree) if isinstance(n, ast.Call)
+            }
+            assert "resolve_pe_pb_history_years" in called, fn.__qualname__
+            assert "_PE_PB_HISTORY_YEARS" not in src, fn.__qualname__ + " 仍读写死常量"

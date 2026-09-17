@@ -15,9 +15,10 @@ class ValueStrategy(BaseStrategy):
     """SDD §7.2.4：PE/PB 历史分位 + ROE + 价值陷阱规避。
 
     Phase 10：`config` 由 ConfigService 注入（`pe_pb_history_years`）。
-    【降级说明】V1.0 历史窗口由 ScoringService 在构造 MarketSnapshot 时从数据源
-    截取，`pe_pb_history_years` 目前仅登记到 Pipeline 快照；恢复条件：V1.5 在
-    ScoringService 内将 dataclass 配置值传给 MarketDataRepository 控制取数窗口。
+    ~~【降级说明】`pe_pb_history_years` 仅登记到快照、不控制取数窗口~~ ——
+    **2026-09-17 已恢复**：每日管线与回测都经 `strategy_service.resolve_pe_pb_history_years`
+    读本配置决定 `get_pe_pb_percentile_bulk` 的窗口起点（F-SI 欠账收口，
+    `test_config_actually_consumed.py::TestPePbHistoryYearsConsumed` 钉「改参数 → 窗口变」）。
     """
 
     name = "value"

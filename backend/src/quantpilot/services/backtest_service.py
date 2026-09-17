@@ -555,7 +555,12 @@ class BacktestService:
         # 成本：每日约 3.7s + 2 × 3.4s（5434 实测，~4000 码）；6 日回测约 1 分钟，可接受。
         # 交易日 = 窗口内 daily_quote 实际存在的日期（无行情的日子引擎本就不评分）。
         from quantpilot.data.repository import MarketDataRepository
-        from quantpilot.services.strategy_service import _PE_PB_HISTORY_YEARS
+        from quantpilot.services.strategy_service import resolve_pe_pb_history_years
+
+        # 与生产同源：窗口年数读 ValueStrategyConfig（engine 为 None 的纯加载场景回落 5）
+        _years = resolve_pe_pb_history_years(
+            getattr(self._engine, "_strategies", None) if self._engine is not None else None
+        )
 
         pe_percentile_by_date: dict[date, pd.Series] = {}
         pb_percentile_by_date: dict[date, pd.Series] = {}
@@ -568,7 +573,7 @@ class BacktestService:
             _fin_t = await _repo.get_latest_financial(_all_codes, _td)
             if _fin_t.empty:
                 continue
-            _start = _td - timedelta(days=365 * _PE_PB_HISTORY_YEARS)
+            _start = _td - timedelta(days=365 * _years)
             for _col, _sink in (("pe_ttm", pe_percentile_by_date), ("pb", pb_percentile_by_date)):
                 if _col not in _fin_t.columns:
                     continue

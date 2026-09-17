@@ -46,8 +46,25 @@ PRICE_WINDOW_SLACK_DAYS = 2
 # 日历深度不足以回退所需交易日数时的兜底：按日历天近似。
 # 1.6 比 §4.4 的 1.5 更保守，仅用于早期历史 / 回填脚本等日历不全的场景，且必告警。
 _PRICE_WINDOW_FALLBACK_RATIO = 1.6
-# PE/PB 历史窗口：近 5 年
-_PE_PB_HISTORY_YEARS = 5
+# PE/PB 历史窗口（年）——**由 ValueStrategyConfig.pe_pb_history_years 决定**（2026-09-17 接线）。
+# 此前此处写死 5，回测 service 再 import 这个常量：配置对用户可编辑却两处都不读——
+# F-SI 那一族的最后一个无需拍板的字段。无 value 策略时才用这个兜底。
+_PE_PB_HISTORY_YEARS_FALLBACK = 5
+
+
+def resolve_pe_pb_history_years(strategies) -> int:
+    """从策略集合里的 ValueStrategy 读 `pe_pb_history_years`；没有 value 策略回落 5。
+
+    `test_config_actually_consumed.py::TestPePbHistoryYearsConsumed` 钉两件事：
+    改参数 → 窗口变；两条取数路径（每日管线 / 回测）都经本函数而非常量。
+    """
+    for s in strategies or ():
+        if getattr(s, "name", None) == "value":
+            cfg = getattr(s, "_cfg", None)
+            years = getattr(cfg, "pe_pb_history_years", None)
+            if isinstance(years, int) and years > 0:
+                return years
+    return _PE_PB_HISTORY_YEARS_FALLBACK
 
 
 def resolve_price_window_start(
@@ -342,7 +359,9 @@ class ScoringService:
         # V1.0 整改 Batch 2 — B2-3：用 timedelta 替代 date(yr-N, m, d)。
         # 闰年 2-29 在 date(yr-N, 2, 29) 非闰年时抛 ValueError → 5 年一次评分流水线降级。
         # 365 日近似覆盖 publish_date 历史窗口（每年 ≈ 365.25 日）。
-        start_pepb = trade_date - timedelta(days=365 * _PE_PB_HISTORY_YEARS)
+        start_pepb = trade_date - timedelta(
+            days=365 * resolve_pe_pb_history_years(self._strategies)
+        )
 
         # 并发查询所有需要的数据
         (
