@@ -716,3 +716,84 @@ class TestSuspendParams:
         ):
             result = await adapter.fetch_daily_quotes(date(2026, 1, 2))
         assert bool(result.iloc[0]["is_suspended"]) is False
+
+
+# ── TD-13：fina_indicator 定期调用也有 100 行硬上限——命中即对半拆批重取 ──────────
+async def test_td_13_period_batch_hitting_cap_is_split_and_refetched(
+    adapter: TushareAdapter,
+) -> None:
+    """TD-13（2026-09-17 生产回填当场抓到）：`period + ts_code` 形态**同样**被 100 行截断。
+
+    真调：80 码一批 → 恰好 100 行、只剩 55 个 ts_code（25 码整只丢失）；同样 80 码分 4×20
+    → 144 行。50 码/批时每码最多 2 行（update_flag 0/1）→ 一批**恰好 100** 就是截断边界，
+    生产回填第一期就报了 26 次 `tushare_row_cap_suspected`。
+    修法：返回行数命中上限 → 把该批对半拆开重取（递归），直到不再命中；
+    单码仍命中则原样接受（一只股 100 行不可能，只是保证终止）。
+    这里用替身模拟「>100 行则只返回前 100 行」的接口，断言每个 ts_code 都取到。
+    """
+    codes = [f"{i:06d}.SZ" for i in range(1, 51)]   # 50 码，每码 3 行 → 真实应有 150 行
+
+    def _rows_for(batch_codes: list[str]) -> pd.DataFrame:
+        rows = []
+        for c in batch_codes:
+            for flag in ("0", "1", "1"):
+                rows.append({"ts_code": c, "ann_date": "20260830", "end_date": "20260630",
+                             "roe": 1.0, "netprofit_yoy": 1.0, "tr_yoy": 1.0,
+                             "debt_to_assets": 1.0, "roa": 1.0, "ocfps": 1.0, "eps": 1.0,
+                             "current_ratio": 1.0, "grossprofit_margin": 1.0,
+                             "assets_turn": 1.0, "update_flag": flag})
+        return pd.DataFrame(rows)
+
+    calls: list[int] = []
+
+    async def _capped_call(func, **kwargs):
+        batch_codes = kwargs["ts_code"].split(",")
+        calls.append(len(batch_codes))
+        return _rows_for(batch_codes).head(100)      # 接口侧的 100 行硬上限
+
+    with patch.object(adapter, "_call", new=_capped_call), \
+            patch("quantpilot.data.adapters.tushare.asyncio.sleep", new=AsyncMock()):
+        out = await adapter.fetch_financial_by_stock(
+            codes, date(2026, 6, 30), date(2026, 6, 30), period="20260630",
+        )
+
+    assert set(out["ts_code"]) == set(codes), "拆批后仍有 ts_code 整只丢失"
+    assert len(out) == 150, f"应取回全部 150 行，实得 {len(out)}"
+    # 首批 50 码命中上限 → 至少发生过一次拆分（不钉具体拆法，只钉「拆了」）
+    assert calls[0] == 50 and any(n < 50 for n in calls), calls
+
+
+async def test_td_14_daily_financial_path_splits_capped_batches(
+    adapter: TushareAdapter,
+) -> None:
+    """TD-14：每日管线的 `fetch_financial_data` 走同一条 `period + 50 码` 形态，
+    命中 100 行上限时同样必须拆批——否则 17:30 管线每天悄悄丢掉一批里的若干只股票的
+    基本面，且没有任何报错（TD-13 只钉了回填那条路径）。"""
+    codes = [f"{i:06d}.SZ" for i in range(1, 51)]
+    mock_basic = pd.DataFrame({"ts_code": codes, "pe_ttm": [12.0] * 50,
+                               "pb": [1.2] * 50, "dv_ttm": [3.0] * 50})
+
+    def _rows_for(batch_codes: list[str]) -> pd.DataFrame:
+        rows = []
+        for c in batch_codes:
+            for flag in ("0", "1", "1"):
+                rows.append({"ts_code": c, "end_date": "20250930", "ann_date": "20251028",
+                             "roe": 15.0, "netprofit_yoy": 10.0, "tr_yoy": 8.0,
+                             "debt_to_assets": 50.0, "roa": 1.0, "ocfps": 1.0, "eps": 1.0,
+                             "current_ratio": 1.0, "grossprofit_margin": 1.0,
+                             "assets_turn": 1.0, "update_flag": flag})
+        return pd.DataFrame(rows)
+
+    async def _capped(func, **kwargs):
+        if func is adapter._pro.daily_basic:
+            return mock_basic
+        if func is adapter._pro.fina_indicator:
+            return _rows_for(kwargs["ts_code"].split(",")).head(100)   # 接口侧上限
+        return pd.DataFrame()
+
+    with patch.object(adapter, "_call", new=_capped), \
+            patch("quantpilot.data.adapters.tushare.asyncio.sleep", new=AsyncMock()):
+        result = await adapter.fetch_financial_data(date(2026, 1, 2))
+
+    got = set(result.loc[result["roe"].notna(), "ts_code"])
+    assert got == set(codes), f"每日路径丢了 {len(set(codes) - got)} 只股票的基本面"

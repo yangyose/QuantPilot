@@ -104,6 +104,8 @@ class TushareAdapter(DataSourceAdapter):
     # 两次都不报错。§4.3 既有的判据「验返回日期是否落在入参窗口内」拦不住这一类:
     # 返回的数据确实落在窗口内，只是少了一大半。
     _ROW_CAPS = frozenset({100, 1000, 2000, 3000, 4000, 5000, 6000, 10000})
+    # fina_indicator 单次上限（两种调用形态都是它），`fetch_financial_by_stock` 命中即拆批
+    _FINA_ROW_CAP = 100
 
     @classmethod
     def _warn_if_row_capped(cls, interface: str, result: Any, kwargs: dict) -> None:
@@ -138,6 +140,30 @@ class TushareAdapter(DataSourceAdapter):
             return pd.to_datetime(str(s), format="%Y%m%d").date()
         except Exception:
             return None
+
+    async def _fina_indicator_batch(
+        self, batch: list[str], window: dict[str, str], fields: str,
+    ) -> list[pd.DataFrame]:
+        """取一批 `fina_indicator`；返回行数命中 100 行上限就对半拆开重取（2026-09-17）。
+
+        ⚠️ **定期调用（`period=`）同样受 100 行上限**——生产 C2 回填当场抓到：
+        80 码一批 → 恰好 100 行、只剩 55 个 ts_code（25 码整只丢失）；同批分 4×20
+        → 144 行。50 码 × 每码最多 2 行（update_flag 0/1）恰好 100 就是截断边界，
+        且每日管线的 `fetch_financial_data` 走的是同一形态——两条路径都经本方法。
+        拆到单码仍命中则原样接受（只为保证终止，一只股一期不会有 100 行）。
+        """
+        df = await self._call(
+            self._pro.fina_indicator, ts_code=",".join(batch), **window, fields=fields,
+        )
+        n = 0 if df is None else len(df)
+        if n >= self._FINA_ROW_CAP and len(batch) > 1:
+            mid = len(batch) // 2
+            await asyncio.sleep(0.3)
+            left = await self._fina_indicator_batch(batch[:mid], window, fields)
+            await asyncio.sleep(0.3)
+            right = await self._fina_indicator_batch(batch[mid:], window, fields)
+            return left + right
+        return [df] if n else []
 
     # ── 股票列表 ──────────────────────────────────────────────────────────────
 
@@ -328,11 +354,12 @@ class TushareAdapter(DataSourceAdapter):
             for i in range(0, len(codes_for_fina), 50):
                 batch = codes_for_fina[i : i + 50]
                 try:
-                    df_batch = await self._call(
-                        self._pro.fina_indicator,
-                        period=period_str,
-                        ts_code=",".join(batch),
-                        fields=(
+                    # 命中 100 行上限自动拆批（`_fina_indicator_batch`），否则 50 码 × 2 行
+                    # 恰好 100 时会整只丢码而不报错。
+                    fina_frames.extend(await self._fina_indicator_batch(
+                        batch,
+                        {"period": period_str},
+                        (
                             "ts_code,end_date,ann_date,roe,netprofit_yoy,"
                             "tr_yoy,debt_to_assets,"
                             # V1.5-C C2（Piotroski）新增 6 列。2026-08-27 实调核对：
@@ -340,9 +367,7 @@ class TushareAdapter(DataSourceAdapter):
                             # 与单码不同是 total_equity 第 6 号 bug 的成因，故不靠推断）。
                             "roa,ocfps,eps,current_ratio,grossprofit_margin,assets_turn"
                         ),
-                    )
-                    if df_batch is not None and not df_batch.empty:
-                        fina_frames.append(df_batch)
+                    ))
                 except Exception:
                     logger.exception(
                         "fina_indicator_batch_failed",
@@ -597,36 +622,32 @@ class TushareAdapter(DataSourceAdapter):
                 "roe", "net_profit_yoy", "revenue_yoy", "debt_to_asset",
             ])
         batch_size = 50
+        # ⚠️ **按日期窗口调用有 100 行硬上限**（2026-09-09 实调：5 码跨 5.7 年
+        # 恰好返回 100 行、每码 18~21 期被截断）。50 码/批时每股只剩 2 期，
+        # 而调用**成功、不报错**——C2 回填因此只填到最新一期，
+        # 脚本却报 ok=5515 fail=0。给 `period` 即走定期调用，逐期取完整数据。
+        _window = (
+            {"period": period}
+            if period
+            else {
+                "start_date": self._fmt(start_date),
+                "end_date": self._fmt(end_date),
+            }
+        )
+        _fields = (
+            "ts_code,ann_date,end_date,roe,netprofit_yoy,tr_yoy,"
+            "debt_to_assets,"
+            # V1.5-C C2：两条采集路径都要带这 6 列——只改日频那条，
+            # 回填出来的历史全 NULL → F-Score 全历史「不可判」→
+            # 门控在回测/面板里永不生效，且没有任何报错。
+            "roa,ocfps,eps,current_ratio,grossprofit_margin,assets_turn"
+        )
+
         frames: list[pd.DataFrame] = []
         for i in range(0, len(ts_codes), batch_size):
-            batch = ts_codes[i : i + batch_size]
-            # ⚠️ **按日期窗口调用有 100 行硬上限**（2026-09-09 实调：5 码跨 5.7 年
-            # 恰好返回 100 行、每码 18~21 期被截断）。50 码/批时每股只剩 2 期，
-            # 而调用**成功、不报错**——C2 回填因此只填到最新一期，
-            # 脚本却报 ok=5515 fail=0。给 `period` 即走定期调用，逐期取完整数据。
-            _window = (
-                {"period": period}
-                if period
-                else {
-                    "start_date": self._fmt(start_date),
-                    "end_date": self._fmt(end_date),
-                }
-            )
-            df = await self._call(
-                self._pro.fina_indicator,
-                ts_code=",".join(batch),
-                **_window,
-                fields=(
-                    "ts_code,ann_date,end_date,roe,netprofit_yoy,tr_yoy,"
-                    "debt_to_assets,"
-                    # V1.5-C C2：两条采集路径都要带这 6 列——只改日频那条，
-                    # 回填出来的历史全 NULL → F-Score 全历史「不可判」→
-                    # 门控在回测/面板里永不生效，且没有任何报错。
-                    "roa,ocfps,eps,current_ratio,grossprofit_margin,assets_turn"
-                ),
-            )
-            if not df.empty:
-                frames.append(df)
+            frames.extend(await self._fina_indicator_batch(
+                ts_codes[i : i + batch_size], _window, _fields,
+            ))
             if i + batch_size < len(ts_codes):
                 await asyncio.sleep(0.3)
 
