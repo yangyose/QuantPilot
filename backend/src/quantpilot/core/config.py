@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     # 1159 MB（约 +4 MB/交易日，100 日 ≈ 1.45 GB）。三步：财务切片流式分块、daily_quotes
     # 由 ORM 对象改列裁剪流式、NUMERIC 在 SQL 内 cast float8（Decimal 碎片是大头）；分位
     # 改走生产同款 `get_pe_pb_percentile_bulk`（顺带把回测分位窗口从 ~400 天对齐到 5 年）。
+    # 2026-09-21 分位又改回内存算——但是**紧凑数组**（24 B/行 ≈ 150 MB），不是当年的
+    # Row/宽表：6 日峰值 1020 → 1174 MB、耗时 75 → 58 s，语义与 SQL 逐码相同
+    # （`backtest_service.pe_pb_percentile_in_memory`）。
     # ⇒ 上面那条「算法前置」已满足。**503 仍维持**：剩下的门槛不再是内存，而是运维红线①
     # （回测就是一次全 universe 评分作业）——放开与否由用户按
     # `docs/reviews/memory_premise_after_4gb_2026-09-14.md` §3 拍板，不在代码里自行放开。

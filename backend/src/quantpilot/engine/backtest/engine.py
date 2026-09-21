@@ -75,7 +75,8 @@ class BacktestDataBundle:
     # 两个 dict 都空时 ValueStrategy 仍会回落到读它。
     pe_pb_history: pd.DataFrame = field(default_factory=pd.DataFrame)
     # 2026-09-16：trade_date → 当日 `1 - pct_rank` 分位 Series（index=ts_code），
-    # 由 `get_pe_pb_percentile_bulk` 在 SQL 内算出（5 年窗口，与生产同口径）。
+    # 5 年窗口、与生产 `get_pe_pb_percentile_bulk` 同语义；2026-09-21 起由 Service 在内存里
+    # 用紧凑数组算（`backtest_service.pe_pb_percentile_in_memory`），逐码与 SQL 相同。
     pe_percentile_by_date: dict[date, pd.Series] = field(default_factory=dict)
     pb_percentile_by_date: dict[date, pd.Series] = field(default_factory=dict)
     # B3-3：HS300 后复权累计价（Momentum.rs_6m 真实计算；index=trade_date）

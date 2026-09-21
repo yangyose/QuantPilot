@@ -14,6 +14,10 @@
 
 判据按 §4.11：引擎侧用捕获快照的替身策略在**调用点**验；Service 侧用 AST 钉调用点
 （替身测试是自证式的）。
+
+2026-09-21 更新：Service 侧分位改为内存紧凑数组（`pe_pb_percentile_in_memory`，见
+`test_backtest_pe_pb_in_memory.py`），不再逐日调 SQL；本文件的 Service 钉子随之改钉
+「不许逐日 SQL、不许宽 DataFrame」，引擎侧钉子不变。
 """
 from __future__ import annotations
 
@@ -125,12 +129,15 @@ class TestServiceActuallyPushesDown:
             (getattr(n.func, "attr", None) or getattr(n.func, "id", None))
             for n in ast.walk(tree) if isinstance(n, ast.Call)
         }
-        # 2026-09-21：「当前 pe/pb」改从内存里的 fin_df 切（`_latest_pe_pb_at`，语义 =
-        # `get_latest_financial` 日频段，5434 六日逐码逐值相同），不再每日多跑一段
-        # 450 天 GROUP BY；分位仍必须在 SQL 里算——5 年窗口进内存就是 3530 MB 的来源。
+        # 2026-09-21：两步都改内存——「当前 pe/pb」从 fin_df 切（`_latest_pe_pb_at`，语义 =
+        # `get_latest_financial` 日频段）；分位用紧凑数组 + bincount（`pe_pb_percentile_in_memory`，
+        # 语义 = `get_pe_pb_percentile_bulk`），5434 六日逐码逐值均与 SQL 相同。
+        # 峰值约束由 `test_service_no_longer_materializes_pe_pb_history_from_rows` 守：
+        # 不许再建 (ts_code, publish_date) 宽表——紧凑数组是 24 B/行，宽 DataFrame + Row 不是。
         assert "_latest_pe_pb_at" in called, "当前 pe/pb 必须与生产同源（日频段语义）"
         assert "get_latest_financial" not in called, "每日又多跑了一段回测不用的基本面 LOCF 查询"
-        assert "get_pe_pb_percentile_bulk" in called, "分位没有下推——峰值仍是 150 万行 Row"
+        assert "pe_pb_percentile_in_memory" in called, "分位没走内存路径（每日两列 SQL 约 4 s）"
+        assert "get_pe_pb_percentile_bulk" not in called, "回测又回到逐日 SQL 分位"
 
     def test_service_no_longer_materializes_pe_pb_history_from_rows(self) -> None:
         src = self._src()

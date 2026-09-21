@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import Float, cast, func, select
 from sqlalchemy import update as sql_update
@@ -358,6 +360,48 @@ class BacktestService:
         )
         await self._session.flush()
 
+    async def _load_pe_pb_history_arrays(
+        self, start_date: date, end_date: date
+    ) -> PePbHistoryArrays:
+        """把 `financial_data` 窗口内的 (ts_code, publish_date, pe_ttm, pb) 载成紧凑数组。
+
+        走 asyncpg 的 `COPY (SELECT …) TO STDOUT CSV`，整块进 `BytesIO` 再 `read_csv` 按列
+        定型——**不经过** SQLAlchemy Row（同样 646 万行，`session.stream` 光取行就要 22 s，
+        COPY 6.6 s + 解析 1.6 s；5434 实测）。日序数在 SQL 里算成整数
+        （`publish_date - DATE '0001-01-01' + 1` ≡ `date.toordinal()`），`ts_code` 以
+        `category` 读入，codes 即序号。峰值 ≈ CSV 缓冲（~185 MB，解析后即释放）+ 目标数组
+        （24 B/行 ≈ 150 MB）。这是本仓唯一一处绕过 SQLAlchemy 直接用驱动的地方：
+        只读、参数化、只为这一条大批量只取数的查询。
+        """
+        import io
+
+        conn = await self._session.connection()
+        raw = await conn.get_raw_connection()
+        driver = raw.driver_connection  # asyncpg.Connection
+        buf = io.BytesIO()
+        await driver.copy_from_query(
+            "SELECT ts_code, publish_date - DATE '0001-01-01' + 1, "
+            "pe_ttm::float8, pb::float8 "
+            "FROM financial_data WHERE publish_date >= $1 AND publish_date <= $2",
+            start_date, end_date, output=buf, format="csv",
+        )
+        buf.seek(0)
+        df = pd.read_csv(
+            buf, header=None, names=["c", "d", "pe", "pb"],
+            dtype={"c": "category", "d": np.int32, "pe": np.float64, "pb": np.float64},
+        )
+        del buf
+        cat = df["c"].cat
+        return PePbHistoryArrays(
+            code_labels=np.asarray(cat.categories, dtype=object),
+            code_idx=cat.codes.to_numpy(dtype=np.int32),
+            day_ord=df["d"].to_numpy(dtype=np.int32),
+            values={
+                "pe_ttm": df["pe"].to_numpy(dtype=np.float64),
+                "pb": df["pb"].to_numpy(dtype=np.float64),
+            },
+        )
+
     async def _load_data_bundle(self, config: BacktestConfig) -> BacktestDataBundle:
         """
         预加载全量历史数据。
@@ -548,19 +592,19 @@ class BacktestService:
         # 3b. pe_pb_history 不再派生（留空）：分位改在 PostgreSQL 内算，见下方 3d。
         pe_pb_history = pd.DataFrame()
 
-        # ── 3d. PE/PB 历史分位：逐交易日在 PostgreSQL 内算（2026-09-16，与生产同路）────
-        # 生产 2026-09-04 起走 `get_latest_financial`（当前 pe/pb）→ `get_pe_pb_percentile_bulk`
-        # （5 年窗口、SQL 内 1 - pct_rank）；回测此前还在内存里用 ~400 天的 pe_pb_history 现算
-        # ——既是峰值主项，也是与生产**不同口径**（400 天 vs 5 年）的静默偏差。这里按日复用
-        # 生产的分位查询，结果按 trade_date 放进 bundle，引擎逐日塞进 MarketSnapshot。
-        # 「当前 pe/pb」这一步（2026-09-21）改从上面已在内存的 fin_df 切：语义 = 生产
-        # `get_latest_financial` 日频段（每码 publish_date<=td 的最新一行），5434 六个交易日
-        # 逐码逐值与 SQL 相同（pe 3951~3961 / pb 5467~5470 码），2.6 s/日 → 0.13 s——
-        # 那条 SQL 还顺带跑了一段 450 天 GROUP BY 的基本面 LOCF，回测这里根本不用。
-        # 分位本身仍在 SQL 里算：5 年窗口放进内存正是 3530 MB 峰值的来源，别搬回来。
-        # 成本：每日 2 × 3.4s（5434 实测，~4000 码）。
+        # ── 3d. PE/PB 历史分位：与生产同语义，回测在内存里算（2026-09-21）────────────
+        # 生产每日管线走 `get_latest_financial`（当前 pe/pb）→ `get_pe_pb_percentile_bulk`
+        # （5 年窗口、SQL 内 1 - pct_rank）；回测 2026-09-16 起曾按日复用那两条 SQL（把此前
+        # ~400 天的内存 pe_pb_history 换掉：既是 3530 MB 峰值主项，也是与生产不同口径的偏差）。
+        # 2026-09-21 两步都改内存：
+        # (a) 「当前 pe/pb」从上面已在内存的 fin_df 切（`_latest_pe_pb_at`，语义 = 日频段：
+        #     每码 publish_date<=td 的最新一行），5434 六个交易日逐码逐值与 SQL 相同；
+        # (b) 分位本身：把 5 年窗口的 (ts_code, publish_date, pe_ttm, pb) 以**紧凑数组**流式载入
+        #     （24 B/行，640 万行 ≈ 155 MB——当年 3530 MB 的主项是 Row/Decimal 与宽 DataFrame，
+        #     不是这些 float），`pe_pb_percentile_in_memory` 每日两次 bincount 算完。
+        #     SQL 版每日两列约 4 s，是 6 日回测第一大耗时项，且合并两列 / 覆盖索引都实测无效
+        #     （见 repo 方法 docstring）；每日管线一天只算一次，**仍走 SQL**。
         # 交易日 = 窗口内 daily_quote 实际存在的日期（无行情的日子引擎本就不评分）。
-        from quantpilot.data.repository import MarketDataRepository
         from quantpilot.services.strategy_service import resolve_pe_pb_history_years
 
         # 与生产同源：窗口年数读 ValueStrategyConfig（engine 为 None 的纯加载场景回落 5）
@@ -570,12 +614,15 @@ class BacktestService:
 
         pe_percentile_by_date: dict[date, pd.Series] = {}
         pb_percentile_by_date: dict[date, pd.Series] = {}
-        _repo = MarketDataRepository(self._session)
         _bt_days = sorted(
             d for d in set(dq_df["trade_date"]) if config.start_date <= d <= config.end_date
         ) if dq_rows else []
         _all_codes = list(stock_info.index) if not stock_info.empty else []
         _pe_pb_src = _latest_pe_pb_source(fin_df) if _chunks_seen else pd.DataFrame()
+        _pe_pb_hist = await self._load_pe_pb_history_arrays(
+            (_bt_days[0] if _bt_days else config.start_date) - timedelta(days=365 * _years),
+            config.end_date,
+        )
         for _td in _bt_days:
             _fin_t = _latest_pe_pb_at(_pe_pb_src, _td, _all_codes)
             if _fin_t.empty:
@@ -591,7 +638,8 @@ class BacktestService:
                 }
                 if not _curr:
                     continue
-                _sink[_td] = await _repo.get_pe_pb_percentile_bulk(_curr, _start, _td, _col)
+                _sink[_td] = pe_pb_percentile_in_memory(_pe_pb_hist, _curr, _start, _td, _col)
+        del _pe_pb_hist
 
         # ── 3c. financial_forecast（SDD-EXT-03 A5b 前瞻 ROE 覆盖）─────────────
         # 全量预加载业绩预告/快报（pre_announce_date 在 [fin_lookback_start, end_date]），
@@ -723,6 +771,84 @@ def _latest_pe_pb_at(src: pd.DataFrame, trade_date: date, ts_codes: list[str]) -
     latest = sub.drop_duplicates("ts_code", keep="first").set_index("ts_code")
     latest = latest[latest.index.isin(set(ts_codes))]
     return latest[["pe_ttm", "pb"]]
+
+
+@dataclass(frozen=True)
+class PePbHistoryArrays:
+    """PE/PB 五年历史的紧凑列式存储（回测分位在内存里算，2026-09-21）。
+
+    每行 (ts_code, publish_date, pe_ttm, pb) 存成 int32 码序号 + int32 日序数 + 2 × float64，
+    24 B/行；5434 五年窗口 640 万行 ≈ 155 MB。**不是** SQLAlchemy Row / 宽 DataFrame——
+    2026-09-14 那次 3530 MB 峰值的主项是 150 万行 Row（内含 Decimal）与整段 5 年 DataFrame，
+    不是这些 float 本身。
+    """
+
+    code_labels: np.ndarray      # str[n_codes]，序号 → ts_code
+    code_idx: np.ndarray         # int32[n_rows]
+    day_ord: np.ndarray          # int32[n_rows]，date.toordinal()
+    values: dict[str, np.ndarray]  # {"pe_ttm": float64[n_rows], "pb": float64[n_rows]}
+
+    @property
+    def n_rows(self) -> int:
+        return int(self.code_idx.shape[0])
+
+
+def pe_pb_percentile_in_memory(
+    hist: PePbHistoryArrays,
+    current_values: Mapping[str, float],
+    start_date: date,
+    end_date: date,
+    col: str,
+) -> pd.Series:
+    """`MarketDataRepository.get_pe_pb_percentile_bulk` 的内存等价实现，逐码逐值相同。
+
+    语义（与 SQL 版逐条对应，`tests/unit/test_backtest_pe_pb_in_memory.py` 用同一个
+    Python 参考实现 `_compute_historical_percentile` 钉；5434 六个交易日与 SQL 逐码比对
+    见 docstring 末尾）：
+
+    - 窗口：`publish_date` ∈ [start_date, end_date] 闭区间
+    - 严格 `<`；分母 = 窗口内该列**非 NULL** 条数；返回 `1 - pct_rank`
+    - 当前值缺失 / 无历史 → NaN（不是 0）
+    - index = `current_values` 的全部 key
+
+    整段向量化：一次窗口掩码 + 两次 `bincount`，与股票数无关地扫一遍 n_rows，
+    5434 实测每列约 60 ms（SQL 版 2 s）。
+
+    为什么回测不再走 SQL（2026-09-21）：分位 SQL 是 `financial_data` 五年窗口的并行 seq scan
+    + hash join + 逐行 FILTER 聚合，每个交易日两列约 4 s，是 6 日回测第一大耗时项；
+    合并两列一次扫表 / 强制覆盖索引都实测无效（见 repo 方法 docstring）。每日管线一天只算
+    一次，4 s 无所谓，**仍走 SQL**；回测每天都要算，才值得把 155 MB 的紧凑历史搬进来。
+    """
+    index = pd.Index([str(k) for k in current_values.keys()], name="ts_code")
+    if hist.n_rows == 0 or index.empty:
+        return pd.Series(float("nan"), index=index, dtype=float)
+    vals = hist.values[col]
+    n_codes = int(hist.code_labels.shape[0])
+    label_pos = pd.Index(hist.code_labels)
+    # 当前值按码序号铺开；无当前值 / NaN / 不在历史里的码 → NaN（下面比较恒 False）
+    cur_by_idx = np.full(n_codes, np.nan, dtype=np.float64)
+    pos = label_pos.get_indexer(index)
+    cur_arr = np.array(
+        [float("nan") if v is None else float(v) for v in current_values.values()],
+        dtype=np.float64,
+    )
+    ok = pos >= 0
+    cur_by_idx[pos[ok]] = cur_arr[ok]
+
+    in_win = (hist.day_ord >= start_date.toordinal()) & (hist.day_ord <= end_date.toordinal())
+    idx = hist.code_idx[in_win]
+    v = vals[in_win]
+    not_null = ~np.isnan(v)
+    denom = np.bincount(idx[not_null], minlength=n_codes).astype(np.float64)
+    less = not_null & (v < cur_by_idx[idx])
+    numer = np.bincount(idx[less], minlength=n_codes).astype(np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pct = np.where(denom > 0, numer / denom, np.nan)
+    out = 1.0 - pct
+    out[np.isnan(cur_by_idx)] = np.nan
+    result = np.full(index.shape[0], np.nan, dtype=np.float64)
+    result[ok] = out[pos[ok]]
+    return pd.Series(result, index=index, dtype=float)
 
 
 def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:
