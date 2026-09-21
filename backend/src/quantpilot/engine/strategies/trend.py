@@ -17,9 +17,10 @@ class TrendStrategy(BaseStrategy):
     """SDD §7.2.1：MA 排列 + MACD + 价格突破。
 
     Phase 10：`config` 由 ConfigService 注入，支持用户调整 MA 与 MACD 参数。
-    【降级说明】V1.0 因子内部的 rolling 窗口（5/10/20/60）与 MACD 参数仍硬编码在
-    `compute_raw_factors` 中；dataclass 仅作为 Pipeline 快照登记。恢复条件：V1.5
-    将 rolling 窗口完全参数化（`ma_short`/`ma_long`/`macd_*`）。
+    ~~【降级说明】V1.0 因子内部的 rolling 窗口与 MACD 参数硬编码~~ → **已收口**
+    （F-SI，2026-09-07 接 `macd_*`、2026-09-17 接 `ma_short/ma_long` 为 `5/10/ma_short/ma_long`
+    阶梯，默认逐位不变；`test_config_actually_consumed.py` 钉「改参数 → 结果必变」）。
+    仍写死的只有阶梯前两档 5/10 与 `price_breakout` 的 20 日窗口，配置里本无对应字段。
     """
 
     name = "trend"

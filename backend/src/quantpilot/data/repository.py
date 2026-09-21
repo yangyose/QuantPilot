@@ -510,6 +510,14 @@ class MarketDataRepository:
         - 无历史 / 当前值缺失 → **NaN 而非 0**（0 意味着「算出来就是最贵」）
         由 `tests/integration/test_int_pe_pb_percentile_pushdown.py` 逐股对照钉死。
 
+        ## 已试过、没用的两种提速（2026-09-21，5434 五年窗口 640 万行、~4000 码）
+
+        - **pe / pb 并成一条 SQL 一次扫表**：4.13 s（两次单列）vs 4.28 s（合并），
+          结果逐码相同但不更快——成本在 hash join + 逐行 FILTER 聚合，不在扫表。
+        - **强制走覆盖索引 `idx_financial_code_publish_desc_covering`**（index-only）：
+          2.97 s vs 顺序扫描 1.45 s，慢一倍（117 万次 heap fetch，可见性图 86%）。
+        每日 2 × ~2 s 是本查询的地板；再往下要换算法，不是换写法。
+
         Args:
             current_values: ts_code → 当前 pe_ttm/pb。NaN 项跳过（结果为 NaN）。
             start_date/end_date: `publish_date` 闭区间窗口。
