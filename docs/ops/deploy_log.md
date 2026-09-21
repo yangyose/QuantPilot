@@ -799,3 +799,10 @@ e339ec9 feat(config): F-SI 收口——ma_short/ma_long 接线为 MA 阶梯（�
 **判据（17:49 CST 核）**：管线 SUCCESS、universe ≈ 3208、signal_count 不跳变、`liquidity_note` 与
 `money_flow_score` 继续满、`piotroski_f_score judged` 由 0 变为约 3000+（7 列回填后首次）、
 `tushare_row_cap_suspected` 只剩 `fina_indicator` 拆批告警（`index_weight 1000` 已豁免）。
+
+## 2026-09-21（运维，无部署）：生产磁盘 83% → 65%
+
+`docker system df`：**Build Cache 14.9 GB / 可回收 13.1 GB**——一周 5 次 `docker compose build`
+留下的层。`docker builder prune -f --keep-storage 2GB` 回收 10.99 GB，`df` 由 47G/59G（83%）降到
+37G（65%），20 G 可用。镜像层、容器、卷（pg_data 6.9 G）均未动。
+修在源头：`deploy_prod.sh` 第 6 步构建后自动 prune（留 2 GB）并打印 `df`，部署记录自此带磁盘水位。

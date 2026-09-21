@@ -162,6 +162,10 @@ echo "    同步校验通过"
 say "[6/8] 构建（不带 --pull）+ 重启 backend"
 ssh "$SSH_HOST" "cd $REMOTE_ROOT && docker compose -f docker-compose.prod.yml --env-file .env.prod build backend"
 ssh "$SSH_HOST" "cd $REMOTE_ROOT && docker compose -f docker-compose.prod.yml --env-file .env.prod up -d backend"
+# 构建缓存回收（2026-09-21 加）：每次 build 留下的层不会自己消失——一周 5 次部署把生产磁盘
+# 从 79% 顶到 83%，`docker system df` 里 Build Cache 14.9 GB / 可回收 13.1 GB。留 2 GB 让下次
+# 增量构建仍快；镜像层与卷（pg_data）不碰。用完再报一次 df，让部署记录里有磁盘水位。
+ssh "$SSH_HOST" "docker builder prune -f --keep-storage 2GB >/dev/null && docker image prune -f >/dev/null; df -h / | tail -1"
 
 # ---------------------------------------------------------------- 7. nginx reload
 
