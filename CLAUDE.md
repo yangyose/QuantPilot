@@ -173,6 +173,7 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d  # 生产�
   - **测试要钉临界点两侧**：只断言「给足列数 → 有效」时，把 required 写大 10 倍照样绿；必须同时断言「少一列 → 全 NaN」
   - 同类缺陷会成群出现在**脚本的日历回看缓冲**上（`backfill_daily_ic` / `backfill_candidate_pool` / `pipeline_multi_date` / `backfill_icir_rebalance`）：这些脚本走完整评分或 ICIR 路径，缓冲不足只表现为「跑通了但因子是残缺的」，不报错。改任一窗口参数时一并扫这几处
 - 其余交易日数 → 日历天的粗略换算（非窗口深度，容错高的场景）：`calendar_days = int(history_days * 1.5)`，禁止直接 `timedelta(days=history_days)`
+- **逐股循环改向量化，只在「改实现 → 结果不许变」的夹具钉死后才许上，且必须保留循环回落**（2026-09-21 于 5434 单日 5515 只实测：MR/Trend 因子 13.4/9.0 s → 1.2/1.5 s，F-5 连亏判定 1.67 s → 0.01 s，`Scorer.aggregate` 逐行 `.loc` 改 dict 0.9 → 0.2 s；结果逐元素相同，6 日回测 `max_drawdown` 不变）。pandas 宽表 rolling/ewm 与逐 Series 走同一内核，**分歧只在 `dropna()`**：历史里有**内部** NaN（停牌日）的股票被逐股路径压缩后再算，宽表算不出同样的值 → 这类行必须回落到原循环（`_factors_for_series`），不能「近似一下」。夹具形态：随机面板四类行（完整 / 前导 NaN / 内部 NaN / 不足窗口）× 两套参数 × 多 seed，向量化 vs 强制循环逐元素 1e-9 且 NaN 位置一致，另用 spy 钉「内部 NaN 行确实走了循环」（`test_strategy_vectorized_parity.py`、`test_universe_f5.py::TestVectorizedEqualsReference`）。pandas_ta 的种子细节向量化时最容易错：EMA 是「前 `length` 个有效值的 SMA 作种 + `ewm(span, adjust=False)`」，MACD signal 从 MACD 首个有效位起种，RSI 用 `ewm(alpha=1/n, adjust=False)`，bbands `std(ddof=1)`——只对随机面板断言等价才抓得到这些
 - APScheduler job 无法访问 `app.state`，Engine 单例须通过 `create_scheduler()` 显式 `args=[...]` 传入
 
 ### 4.5 FastAPI 项目特有

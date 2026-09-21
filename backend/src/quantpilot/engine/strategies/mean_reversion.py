@@ -118,73 +118,123 @@ class MeanReversionStrategy(BaseStrategy):
         out.loc[hit, :] = float("nan")
         return out
 
+    # 向量化开关：只为等价性夹具存在（`test_strategy_vectorized_parity.py` 用它强制全走循环
+    # 做对照）。
+    # 生产恒为 True；别在别处改它。
+    _VECTORIZE = True
+    _MIN_ROWS = 25
+
     def compute_raw_factors(
         self,
         universe: pd.Index,
         market_data: MarketSnapshot,
     ) -> pd.DataFrame:
         adj_prices = market_data["adj_prices"].reindex(universe)
-        results: dict[str, dict[str, float]] = {}
+        cols = ["rsi_oversold", "price_deviation", "bb_position"]
+        if adj_prices.empty or len(universe) == 0:
+            return pd.DataFrame(float("nan"), index=universe, columns=cols)
+        adj = adj_prices.astype(float)
+        out = pd.DataFrame(float("nan"), index=universe, columns=cols)
 
-        for ts_code in universe:
-            if ts_code not in adj_prices.index:
-                results[ts_code] = _nan_row()
-                continue
+        # ── 向量化路径（2026-09-21）：pandas 的 rolling / ewm 在宽表上逐列算，与逐股 Series
+        # 走同一内核，结果逐位相同；唯一分歧是逐股路径先 dropna()——历史里有**内部** NaN
+        # （停牌日）的股票被压缩后再算，宽表复现不了，回落循环。前导 NaN（新上市）不影响：
+        # ewm/rolling 的第一个有效值同样是递推起点。等价性由夹具逐元素钉死。
+        valid = adj.notna()
+        n_valid = valid.sum(axis=1)
+        interior_nan = (valid.cummax(axis=1) & ~valid).any(axis=1)
+        eligible = (n_valid >= self._MIN_ROWS) & ~interior_nan
+        if self._VECTORIZE and eligible.any():
+            out.loc[eligible] = self._vectorized(adj.loc[eligible])[cols]
+        if self._VECTORIZE:
+            loop_rows = universe[(n_valid >= self._MIN_ROWS) & ~eligible]
+        else:
+            loop_rows = universe[n_valid >= self._MIN_ROWS]
+        for ts_code in loop_rows:
+            close = adj.loc[ts_code].dropna()
+            out.loc[ts_code] = pd.Series(self._factors_for_series(ts_code, close))
+        return out
 
-            close = adj_prices.loc[ts_code].dropna().astype(float)
-            if len(close) < 25:
-                results[ts_code] = _nan_row()
-                continue
+    def _vectorized(self, adj: pd.DataFrame) -> pd.DataFrame:
+        """宽表（index=ts_code, columns=日期）一次算完三个因子；与 `_factors_for_series` 同公式。"""
+        px = adj.T                                   # index=日期, columns=ts_code
+        last_close = px.iloc[-1]
+        # RSI：pandas_ta 的 rsi = 100 · rma(+Δ) / (rma(+Δ) + rma(−Δ))，
+        # rma = ewm(alpha=1/n, adjust=False)
+        n = self._cfg.rsi_period
+        diff = px.diff()
+        pos = diff.clip(lower=0)
+        neg = (-diff).clip(lower=0)
+        pos_avg = pos.ewm(alpha=1.0 / n, adjust=False).mean().iloc[-1]
+        neg_avg = neg.ewm(alpha=1.0 / n, adjust=False).mean().iloc[-1]
+        rsi = 100.0 * pos_avg / (pos_avg + neg_avg)
+        rsi_oversold = 100.0 - rsi
+        # 乖离率
+        p_ = self._cfg.bbands_period
+        ma = px.rolling(p_).mean().iloc[-1]
+        price_deviation = ((ma - last_close) / ma).where(ma.notna() & (ma != 0))
+        # 布林带位置：pandas_ta bbands = sma ± k·std(ddof=1)
+        sd = px.rolling(p_).std(ddof=1).iloc[-1]
+        lower = ma - self._cfg.bbands_std * sd
+        upper = ma + self._cfg.bbands_std * sd
+        width = upper - lower
+        bb_ok = lower.notna() & upper.notna() & (width != 0)
+        bb_position = (1.0 - (last_close - lower) / width).where(bb_ok)
+        return pd.DataFrame({
+            "rsi_oversold": rsi_oversold,
+            "price_deviation": price_deviation,
+            "bb_position": bb_position,
+        })
 
-            last_close = float(close.iloc[-1])
+    def _factors_for_series(self, ts_code: str, close: pd.Series) -> dict[str, float]:
+        """逐股路径（历史含内部 NaN 时用）：与向量化路径同公式，pandas_ta 实现。"""
+        last_close = float(close.iloc[-1])
 
-            # ── RSI（越低越超卖，直接用原始值；rank 时低 RSI → 低 rank → 低百分位
-            #    均值回归策略希望超卖（低RSI）得高分，所以取 100-RSI 让低RSI→高值）─────
-            rsi_series = ta.rsi(close, length=self._cfg.rsi_period)
-            if rsi_series is None or rsi_series.dropna().empty:
-                rsi_oversold = float("nan")
-            else:
-                raw_rsi = float(rsi_series.dropna().iloc[-1])
-                rsi_oversold = 100.0 - raw_rsi   # 超卖（低 RSI）→ 高值 → rank 高分
+        # ── RSI（越低越超卖，直接用原始值；rank 时低 RSI → 低 rank → 低百分位
+        #    均值回归策略希望超卖（低RSI）得高分，所以取 100-RSI 让低RSI→高值）─────
+        rsi_series = ta.rsi(close, length=self._cfg.rsi_period)
+        if rsi_series is None or rsi_series.dropna().empty:
+            rsi_oversold = float("nan")
+        else:
+            raw_rsi = float(rsi_series.dropna().iloc[-1])
+            rsi_oversold = 100.0 - raw_rsi   # 超卖（低 RSI）→ 高值 → rank 高分
 
-            # ── 乖离率（MA20-close）/ MA20，越大（价格低于均线越多）得分越高 ─────────
-            ma20 = float(close.rolling(self._cfg.bbands_period).mean().iloc[-1])
-            if pd.isna(ma20) or ma20 == 0:
-                price_deviation = float("nan")
-            else:
-                price_deviation = (ma20 - last_close) / ma20   # 价格低于均线 → 正值 → 高分
+        # ── 乖离率（MA20-close）/ MA20，越大（价格低于均线越多）得分越高 ─────────
+        ma20 = float(close.rolling(self._cfg.bbands_period).mean().iloc[-1])
+        if pd.isna(ma20) or ma20 == 0:
+            price_deviation = float("nan")
+        else:
+            price_deviation = (ma20 - last_close) / ma20   # 价格低于均线 → 正值 → 高分
 
-            # ── 布林带位置（越接近下轨得分越高）───────────────────────────────────
-            # pandas_ta 0.4.x 把 `std` 拆成 `lower_std` / `upper_std`，旧的 `std=`
-            # 会被 **kwargs 静默吞掉。原代码写的 `std=2.0` 因此一直是**无效参数**
-            # ——只因默认值恰好也是 2.0 才没出事。传错名字不报错，必须按新签名传。
-            bb_df = ta.bbands(
-                close,
-                length=self._cfg.bbands_period,
-                lower_std=self._cfg.bbands_std,
-                upper_std=self._cfg.bbands_std,
-            )
-            if bb_df is None or bb_df.empty:
+        # ── 布林带位置（越接近下轨得分越高）───────────────────────────────────
+        # pandas_ta 0.4.x 把 `std` 拆成 `lower_std` / `upper_std`，旧的 `std=`
+        # 会被 **kwargs 静默吞掉。原代码写的 `std=2.0` 因此一直是**无效参数**
+        # ——只因默认值恰好也是 2.0 才没出事。传错名字不报错，必须按新签名传。
+        bb_df = ta.bbands(
+            close,
+            length=self._cfg.bbands_period,
+            lower_std=self._cfg.bbands_std,
+            upper_std=self._cfg.bbands_std,
+        )
+        if bb_df is None or bb_df.empty:
+            bb_position = float("nan")
+        else:
+            col_map = {c.split("_")[0]: c for c in bb_df.columns}  # {"BBL": "BBL_20_2.0", ...}
+            bb_lower = float(bb_df.iloc[-1][col_map["BBL"]])
+            bb_upper = float(bb_df.iloc[-1][col_map["BBU"]])
+            band_width = bb_upper - bb_lower
+            if pd.isna(bb_lower) or pd.isna(bb_upper) or band_width == 0:
                 bb_position = float("nan")
             else:
-                col_map = {c.split("_")[0]: c for c in bb_df.columns}  # {"BBL": "BBL_20_2.0", ...}
-                bb_lower = float(bb_df.iloc[-1][col_map["BBL"]])
-                bb_upper = float(bb_df.iloc[-1][col_map["BBU"]])
-                band_width = bb_upper - bb_lower
-                if pd.isna(bb_lower) or pd.isna(bb_upper) or band_width == 0:
-                    bb_position = float("nan")
-                else:
-                    # bb_pos = (close - lower) / width，越接近下轨 → 越小 → 取反后越大
-                    bb_pos_raw = (last_close - bb_lower) / band_width
-                    bb_position = 1.0 - bb_pos_raw   # 下轨 → 高值 → rank 高分
+                # bb_pos = (close - lower) / width，越接近下轨 → 越小 → 取反后越大
+                bb_pos_raw = (last_close - bb_lower) / band_width
+                bb_position = 1.0 - bb_pos_raw   # 下轨 → 高值 → rank 高分
 
-            results[ts_code] = {
-                "rsi_oversold": rsi_oversold,
-                "price_deviation": price_deviation,
-                "bb_position": bb_position,
-            }
-
-        return pd.DataFrame(results).T.reindex(universe)
+        return {
+            "rsi_oversold": rsi_oversold,
+            "price_deviation": price_deviation,
+            "bb_position": bb_position,
+        }
 
     def _build_reason(self, ts_code: str, raw_row: pd.Series, final_score: float) -> str:
         rsi_inv = raw_row.get("rsi_oversold", float("nan"))

@@ -121,8 +121,15 @@ class TestServiceActuallyPushesDown:
 
     def test_service_calls_latest_financial_and_percentile_pushdown(self) -> None:
         tree = ast.parse(self._src().lstrip())
-        called = {getattr(n.func, "attr", None) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-        assert "get_latest_financial" in called, "当前 pe/pb 必须与生产同源（get_latest_financial）"
+        called = {
+            (getattr(n.func, "attr", None) or getattr(n.func, "id", None))
+            for n in ast.walk(tree) if isinstance(n, ast.Call)
+        }
+        # 2026-09-21：「当前 pe/pb」改从内存里的 fin_df 切（`_latest_pe_pb_at`，语义 =
+        # `get_latest_financial` 日频段，5434 六日逐码逐值相同），不再每日多跑一段
+        # 450 天 GROUP BY；分位仍必须在 SQL 里算——5 年窗口进内存就是 3530 MB 的来源。
+        assert "_latest_pe_pb_at" in called, "当前 pe/pb 必须与生产同源（日频段语义）"
+        assert "get_latest_financial" not in called, "每日又多跑了一段回测不用的基本面 LOCF 查询"
         assert "get_pe_pb_percentile_bulk" in called, "分位没有下推——峰值仍是 150 万行 Row"
 
     def test_service_no_longer_materializes_pe_pb_history_from_rows(self) -> None:
@@ -141,3 +148,49 @@ class TestServiceActuallyPushesDown:
         seg = code_only.split("FinancialData.ts_code", 1)[1].split("financials = ", 1)[0]
         assert ".all()" not in seg, "financial_data 切片仍在用 .all() 一次性实例化"
         assert "stream(" in seg
+
+
+class TestLatestPePbAtMatchesRepositorySemantics:
+    """`_latest_pe_pb_at` ≡ `get_latest_financial` 日频段：每码 `publish_date <= td` 最新一行。
+
+    合成面板覆盖：未来行排除 / 多行取最新 / 值为 NaN 照样占位（由调用方过滤）/ 不在 universe
+    的码剔除 / 一行都没有的码不出现。真实数据的逐码逐值比对（5434 六个交易日）见
+    `backtest_service._latest_pe_pb_at` docstring。
+    """
+
+    @staticmethod
+    def _src() -> pd.DataFrame:
+        from quantpilot.services.backtest_service import _latest_pe_pb_source
+
+        rows = [
+            ("A", date(2025, 1, 2), 10.0, 1.0),
+            ("A", date(2025, 1, 3), 11.0, 1.1),   # 最新（<= td）
+            ("A", date(2025, 1, 6), 99.0, 9.9),   # 未来 → 排除
+            ("B", date(2024, 12, 20), 20.0, 2.0),  # 只有旧行 → 用旧行（无回看下界）
+            ("C", date(2025, 1, 3), float("nan"), 3.0),  # pe 缺 → 由调用方过滤
+            ("D", date(2025, 1, 3), 40.0, 4.0),   # 不在 universe
+        ]
+        fin_df = pd.DataFrame(rows, columns=["ts_code", "publish_date", "pe_ttm", "pb"])
+        fin_df["report_period"] = date(2024, 12, 31)
+        return _latest_pe_pb_source(fin_df.sample(frac=1.0, random_state=1))  # 乱序输入
+
+    def test_latest_row_per_code_within_universe(self) -> None:
+        from quantpilot.services.backtest_service import _latest_pe_pb_at
+
+        got = _latest_pe_pb_at(self._src(), date(2025, 1, 3), ["A", "B", "C", "E"])
+        assert sorted(got.index) == ["A", "B", "C"]
+        assert got.loc["A", "pe_ttm"] == 11.0 and got.loc["A", "pb"] == 1.1
+        assert got.loc["B", "pe_ttm"] == 20.0
+        assert pd.isna(got.loc["C", "pe_ttm"]) and got.loc["C", "pb"] == 3.0
+
+    def test_earlier_trade_date_sees_earlier_row(self) -> None:
+        from quantpilot.services.backtest_service import _latest_pe_pb_at
+
+        got = _latest_pe_pb_at(self._src(), date(2025, 1, 2), ["A"])
+        assert got.loc["A", "pe_ttm"] == 10.0
+
+    def test_empty_inputs(self) -> None:
+        from quantpilot.services.backtest_service import _latest_pe_pb_at, _latest_pe_pb_source
+
+        assert _latest_pe_pb_at(_latest_pe_pb_source(pd.DataFrame()), date(2025, 1, 3), ["A"]).empty
+        assert _latest_pe_pb_at(self._src(), date(2025, 1, 3), []).empty

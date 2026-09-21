@@ -538,6 +538,7 @@ class BacktestService:
                 _df[c] = pd.to_numeric(_df[c], errors="coerce")
             _chunks.append(_df)
         del _stream
+        _chunks_seen = bool(_chunks)
         if _chunks:
             fin_df = pd.concat(_chunks, ignore_index=True)
             del _chunks
@@ -551,8 +552,13 @@ class BacktestService:
         # 生产 2026-09-04 起走 `get_latest_financial`（当前 pe/pb）→ `get_pe_pb_percentile_bulk`
         # （5 年窗口、SQL 内 1 - pct_rank）；回测此前还在内存里用 ~400 天的 pe_pb_history 现算
         # ——既是峰值主项，也是与生产**不同口径**（400 天 vs 5 年）的静默偏差。这里按日复用
-        # 生产那两个 repo 方法，结果按 trade_date 放进 bundle，引擎逐日塞进 MarketSnapshot。
-        # 成本：每日约 3.7s + 2 × 3.4s（5434 实测，~4000 码）；6 日回测约 1 分钟，可接受。
+        # 生产的分位查询，结果按 trade_date 放进 bundle，引擎逐日塞进 MarketSnapshot。
+        # 「当前 pe/pb」这一步（2026-09-21）改从上面已在内存的 fin_df 切：语义 = 生产
+        # `get_latest_financial` 日频段（每码 publish_date<=td 的最新一行），5434 六个交易日
+        # 逐码逐值与 SQL 相同（pe 3951~3961 / pb 5467~5470 码），2.6 s/日 → 0.13 s——
+        # 那条 SQL 还顺带跑了一段 450 天 GROUP BY 的基本面 LOCF，回测这里根本不用。
+        # 分位本身仍在 SQL 里算：5 年窗口放进内存正是 3530 MB 峰值的来源，别搬回来。
+        # 成本：每日 2 × 3.4s（5434 实测，~4000 码）。
         # 交易日 = 窗口内 daily_quote 实际存在的日期（无行情的日子引擎本就不评分）。
         from quantpilot.data.repository import MarketDataRepository
         from quantpilot.services.strategy_service import resolve_pe_pb_history_years
@@ -569,8 +575,9 @@ class BacktestService:
             d for d in set(dq_df["trade_date"]) if config.start_date <= d <= config.end_date
         ) if dq_rows else []
         _all_codes = list(stock_info.index) if not stock_info.empty else []
+        _pe_pb_src = _latest_pe_pb_source(fin_df) if _chunks_seen else pd.DataFrame()
         for _td in _bt_days:
-            _fin_t = await _repo.get_latest_financial(_all_codes, _td)
+            _fin_t = _latest_pe_pb_at(_pe_pb_src, _td, _all_codes)
             if _fin_t.empty:
                 continue
             _start = _td - timedelta(days=365 * _years)
@@ -686,6 +693,36 @@ class BacktestService:
             active_weights_history=active_weights_history,
             forecast=forecast,
         )
+
+
+def _latest_pe_pb_source(fin_df: pd.DataFrame) -> pd.DataFrame:
+    """把 financial 切片压成「按 (ts_code, publish_date↓) 稳定排序的 4 列表」，供逐日切取。
+
+    只留 ts_code / publish_date / pe_ttm / pb，150 万行 × 4 列 ≈ 50 MB，一次排序后每日
+    只需一个布尔过滤 + `drop_duplicates`。
+    """
+    if fin_df.empty:
+        return pd.DataFrame(columns=["ts_code", "publish_date", "pe_ttm", "pb"])
+    src = fin_df[["ts_code", "publish_date", "pe_ttm", "pb"]]
+    return src.sort_values(
+        ["ts_code", "publish_date"], ascending=[True, False], kind="mergesort",
+    ).reset_index(drop=True)
+
+
+def _latest_pe_pb_at(src: pd.DataFrame, trade_date: date, ts_codes: list[str]) -> pd.DataFrame:
+    """在内存里复现 `MarketDataRepository.get_latest_financial` 的**日频段**。
+
+    语义：每码取 `publish_date <= trade_date` 的最新一行的 pe_ttm / pb，只含 `ts_codes`
+    内的码；返回 index=ts_code。同一码同一 publish_date 多行时 SQL 的 `DISTINCT ON`
+    取哪行未定义，这里取稳定排序后的首行——5434 实测六个交易日与 SQL 逐码逐值相同
+    （`tests/unit/test_backtest_pe_pb_pushdown.py` 用合成数据钉语义）。
+    """
+    if src.empty or not ts_codes:
+        return pd.DataFrame()
+    sub = src[src["publish_date"] <= trade_date]
+    latest = sub.drop_duplicates("ts_code", keep="first").set_index("ts_code")
+    latest = latest[latest.index.isin(set(ts_codes))]
+    return latest[["pe_ttm", "pb"]]
 
 
 def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:

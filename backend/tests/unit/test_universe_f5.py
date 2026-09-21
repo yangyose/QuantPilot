@@ -216,3 +216,81 @@ class TestDegradedBranchStillExists:
     ) -> None:
         """同一只股票在两期口径下**通过**——回测与生产现在都走这条。"""
         assert _run(UniverseFilter(), calendar, _hist([float("nan"), -5.0])) is True
+
+
+class TestVectorizedEqualsReference:
+    """2026-09-21：F-5 由逐股 `groupby.apply` 改为整表排序 + `cumcount`。
+
+    单日 5515 只实测 1.67 s → 0.01 s（2026-08-25 于 5434）。
+
+    参考实现 = 改前的逐股函数**逐字保留**在此；随机面板覆盖：未披露占位 NaN、有值期不足、
+    同 (code, period) 重复行、乱序行、正负混合、全 NaN 股票。判据是「改实现 → 结果不许变」
+    （§4.4「改参数 → 结果必须变」的孪生）。
+    """
+
+    @staticmethod
+    def _reference(hist_yoy: pd.Series, n: int) -> pd.Series:
+        def _is_consistently_losing(ts_yoy: pd.Series) -> bool:
+            non_nan = ts_yoy.dropna()
+            if len(non_nan) < n:
+                return False
+            newest = non_nan.sort_index(level=-1, ascending=False).iloc[:n]
+            return bool((newest < 0).all())
+
+        return hist_yoy.groupby(level=0).apply(_is_consistently_losing)
+
+    @staticmethod
+    def _random_panel(seed: int) -> pd.Series:
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        periods = [date(2023, 3, 31), date(2023, 6, 30), date(2023, 9, 30), date(2023, 12, 31),
+                   date(2024, 3, 31), date(2024, 6, 30), date(2024, 9, 30), date(2024, 12, 31)]
+        rows: list[tuple[str, date, float]] = []
+        for i in range(120):
+            code = f"{i:06d}.SZ"
+            k = int(rng.integers(0, 6))
+            chosen = rng.choice(len(periods), size=k, replace=False)
+            for j in chosen:
+                v = float(rng.normal(0, 1))
+                if rng.random() < 0.35:
+                    v = float("nan")
+                rows.append((code, periods[j], v))
+                if rng.random() < 0.15:  # 同期重复行（取数方历史上出现过）
+                    rows.append((code, periods[j], float(rng.normal(0, 1))))
+        rng.shuffle(rows)
+        idx = pd.MultiIndex.from_tuples([(r[0], r[1]) for r in rows],
+                                        names=["ts_code", "report_period"])
+        return pd.Series([r[2] for r in rows], index=idx, name="net_profit_yoy")
+
+    @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4])
+    @pytest.mark.parametrize("n", [2, 3])
+    def test_equal_on_random_panels(self, seed: int, n: int) -> None:
+        from quantpilot.engine.universe import _consistently_losing_codes
+
+        hist = self._random_panel(seed)
+        ref = self._reference(hist, n)
+        got = _consistently_losing_codes(hist, n)
+        codes = sorted(set(hist.index.get_level_values(0)))
+        ref_full = ref.reindex(codes).fillna(False).astype(bool)
+        got_full = got.reindex(codes).fillna(False).astype(bool)
+        assert got_full.tolist() == ref_full.tolist()
+        # 面板不能退化成「全 False 等于全 False」
+        assert ref_full.any(), "随机面板里没有一只被判连亏，判据失效"
+        assert not ref_full.all()
+
+    def test_all_nan_history_returns_empty(self) -> None:
+        from quantpilot.engine.universe import _consistently_losing_codes
+
+        idx = pd.MultiIndex.from_tuples([("A", P[0]), ("A", P[1])],
+                                        names=["ts_code", "report_period"])
+        got = _consistently_losing_codes(pd.Series([float("nan")] * 2, index=idx), 2)
+        assert got.empty and got.dtype == bool
+
+    def test_call_site_uses_vectorized_helper(self) -> None:
+        """调用点钉死：`filter_with_stats` 里 F-5 不许再回到 `groupby(...).apply`。"""
+        import inspect
+
+        src = inspect.getsource(UniverseFilter.filter_with_stats)
+        assert "_consistently_losing_codes(" in src
+        assert ".apply(_is_consistently_losing)" not in src

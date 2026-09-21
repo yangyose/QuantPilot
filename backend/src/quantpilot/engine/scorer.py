@@ -360,15 +360,27 @@ class Scorer:
                     norm.cdf(col.fillna(0.0).to_numpy()) * 100, index=col.index,
                 ).where(col.notna(), None)
 
+        # 逐行标量取值一律走 dict：`DataFrame.loc[ts_code, col]` 每次约 15 µs，
+        # 3700 只 × 每只约 30 次 = 每日近 2 s（2026-09-21 回测剖析所见），
+        # `to_dict("index")` 一次性转换后同样的取值降到纳秒级。数值路径不变。
+        sz_rows: dict = strategy_z_matrix.to_dict("index")
+        orth_rows: dict = orthogonal_matrix.to_dict("index")
+        composite_z_map = composite_z.to_dict()
+        pct_map = pct_in_market.to_dict()
+        composite_score_map = composite_score.to_dict()
+        scalar_maps = {s_name: ser.to_dict() for s_name, ser in scalar_per_strategy.items()}
+
         results: list[CompositeScore] = []
         for ts_code in composite_z.index:
-            z_value = float(composite_z.loc[ts_code])
-            pct_value = float(pct_in_market.loc[ts_code])
+            z_value = float(composite_z_map[ts_code])
+            pct_value = float(pct_map[ts_code])
+            sz_row = sz_rows[ts_code]
+            orth_row = orth_rows[ts_code]
 
             # raw breakdown：z_raw × weight
             breakdown_raw: dict[str, dict] = {}
             for s_name, w in valid_weights.items():
-                z_raw = strategy_z_matrix.loc[ts_code, s_name]
+                z_raw = sz_row[s_name]
                 if pd.isna(z_raw):
                     continue
                 breakdown_raw[s_name] = {
@@ -380,7 +392,7 @@ class Scorer:
             # V1.5-C C0：IC 观测用 z_raw，覆盖全部 active 策略（权重 0 者也收）
             z_all: dict[str, float] = {}
             for s_name in active_strategies:
-                z_obs = strategy_z_matrix.loc[ts_code, s_name]
+                z_obs = sz_row[s_name]
                 if pd.isna(z_obs):
                     continue
                 z_all[s_name] = float(z_obs)
@@ -391,7 +403,7 @@ class Scorer:
                 norm_col = f"{s_name}_normalized"
                 if norm_col not in orthogonal_matrix.columns:
                     continue
-                z_orth_val = orthogonal_matrix.loc[ts_code, norm_col]
+                z_orth_val = orth_row[norm_col]
                 z_orth = 0.0 if pd.isna(z_orth_val) else float(z_orth_val)
                 breakdown_residual[s_name] = {
                     "z_orthogonal_normalized": z_orth,
@@ -401,10 +413,10 @@ class Scorer:
 
             # 兼容旧四标量字段
             def _scalar(s_name: str) -> float | None:
-                series = scalar_per_strategy.get(s_name)
-                if series is None or ts_code not in series.index:
+                mapping = scalar_maps.get(s_name)
+                if mapping is None or ts_code not in mapping:
                     return None
-                v = series.loc[ts_code]
+                v = mapping[ts_code]
                 return None if v is None or (isinstance(v, float) and pd.isna(v)) else float(v)
 
             # explanation
@@ -430,13 +442,13 @@ class Scorer:
                 norm_col = f"{s_name}_normalized"
                 if norm_col not in orthogonal_matrix.columns:
                     continue
-                v = orthogonal_matrix.loc[ts_code, norm_col]
+                v = orth_row[norm_col]
                 if pd.notna(v):
                     factor_orth_dict[s_name] = {"z_orthogonal_normalized": float(v)}
 
             results.append(CompositeScore(
                 ts_code=ts_code_str,
-                composite_score=float(composite_score.loc[ts_code]),
+                composite_score=float(composite_score_map[ts_code]),
                 trend_score=_scalar("trend"),
                 momentum_score=_scalar("momentum"),
                 reversion_score=_scalar("mean_reversion"),

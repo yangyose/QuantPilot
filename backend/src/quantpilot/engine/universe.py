@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 from quantpilot.core.config_defaults import DEFAULT_UNIVERSE, UniverseConfig
@@ -61,6 +62,41 @@ def _warn_if_low_coverage(values: pd.Series, field: str, rule: str) -> None:
             "universe_filter_low_coverage: %s 覆盖率 %.1f%%（%d/%d）→ %s 实质失效",
             field, cov * 100, int(values.notna().sum()), n, rule,
         )
+
+
+def _consistently_losing_codes(hist_yoy: pd.Series, n_periods: int) -> pd.Series:
+    """F-5：每只股票最近 `n_periods` 个**有值**报告期是否全为负（index=ts_code，bool）。
+
+    `hist_yoy` 的 index 是 MultiIndex(ts_code, report_period)。整表一次排序 + `cumcount`
+    取代逐股 `groupby.apply`——语义逐字不变；2026-09-21 于 5434 实测单日 5515 只
+    （2026-08-25，22060 行）：前者 1.67 s，后者 0.01 s，判连亏只数同为 1655。等价性由
+    `tests/unit/test_universe_f5.py::TestVectorizedEqualsReference` 用逐股参考实现钉死。
+
+    ⚠️ 三处都不能省（2026-09-07 修，每一处对应一种失效形态）：
+
+    1. **按 report_period 倒序**再取前 N —— 取数方 `get_latest_n_financials` 的 SELECT
+       无 ORDER BY，行序不保证；不排序就成了「随便两期」。
+    2. **先 dropna 再取 N**，不是先取 N 再 dropna —— 未披露报告期每天写一条基本面
+       全 NULL 的占位行，它会占掉一个名额。这正是缺陷本体：87% 的股票因此只剩 1 期可用值。
+    3. **不足 N 个有值期 → False（不剔除）** —— 旧实现在此「降级为单期」，等于数据不足时
+       做「疑罪从有」的推定，而生产上 87% 的股票正处于这个状态。
+    """
+    non_nan = hist_yoy.dropna()
+    if non_nan.empty:
+        return pd.Series(dtype=bool)
+    codes = non_nan.index.get_level_values(0)
+    periods = non_nan.index.get_level_values(-1)
+    frame = pd.DataFrame({
+        "code": np.asarray(codes), "period": np.asarray(periods),
+        "yoy": non_nan.to_numpy(dtype=float),
+    })
+    # 稳定排序：同 (code, period) 重复行保持原相对顺序，与逐股 `sort_index` 一致
+    frame = frame.sort_values(["code", "period"], ascending=[True, False], kind="mergesort")
+    frame = frame[frame.groupby("code").cumcount() < n_periods]
+    by_code = frame.groupby("code", sort=False)
+    enough = by_code.size() >= n_periods
+    all_negative = (frame["yoy"] < 0).groupby(frame["code"], sort=False).all()
+    return (enough & all_negative).astype(bool)
 
 
 class UniverseFilter:
@@ -210,32 +246,7 @@ class UniverseFilter:
         if financials_history is not None and not financials_history.empty:
             if "net_profit_yoy" in financials_history.columns:
                 hist_yoy = financials_history["net_profit_yoy"]
-
-                def _is_consistently_losing(ts_yoy: pd.Series) -> bool:
-                    """最近 `_F5_PERIODS` 个**有值**报告期是否全为负。
-
-                    ⚠️ 三处都不能省（2026-09-07 修，每一处对应一种失效形态）：
-
-                    1. **按 report_period 倒序**再取前 N —— 取数方
-                       `get_latest_n_financials` 的 SELECT 无 ORDER BY，
-                       行序不保证；不排序就成了「随便两期」。
-                    2. **先 dropna 再取 N**，不是先取 N 再 dropna —— 未披露报告期
-                       每天写一条基本面全 NULL 的占位行，它会占掉一个名额。
-                       这正是缺陷本体：87% 的股票因此只剩 1 期可用值。
-                    3. **不足 N 个有值期 → 返回 False（不剔除）** —— 旧实现在此
-                       「降级为单期」，等于数据不足时做「疑罪从有」的推定，
-                       而生产上 87% 的股票正处于这个状态。
-                    """
-                    non_nan = ts_yoy.dropna()
-                    if len(non_nan) < _F5_PERIODS:
-                        return False  # 有值期不足 → 无法确认「连续」亏损，保留
-                    # index 是 (ts_code, report_period)；按报告期取最近 N 个
-                    newest = non_nan.sort_index(level=-1, ascending=False).iloc[
-                        :_F5_PERIODS
-                    ]
-                    return bool((newest < 0).all())
-
-                losing_mask = hist_yoy.groupby(level=0).apply(_is_consistently_losing)
+                losing_mask = _consistently_losing_codes(hist_yoy, _F5_PERIODS)
                 losing = losing_mask.reindex(idx).fillna(False)
                 mask &= (~losing | is_financial)
             else:
