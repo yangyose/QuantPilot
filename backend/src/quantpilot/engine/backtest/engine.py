@@ -150,6 +150,102 @@ def _pit_mask(col: pd.Series, trade_date: date) -> pd.Series:
     return (ts.dt.normalize() <= pd.Timestamp(trade_date)).fillna(False).astype(bool)
 
 
+# 与 `data.repository._FUND_LOOKBACK_DAYS` 相等（`test_backtest_latest_financials.py` 钉死）；
+# Engine 不 import data 层，故此处复制一份常量。
+_FUND_LOOKBACK_DAYS = 450
+_PUB_COL = "_pub"  # `_prepare_financials` 加的规范化 publish_date（datetime64，NaT 已剔）
+_DAILY_FIELDS = ("publish_date", "pe_ttm", "pb", "dividend_yield")
+_FUND_FIELDS = ("roe", "net_profit_yoy", "revenue_yoy", "debt_to_asset", "total_equity")
+_FUND_HAVING = ("roe", "net_profit_yoy", "revenue_yoy", "total_equity")
+
+
+def _prepare_financials(financials: pd.DataFrame) -> pd.DataFrame:
+    """把 bundle 里的 financials 整理成**一次排好序**的扁平表，供逐日切片免排序。
+
+    - MultiIndex(ts_code, report_period) → 列
+    - `_pub` = `pd.to_datetime(publish_date, errors="coerce").normalize()`，NaT 行剔除
+      （SQL `publish_date <= as_of` 对 NULL 恒假，语义相同）
+    - 按 (ts_code, _pub, report_period) 升序**稳定**排序
+
+    ⚠️ 为什么必须排序（2026-09-22 发现）：原 `_get_financials_at` 用 `groupby(level=0).last()`
+    取「最新一期」，而它取的是**帧内顺序**的末行——bundle 的 SELECT 没有 ORDER BY，堆序
+    在 2026-09-08 `repair_financial_lookahead` 改写 318 万行后已被打乱：5434 实测 5554/5665 只
+    股票的行序非时间序，`_get_financials_at` 给出的 publish_date 与真正的最新行**不同的占 97%**。
+    生产 `get_latest_financial` 是确定性 SQL，不受影响；自 09-08 起的所有回测都受影响。
+    已带 `_pub` 列的帧原样返回（幂等）。
+    """
+    if financials is None or financials.empty:
+        return pd.DataFrame()
+    if _PUB_COL in financials.columns:
+        return financials
+    is_mi = isinstance(financials.index, pd.MultiIndex)
+    df = financials.reset_index() if is_mi else financials.copy()
+    if "publish_date" not in df.columns or "ts_code" not in df.columns:
+        return pd.DataFrame()
+    pub = pd.to_datetime(df["publish_date"], errors="coerce")
+    if getattr(pub.dt, "tz", None) is not None:
+        pub = pub.dt.tz_localize(None)
+    df[_PUB_COL] = pub.dt.normalize()
+    df = df[df[_PUB_COL].notna()]
+    keys = ["ts_code", _PUB_COL] + (["report_period"] if "report_period" in df.columns else [])
+    return df.sort_values(keys, kind="mergesort").reset_index(drop=True)
+
+
+def _latest_financials_at(
+    financials: pd.DataFrame, trade_date: date, lookback_days: int = _FUND_LOOKBACK_DAYS,
+) -> pd.DataFrame:
+    """内存里复现生产 `repository.get_latest_financial` 的语义（逐股确定性，与帧顺序无关）。
+
+    - **日频段**：每股 `publish_date <= trade_date` 的最新一行 → publish_date / pe_ttm / pb /
+      dividend_yield（有哪列取哪列）。没有任何行的股不出现。
+    - **基本面段（LOCF）**：`publish_date ∈ [trade_date - lookback, trade_date]` 的行按
+      (ts_code, report_period) 取各字段 max（忽略 NaN），只留 roe / net_profit_yoy /
+      revenue_yoy / total_equity 任一有值的期，再取每股**最近报告期** → report_period +
+      roe / net_profit_yoy / revenue_yoy / debt_to_asset / total_equity。
+    - **total_equity 单独 LOCF**：共用期该字段缺失时，回填「最近**有该字段值**的期」的值；
+      共用期有值时不得被旧期盖住；`report_period` 不动（A5b 真空判定依赖它）。
+    - 日频左连基本面；基本面超出回看窗口 → 那些列 NaN / report_period NaN。
+
+    `tests/unit/test_backtest_latest_financials.py` 用与 `test_data_repository.py` 03b~03j
+    相同的样本钉语义；调用点在 `BacktestEngine._get_financials_at`。
+    输入可以是 bundle 原始帧或 `_prepare_financials` 的产物（后者逐日免排序）。
+    """
+    flat = _prepare_financials(financials)
+    if flat.empty:
+        return pd.DataFrame()
+    td = pd.Timestamp(trade_date)
+    pit = flat[flat[_PUB_COL] <= td]
+    if pit.empty:
+        return pd.DataFrame()
+    daily = pit.drop_duplicates("ts_code", keep="last").set_index("ts_code")
+    daily_cols = [c for c in _DAILY_FIELDS if c in daily.columns]
+    out = daily[daily_cols].copy()
+
+    fund_fields = [c for c in _FUND_FIELDS if c in flat.columns]
+    having = [c for c in _FUND_HAVING if c in flat.columns]
+    fund_out_cols = ["report_period"] + fund_fields
+    src = pit[pit[_PUB_COL] >= td - pd.Timedelta(days=lookback_days)]
+    if not fund_fields or "report_period" not in src.columns or src.empty:
+        for c in fund_out_cols:
+            out[c] = np.nan
+        return out
+    agg = src.groupby(["ts_code", "report_period"], sort=False)[fund_fields].max()
+    if having:
+        agg = agg[agg[having].notna().any(axis=1)]
+    agg = agg.reset_index().sort_values(["ts_code", "report_period"], kind="mergesort")
+    fund = agg.drop_duplicates("ts_code", keep="last").set_index("ts_code")
+    if "total_equity" in fund_fields:
+        te = (
+            agg[agg["total_equity"].notna()]
+            .drop_duplicates("ts_code", keep="last")
+            .set_index("ts_code")["total_equity"]
+        )
+        fund["total_equity"] = fund["total_equity"].where(
+            fund["total_equity"].notna(), te.reindex(fund.index)
+        )
+    return out.join(fund[fund_out_cols], how="left")
+
+
 def _financials_history_at(financials: pd.DataFrame, trade_date: date, n: int = 4) -> pd.DataFrame:
     """内存里复现生产 `repository.get_latest_n_financials(n)` 的语义（L-FID，2026-09-17 拍板 6-A）。
 
@@ -161,16 +257,27 @@ def _financials_history_at(financials: pd.DataFrame, trade_date: date, n: int = 
     """
     if financials is None or financials.empty or "publish_date" not in financials.columns:
         return pd.DataFrame()
-    df = financials[_pit_mask(financials["publish_date"], trade_date).to_numpy()]
-    if df.empty:
-        return pd.DataFrame()
-    if isinstance(df.index, pd.MultiIndex):
-        df = df.reset_index()
-    if "ts_code" not in df.columns or "report_period" not in df.columns:
-        return pd.DataFrame()
-    df = df.sort_values(
-        ["ts_code", "report_period", "publish_date"], ascending=[True, False, False]
-    )
+    if _PUB_COL in financials.columns:
+        # `_prepare_financials` 的产物：已按 (ts_code↑, publish↑, report_period↑) 排好 →
+        # 掩码后先按 (ts_code, report_period) 去重 keep="last"（= 每期 publish 最新一行），
+        # 150 万行缩成约 4.5 万行，再按报告期倒序排这一小片。逐日重排 150 万行曾在
+        # 30 日回测里占 30 s（2026-09-22 剖析）。
+        df = financials[(financials[_PUB_COL] <= pd.Timestamp(trade_date)).to_numpy()]
+        if df.empty:
+            return pd.DataFrame()
+        df = df.drop_duplicates(subset=["ts_code", "report_period"], keep="last")
+        df = df.sort_values(["ts_code", "report_period"], ascending=[True, False], kind="mergesort")
+    else:
+        df = financials[_pit_mask(financials["publish_date"], trade_date).to_numpy()]
+        if df.empty:
+            return pd.DataFrame()
+        if isinstance(df.index, pd.MultiIndex):
+            df = df.reset_index()
+        if "ts_code" not in df.columns or "report_period" not in df.columns:
+            return pd.DataFrame()
+        df = df.sort_values(
+            ["ts_code", "report_period", "publish_date"], ascending=[True, False, False]
+        )
     df = df.drop_duplicates(subset=["ts_code", "report_period"], keep="first")
     df = df.groupby("ts_code", sort=False).head(n)
     return df.set_index(["ts_code", "report_period"])
@@ -279,6 +386,9 @@ class BacktestEngine:
         pipeline_mode_counter: dict[str, int] = {}
 
         total = len(trade_dates)
+        # 财务表一次整理、排序，逐日只做掩码 + 去重（两个 PIT 函数共用同一份）
+        fin_flat = _prepare_financials(data.financials)
+
         for i, trade_date in enumerate(trade_dates):
             # ---------- 0. T+1 撮合（B3-2）：先执行 T-1 日 pending_signals ----------
             if pending_signals and config.execution_price == "OPEN_T1":
@@ -303,7 +413,7 @@ class BacktestEngine:
                 continue
 
             # ---------- b. PIT 财务数据（B3-7：UniverseFilter F-5 真实启用）----
-            financials_t = self._get_financials_at(data.financials, trade_date)
+            financials_t = self._get_financials_at(fin_flat, trade_date)
 
             # A5b（SDD-EXT-03）：真空期前瞻 ROE 覆盖——快报/预告报告期晚于最近正式财报期时，
             # 用 est_net_profit/total_equity 覆盖 financials.roe（与生产 ScoringService
@@ -347,7 +457,7 @@ class BacktestEngine:
                 quotes_t["avg_amount"] = _avg_amount_before(
                     amount_wide, trade_date, window=20
                 ).reindex(quotes_t.index)
-            financials_hist_t = _financials_history_at(data.financials, trade_date, n=4)
+            financials_hist_t = _financials_history_at(fin_flat, trade_date, n=4)
             try:
                 universe_idx = self._universe_filter.filter(
                     stock_info_t, financials_t, quotes_t, trade_date, self._calendar,
@@ -707,28 +817,16 @@ class BacktestEngine:
         return stock_info[list_mask]
 
     def _get_financials_at(self, financials: pd.DataFrame, trade_date: date) -> pd.DataFrame:
+        """PIT 财务快照：与生产 `get_latest_financial` 同语义（见 `_latest_financials_at`）。
+
+        ~~原实现 `groupby(level=0).last()`~~ 取的是帧内顺序的末行，结果随 SELECT 的堆序而变
+        （2026-09-22 发现，5434 上 97% 股票取错行）；现在逐股确定性，且 `run()` 传入的是
+        `_prepare_financials` 预排序帧，逐日只做掩码 + 去重。没有 publish_date 列的帧
+        （旧 bundle / 单测替身）原样返回。
         """
-        PIT 过滤：返回公告日 <= trade_date 的最近一期财务数据。
-        financials 为 MultiIndex(ts_code, report_period) 或扁平 DataFrame。
-        """
-        if financials.empty:
+        if financials.empty or "publish_date" not in financials.columns:
             return financials
-        # 若有 publish_date 列，按公告日过滤
-        if "publish_date" in financials.columns:
-            try:
-                pit = financials[_pit_mask(financials["publish_date"], trade_date).to_numpy()]
-                # 按 ts_code 取最新一期
-                if isinstance(pit.index, pd.MultiIndex):
-                    pit = pit.copy()
-                    # A5b：report_period 原为 index level 1，groupby(level=0).last() 会丢弃；
-                    # 前瞻 ROE 覆盖判定「快报期 > 正式财报期」需要它，故物化为列（与生产
-                    # ScoringService 的 financials 携带 report_period 列对称）。
-                    pit["report_period"] = pit.index.get_level_values(1)
-                    return pit.groupby(level=0).last()
-                return pit
-            except Exception:
-                pass
-        return financials
+        return _latest_financials_at(financials, trade_date)
 
     def _get_forecast_at(self, forecast: pd.DataFrame, trade_date: date) -> pd.DataFrame:
         """A5b（SDD-EXT-03）PIT 切片：从预加载全量 forecast 取 ``pre_announce_date <=

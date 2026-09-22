@@ -223,6 +223,7 @@ DEBUG=false
 
 - **MultiIndex `in` 判断 O(n) → O(1)**：循环**外**预计算 `available = set(df.index.get_level_values("ts_code"))`，循环内 `if x not in available`。循环内直接写 `ts_code in index.get_level_values("ts_code")` 是 O(n)，几千只股票 × 几千日 = 几百万次全扫
 - **`rank(pct=True)` 边界**：n 个相同值 → rank = `(n+1)/(2n)`，**不是 0.5**。测试断言「全相等」用 `len(set(scores)) == 1`，别断言具体值
+- **`groupby(...).last()` 取的是「帧内顺序的末行」，不是「最新」**（2026-09-22，回测取错 97% 股票的财务快照）：`BacktestEngine._get_financials_at` 用它取「最近一期」，而 bundle 的 SELECT 没有 `ORDER BY`——堆序在 09-08 `repair_financial_lookahead` UPDATE 318 万行后被打乱（5434 实测 5554/5665 只行序非时间序），于是每次回测确定性地拿到错行、指标变了没人知道（6 日 `max_drawdown` 0.0197 → 修后 0.0131）。生产 `get_latest_financial` 是 SQL `DISTINCT ON … ORDER BY`，不受影响。判据：**任何「取最新 / 取末行」语义必须显式按时间列排序**（`sort_values` 后 `drop_duplicates(keep="last")`），并写一条「同一批行倒序喂入结果不变」的测试（`test_backtest_latest_financials.py`）；顺带把 SQL 语义整段复现（LOCF、450 天回看、`total_equity` 单独结转），与 repository 的 03b~03j 用例逐字共享样本
 - **策略内加权用 `skipna=False`**：`.sum(axis=1, skipna=False)` 才能让「任一因子为 NaN」的样本被排除；默认 `skipna=True` 会把 NaN 当 0 处理，静默污染结果
 - PostgreSQL `NUMERIC` 传 pandas_ta 前 `.astype(float)`（见 §4.4）
 

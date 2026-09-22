@@ -15,6 +15,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantpilot.engine.backtest.engine import (
+    _FUND_LOOKBACK_DAYS,
     BacktestConfig,
     BacktestDataBundle,
     BacktestEngine,
@@ -483,8 +484,11 @@ class BacktestService:
         # → 中性化 n_obs=0 退化。取 200 日历天（≈ 138 交易日）覆盖 120 交易日 + buffer。
         lookback_start = config.start_date - timedelta(days=200)
         # 财报 PIT 窗口更宽：某股「最近一期」财报可能已发布数月（季报间隔 + 披露延迟），
-        # 130/200 日窗口会漏掉 → financials_t 该股为空 → value/quality NaN。取 ~400 日历天。
-        fin_lookback_start = config.start_date - timedelta(days=400)
+        # 130/200 日窗口会漏掉 → financials_t 该股为空 → value/quality NaN。原取 ~400 日历天；
+        # 2026-09-22 起对齐生产 `get_latest_financial` 的基本面回看窗口（450 天）——引擎在
+        # 内存里复现该 SQL 的 LOCF，切片比它窄时 total_equity 结转会少一期
+        # （5434 实测 2026-07-14 有 1 只在 400 与 450 之间，对齐后 0 只不同）。
+        fin_lookback_start = config.start_date - timedelta(days=_FUND_LOOKBACK_DAYS)
 
         # ── 1. daily_quotes 全字段加载（B3-1） ───────────────────────────────
         # 2026-09-16 内存修法：原 `select(DailyQuote)...scalars().all()` 把窗口内 ~76 万行
