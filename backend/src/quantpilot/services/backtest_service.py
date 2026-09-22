@@ -19,6 +19,7 @@ from quantpilot.engine.backtest.engine import (
     BacktestConfig,
     BacktestDataBundle,
     BacktestEngine,
+    _prepare_financials,
 )
 from quantpilot.models.system import BacktestResult, BacktestTask
 
@@ -649,7 +650,10 @@ class BacktestService:
         if _chunks:
             fin_df = pd.concat(_chunks, ignore_index=True)
             del _chunks
-            financials = fin_df.set_index(["ts_code", "report_period"])
+            # 直接放 `_prepare_financials` 的产物（扁平、已排序、带 `_pub`）：引擎里同名调用
+            # 幂等、零拷贝。2026-09-22 首版让引擎自己排，等于 bundle 里多背一份 150 万行
+            # ——生产 100 日 `memory.peak` 因此没降（1959 MiB）。
+            financials = _prepare_financials(fin_df)
         else:
             financials = pd.DataFrame()
         # 3b. pe_pb_history 不再派生（留空）：分位改在 PostgreSQL 内算，见下方 3d。
@@ -682,6 +686,8 @@ class BacktestService:
         ) if dq_rows else []
         _all_codes = list(stock_info.index) if not stock_info.empty else []
         _pe_pb_src = _latest_pe_pb_source(fin_df) if _chunks_seen else pd.DataFrame()
+        if _chunks_seen:
+            del fin_df  # 未排序原帧此后无人用；排序副本已在 `financials`
         _pe_pb_hist = await self._load_pe_pb_history_arrays(
             (_bt_days[0] if _bt_days else config.start_date) - timedelta(days=365 * _years),
             config.end_date,

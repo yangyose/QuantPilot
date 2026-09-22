@@ -6,10 +6,46 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, TypedDict
 
+import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
     pass
+
+
+def ewm_adjust_false_wide(df: pd.DataFrame, alpha: float) -> pd.DataFrame:
+    """`df.ewm(alpha=alpha, adjust=False).mean()` 的等价实现，按行递推、每行对全部列一次向量化。
+
+    语义（与 pandas 逐列相同，`test_strategy_vectorized_parity.py` 用随机面板钉）：
+    - 前导 NaN 段输出 NaN；首个有效值原样作为起点
+    - 之后 y_t = y_{t-1} + α·(x_t − y_{t-1})
+    - **内部 NaN**（有效值之后再出现 NaN）：pandas 在该位置输出上一值并按 `ignore_na=False`
+      给后续值加大衰减权重——本函数**不支持**这种输入（会 raise）。策略向量化路径只把
+      「无内部 NaN」的股票送进来（有内部 NaN 的回落逐股 pandas_ta 循环），所以不会碰到。
+
+    为什么不用 pandas：`ewm` 逐列走 Cython，5500 列 × 200 行一次约 0.2 s，Trend 每日调 3 次、
+    30 日回测累计 21 s；递推 200 步、每步一次 5500 元素的 numpy 运算约 2 ms。
+    """
+    arr = df.to_numpy(dtype=float)
+    n_rows, n_cols = arr.shape
+    out = np.full_like(arr, np.nan)
+    if n_rows == 0 or n_cols == 0:
+        return pd.DataFrame(out, index=df.index, columns=df.columns)
+    valid = ~np.isnan(arr)
+    started = np.zeros(n_cols, dtype=bool)
+    y = np.full(n_cols, np.nan)
+    for t in range(n_rows):
+        x = arr[t]
+        v = valid[t]
+        if np.any(started & ~v):
+            raise ValueError("ewm_adjust_false_wide: 不支持有效值之后的内部 NaN")
+        first = v & ~started
+        y = np.where(first, x, y)
+        cont = v & started
+        y = np.where(cont, y + alpha * (x - y), y)
+        started |= v
+        out[t] = np.where(started, y, np.nan)
+    return pd.DataFrame(out, index=df.index, columns=df.columns)
 
 
 class MarketSnapshot(TypedDict, total=False):

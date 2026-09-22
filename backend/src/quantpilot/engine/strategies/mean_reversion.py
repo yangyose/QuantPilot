@@ -10,7 +10,7 @@ from quantpilot.core.config_defaults import (
     DEFAULT_MEAN_REVERSION_STRATEGY,
     MeanReversionStrategyConfig,
 )
-from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot
+from quantpilot.engine.strategies.base import BaseStrategy, MarketSnapshot, ewm_adjust_false_wide
 from quantpilot.engine.universe import UniverseFilter
 
 # 复用同一份常量，不另写——各写一份必漂，而「两处金融股定义不一致」
@@ -165,8 +165,8 @@ class MeanReversionStrategy(BaseStrategy):
         diff = px.diff()
         pos = diff.clip(lower=0)
         neg = (-diff).clip(lower=0)
-        pos_avg = pos.ewm(alpha=1.0 / n, adjust=False).mean().iloc[-1]
-        neg_avg = neg.ewm(alpha=1.0 / n, adjust=False).mean().iloc[-1]
+        pos_avg = ewm_adjust_false_wide(pos, 1.0 / n).iloc[-1]
+        neg_avg = ewm_adjust_false_wide(neg, 1.0 / n).iloc[-1]
         rsi = 100.0 * pos_avg / (pos_avg + neg_avg)
         rsi_oversold = 100.0 - rsi
         # 乖离率

@@ -64,7 +64,8 @@ class BacktestDataBundle:
     """
     adj_prices: pd.DataFrame       # index=trade_date, columns=ts_code（后复权价格）
     stock_info: pd.DataFrame       # index=ts_code，含 list_date/delist_date/sw_industry_l1
-    financials: pd.DataFrame       # MultiIndex(ts_code, report_period)，含 publish_date
+    financials: pd.DataFrame       # 扁平、已按 (ts_code, publish) 排序（`_prepare_financials`
+                                   # 的产物；旧形态 MultiIndex(ts_code, report_period) 仍接受）
     hs300_history: pd.DataFrame    # HS300 OHLCV 历史（index=trade_date 或含 trade_date 列）
     # B3-1：完整字段日线，index=(trade_date, ts_code)
     daily_quotes: pd.DataFrame = field(default_factory=pd.DataFrame)

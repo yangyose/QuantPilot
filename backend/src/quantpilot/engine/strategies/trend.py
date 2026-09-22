@@ -10,6 +10,7 @@ from quantpilot.engine.strategies.base import (
     DEFAULT_REQUIRED_HISTORY_DAYS,
     BaseStrategy,
     MarketSnapshot,
+    ewm_adjust_false_wide,
 )
 
 
@@ -94,9 +95,10 @@ class TrendStrategy(BaseStrategy):
         seeded = np.where(rows < seed_row, np.nan, arr)
         at_seed = rows == seed_row
         seeded = np.where(at_seed, sma, seeded)
-        return pd.DataFrame(seeded, index=px.index, columns=px.columns).ewm(
-            span=length, adjust=False
-        ).mean()
+        # span → α = 2/(span+1)，与 pandas `ewm(span=..., adjust=False)` 相同
+        return ewm_adjust_false_wide(
+            pd.DataFrame(seeded, index=px.index, columns=px.columns), 2.0 / (length + 1.0),
+        )
 
     def _vectorized(self, adj: pd.DataFrame) -> pd.DataFrame:
         """宽表一次算完三个因子；公式与 `_factors_for_series` 相同。"""
