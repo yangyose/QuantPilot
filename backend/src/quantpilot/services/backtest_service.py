@@ -365,41 +365,100 @@ class BacktestService:
     ) -> PePbHistoryArrays:
         """把 `financial_data` 窗口内的 (ts_code, publish_date, pe_ttm, pb) 载成紧凑数组。
 
-        走 asyncpg 的 `COPY (SELECT …) TO STDOUT CSV`，整块进 `BytesIO` 再 `read_csv` 按列
-        定型——**不经过** SQLAlchemy Row（同样 646 万行，`session.stream` 光取行就要 22 s，
-        COPY 6.6 s + 解析 1.6 s；5434 实测）。日序数在 SQL 里算成整数
-        （`publish_date - DATE '0001-01-01' + 1` ≡ `date.toordinal()`），`ts_code` 以
-        `category` 读入，codes 即序号。峰值 ≈ CSV 缓冲（~185 MB，解析后即释放）+ 目标数组
-        （24 B/行 ≈ 150 MB）。这是本仓唯一一处绕过 SQLAlchemy 直接用驱动的地方：
-        只读、参数化、只为这一条大批量只取数的查询。
+        走 asyncpg 的 `COPY (SELECT …) TO STDOUT CSV`，**逐块**解析直接写进预分配数组——
+        不经过 SQLAlchemy Row（同样 646 万行，`session.stream` 光取行就要 22 s，COPY 约 8 s），
+        也不把整段 CSV 攒成一个缓冲：生产 100 日窗口首版那样做（BytesIO 200 MB + `read_csv`
+        的 DataFrame + 目标数组三份共存）把容器 `memory.peak` 推到 1926 MiB、离 2 GB 回退线
+        只剩 6%（`deploy_log.md` 2026-09-22）；分块后瞬时峰值 ≈ 目标数组（24 B/行）+ 一块。
+        日序数在 SQL 里算成整数（`publish_date - DATE '0001-01-01' + 1` ≡ `date.toordinal()`）；
+        `ts_code` 按首次出现编号（跨块用一个 dict 维持）。先 `count(*)` 预分配。
+        这是本仓唯一一处绕过 SQLAlchemy 直接用驱动的地方：只读、参数化、只为这一条大批量取数。
         """
         import io
+
+        from quantpilot.models.market import FinancialData
+
+        where = (
+            FinancialData.publish_date >= start_date,
+            FinancialData.publish_date <= end_date,
+        )
+        n_rows = int(
+            (await self._session.execute(
+                select(func.count()).select_from(FinancialData).where(*where)
+            )).scalar_one()
+        )
+        code_idx = np.empty(n_rows, dtype=np.int32)
+        day_ord = np.empty(n_rows, dtype=np.int32)
+        pe = np.empty(n_rows, dtype=np.float64)
+        pb = np.empty(n_rows, dtype=np.float64)
+        labels: dict[str, int] = {}
+        state = {"pos": 0, "tail": b"", "overflow": False}
+
+        def _consume(block: bytes) -> None:
+            """解析若干整行 CSV 写入数组；不足一行的尾巴留到下一块。"""
+            if not block:
+                return
+            df = pd.read_csv(
+                io.BytesIO(block), header=None, names=["c", "d", "pe", "pb"],
+                dtype={"c": object, "d": np.int32, "pe": np.float64, "pb": np.float64},
+            )
+            k = len(df)
+            pos = state["pos"]
+            if pos + k > n_rows:
+                # 预计数与 COPY 之间有并发写入：多出的行忽略并告警（回测窗口的数据本应静止）
+                state["overflow"] = True
+                k = n_rows - pos
+                if k <= 0:
+                    return
+                df = df.iloc[:k]
+            codes = df["c"]
+            new = [c for c in pd.unique(codes) if c not in labels]
+            for c in new:
+                labels[c] = len(labels)
+            code_idx[pos:pos + k] = codes.map(labels).to_numpy(dtype=np.int32)
+            day_ord[pos:pos + k] = df["d"].to_numpy(dtype=np.int32)
+            pe[pos:pos + k] = df["pe"].to_numpy(dtype=np.float64)
+            pb[pos:pos + k] = df["pb"].to_numpy(dtype=np.float64)
+            state["pos"] = pos + k
+
+        async def _sink(chunk: bytes) -> None:
+            # asyncpg 每次回调只有几十 KB；攒到约 4 MB（≈ 13 万行）再解析，
+            # 让 read_csv 的每次固定开销摊薄，瞬时驻留仍只有一块。
+            data = state["tail"] + chunk
+            if len(data) < 4 << 20:
+                state["tail"] = data
+                return
+            cut = data.rfind(b"\n")
+            if cut < 0:
+                state["tail"] = data
+                return
+            state["tail"] = data[cut + 1:]
+            _consume(data[: cut + 1])
 
         conn = await self._session.connection()
         raw = await conn.get_raw_connection()
         driver = raw.driver_connection  # asyncpg.Connection
-        buf = io.BytesIO()
         await driver.copy_from_query(
             "SELECT ts_code, publish_date - DATE '0001-01-01' + 1, "
             "pe_ttm::float8, pb::float8 "
             "FROM financial_data WHERE publish_date >= $1 AND publish_date <= $2",
-            start_date, end_date, output=buf, format="csv",
+            start_date, end_date, output=_sink, format="csv",
         )
-        buf.seek(0)
-        df = pd.read_csv(
-            buf, header=None, names=["c", "d", "pe", "pb"],
-            dtype={"c": "category", "d": np.int32, "pe": np.float64, "pb": np.float64},
-        )
-        del buf
-        cat = df["c"].cat
+        if state["tail"].strip():
+            _consume(state["tail"] + b"\n")
+        if state["overflow"]:
+            logger.warning(
+                "pe_pb_history_rows_exceed_precount: precount=%d, extra rows ignored", n_rows
+            )
+        pos = state["pos"]
+        if pos < n_rows:  # 并发删除让行数少于预计数：截短
+            code_idx, day_ord, pe, pb = code_idx[:pos], day_ord[:pos], pe[:pos], pb[:pos]
+        code_labels = np.empty(len(labels), dtype=object)
+        for c, i in labels.items():
+            code_labels[i] = c
         return PePbHistoryArrays(
-            code_labels=np.asarray(cat.categories, dtype=object),
-            code_idx=cat.codes.to_numpy(dtype=np.int32),
-            day_ord=df["d"].to_numpy(dtype=np.int32),
-            values={
-                "pe_ttm": df["pe"].to_numpy(dtype=np.float64),
-                "pb": df["pb"].to_numpy(dtype=np.float64),
-            },
+            code_labels=code_labels, code_idx=code_idx, day_ord=day_ord,
+            values={"pe_ttm": pe, "pb": pb},
         )
 
     async def _load_data_bundle(self, config: BacktestConfig) -> BacktestDataBundle:
