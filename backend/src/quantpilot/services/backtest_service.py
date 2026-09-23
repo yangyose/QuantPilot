@@ -180,9 +180,15 @@ class BacktestService:
             cfg = dataclasses.replace(config, slippage_rate=float(slip))
             result = self._engine.run(cfg, data)  # 复用同一 data bundle
             perf = result.performance or {}
+            # ⚠️ 输出键名（对外契约：前端表格列 / CSV 表头）与 `BacktestReport.generate`
+            # 的键名**不同**，必须逐个对上：`total_return` ← `cumulative_return`、
+            # `sharpe` ← `sharpe_ratio`。2026-09-23 发现 `total_return` 原写成
+            # `perf.get("total_return", 0.0)`——该键engine 从来不产出 → 前端「累计收益」列
+            # **恒为 0.00%**，而 DoD 只看 sharpe 所以一直没人发现（§4.11「接了但没生效」）。
+            # `tests/unit/test_slippage_report_keys.py` 用真实 `generate()` 的键集合钉住这层映射。
             report.append({
                 "slippage": float(slip),
-                "total_return": float(perf.get("total_return", 0.0)),
+                "total_return": float(perf.get("cumulative_return", 0.0)),
                 "max_drawdown": float(perf.get("max_drawdown", 0.0)),
                 "sharpe": float(perf.get("sharpe_ratio", 0.0)),
                 "annualized_return": float(perf.get("annualized_return", 0.0)),

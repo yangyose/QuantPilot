@@ -903,3 +903,22 @@ eb8ea63 perf(backtest): bundle 直接放排好序的财务帧（引擎零拷贝�
    09-22 的 `a6f32a3e` / `74ce78f5`（`0a5dcc4`）与 `e6b67719`（`eb8ea63`）才是修后口径，
    后两者 100 日 `max_drawdown` 逐位相同（0.084945）。
 2. 要清理这些验收行属**生产写操作**，须单独取得用户确认（C-1），且没有 UI 暴露面 = 不急。
+
+## 修后回测基线（2026-09-23，5434，引擎 = `eb8ea63` + 键名订正）
+
+后续策略改动的对照点。**修前的任何回测数字都不能当基线**（帧序依赖的 PIT 财务快照，
+CLAUDE.md §4.10；更早还叠着 L-PIT 前视偏差）。
+
+| 项 | 值 |
+|---|---|
+| 窗口 | 2026-06-04 ~ 2026-09-12（100 日历天 / **71 个 NAV 日**）|
+| task_id（5434）| `a14b8680-6ac3-427c-a3b0-2b3171354f7a` |
+| cumulative_return | **−0.001227** |
+| annualized_return | −0.004411 |
+| sharpe_ratio | −0.16257 |
+| max_drawdown | **0.084945**（与生产 `eb8ea63` 验收跑逐位相同）|
+| win_rate / profit_loss_ratio | null（窗口内无已平仓交易）|
+| 耗时 / 峰值 | 本机约 7 min；生产 606 s / `memory.peak` 1812 MiB |
+
+⚠️ `money_flow` 在回测里**逐日被跳过**（bundle 无该数据，影子权重 0 故不影响本基线）——
+C4 转正前必须先补，判据见 `tests/unit/test_backtest_feeds_weighted_strategies.py`。

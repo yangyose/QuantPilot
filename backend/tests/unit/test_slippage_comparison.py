@@ -2,6 +2,14 @@
 
 多滑点情景对比：复用同一 bundle 串行跑各档，产出结构化对比报告；engine.run 每档
 用覆盖后的 slippage_rate；bundle 只加载一次（内存不 N 倍）。
+
+⚠️ **本文件的替身曾把缺陷藏了四个月**（2026-09-23 订正）：`_StubEngine` 返回的
+`performance` 用键名 `total_return`，而真实 `BacktestReport.generate` 产出的是
+`cumulative_return`——被测代码当时也写着 `perf.get("total_return", 0.0)`，于是
+**替身与被测代码一起错，测试全绿**，而生产前端的「累计收益」列对每档滑点恒显示 0.00%。
+这正是 CLAUDE.md §4.11 第 7 例「测试输入比现实更配合」。现替身的键名**逐字取自**
+`BacktestReport.generate` 的输出（`_REAL_PERF_KEYS` 断言会在键集合再漂移时报错），
+键名对账另有 `test_slippage_report_keys.py` 用 AST + 真实函数守着。
 """
 from __future__ import annotations
 
@@ -20,6 +28,18 @@ def _cfg(scenarios: list[float] | None = None) -> BacktestConfig:
     )
 
 
+def _assert_real_keys(perf: dict) -> None:
+    """替身的键必须是真实 `BacktestReport.generate` 输出键的子集。"""
+    from datetime import timedelta
+
+    from quantpilot.engine.backtest.report import BacktestReport
+
+    nav = {date(2026, 1, 5) + timedelta(days=i): 1.0 + 0.001 * i for i in range(5)}
+    real = set(BacktestReport.generate(nav, [], _cfg()))
+    extra = set(perf) - real
+    assert not extra, f"替身用了真实报告没有的键 {sorted(extra)}——缺陷会被一起藏住"
+
+
 class _StubEngine:
     """记录每次 run 的 slippage_rate 与 data 身份。"""
 
@@ -28,16 +48,16 @@ class _StubEngine:
 
     def run(self, config, data, progress_cb=None, position_sink=None):
         self.calls.append((config.slippage_rate, id(data)))
-        # 用 slippage 派生一个确定性 performance，验证对比条目对齐情景
-        return SimpleNamespace(
-            performance={
-                "total_return": 1.0 - config.slippage_rate * 10,
-                "max_drawdown": -0.1,
-                "sharpe_ratio": 2.0 - config.slippage_rate * 100,
-                "annualized_return": 0.2,
-            },
-            pipeline_mode="real_5step",
-        )
+        # 用 slippage 派生一个确定性 performance，验证对比条目对齐情景。
+        # 键名必须与真实报告一致（见模块 docstring）——`_assert_real_keys` 现场核对。
+        perf = {
+            "cumulative_return": 1.0 - config.slippage_rate * 10,
+            "max_drawdown": -0.1,
+            "sharpe_ratio": 2.0 - config.slippage_rate * 100,
+            "annualized_return": 0.2,
+        }
+        _assert_real_keys(perf)
+        return SimpleNamespace(performance=perf, pipeline_mode="real_5step")
 
 
 def test_a1b_slippage_comparison_reuses_bundle_and_overrides_slippage() -> None:

@@ -187,9 +187,13 @@ async def _run(args: argparse.Namespace) -> None:
 
     perf = result.performance_json
     logger.info("✅ 回测完成 task_id=%s", task_id)
-    for k in ("total_return", "annual_return", "sharpe", "max_drawdown", "win_rate"):
-        if k in perf:
-            logger.info("    %-14s = %s", k, perf[k])
+    # ⚠️ 打**全部**键，不按白名单挑（2026-09-23）：原白名单写的是 `total_return` /
+    # `annual_return` / `sharpe`，而 `BacktestReport.generate` 产出的是 `cumulative_return` /
+    # `annualized_return` / `sharpe_ratio` → 三个最重要的数字被静默跳过，只剩回撤和
+    # win_rate 两行。挑白名单的写法一旦键名漂移就自动变哑巴，全打则漂移立刻可见。
+    for k in sorted(perf):
+        if not isinstance(perf[k], (list, dict)):
+            logger.info("    %-18s = %s", k, perf[k])
 
     # ⑤ 滑点敏感性对比（A1b，可选）：复用同一 config，串行跑各档滑点
     slippage_comparison = None
