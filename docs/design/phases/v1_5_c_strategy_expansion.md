@@ -1,11 +1,11 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.21（C4 转正前置已交付 + 订正三处过期声称 + 回填审计入档，2026-09-23）
+> 版本：v0.22（C5 启动：沙箱 + 适配器 + 执行开关交付，2026-09-23）
 > 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1 全部已上生产**（2026-08-31，与 P0 退出修复同批，生产 = `2bab523`）——C1-1 约束落点统一 `ac069e5` / C1-2 风险调整动量 `85df015` / C1-3 价格窗口按交易日推导 `be6d6d6`；**C1 面板对比已完成**（2026-08-28，off 5h10m / on 4h57m，497 交易日 × 4 策略，结论见 §3.3——**上线理由是 C1-1 + C1-3 两个缺陷修复，不是 C1-2 验证有效**）；**C2 代码六块全部完成 + 5y 回填已在本地算力中心（5434）激活**（7 列覆盖 94.7~99.9%，9/9 项可判，Altman 备选已裁定放弃，见 §4.4/§4.5）；**C3 低波动策略代码已交付**（`engine/volatility.py` + `strategies/low_volatility.py` + `core/strategy_registry.py` 单一事实来源 + alembic 0029，51 条单测，影子模式 0 权重，`e133d41`）。✅ **C2/C3 已于 2026-09-09 上生产**（alembic 至 **0029**；核验见 `docs/ops/deploy_log.md`——
 **此处不再写死 sha**，钉了必然滞后：v0.16 刚立下「本行必须随每次交付/部署同步」的规矩，
 下一轮就又失守一次——上线当天的那个 commit 自己改了本文档正文，却没回头改这一行）。
 ⚠️ 该批**选股行为应为零变化**（影子权重 0 + 门控不剔除）；观察期看到跳变才是异常。
-~~**生产侧 7 列尚未回填**（仍全 NULL → F-Score 全判「不可判」）~~ → **已回填**（`e86daac`，2026-09-17，联合覆盖 **89.3%**；生产 17:30 管线实测 `piotroski_f_score: judged=3111 unjudgeable=98`）。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。**C4 资金动向 ✅ 已上生产（2026-09-16 `57bc966`，alembic 至 0031）**：`money_flow` 表 + 两表 `money_flow_score` + adapter/repo/`ingest_daily` 第 5 段 + `strategies/money_flow.py`（影子权重 0）+ 回填脚本；**2y 回填两边均已完成并于 2026-09-23 审计**（5434 484 交易日 / 生产 489 交易日、各约 540 MB、零缺日；⚠️ 历史覆盖率 95%，缺口全是北交所——Tushare 的 BJ 资金流实质自 2026-08 起，见 v0.21）；**转正前置「回测喂上 money_flow」2026-09-23 已交付**（§6.7）。C5 待启动。scope 锁定 C0-C5 六子批、零推迟
+~~**生产侧 7 列尚未回填**（仍全 NULL → F-Score 全判「不可判」）~~ → **已回填**（`e86daac`，2026-09-17，联合覆盖 **89.3%**；生产 17:30 管线实测 `piotroski_f_score: judged=3111 unjudgeable=98`）。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。**C4 资金动向 ✅ 已上生产（2026-09-16 `57bc966`，alembic 至 0031）**：`money_flow` 表 + 两表 `money_flow_score` + adapter/repo/`ingest_daily` 第 5 段 + `strategies/money_flow.py`（影子权重 0）+ 回填脚本；**2y 回填两边均已完成并于 2026-09-23 审计**（5434 484 交易日 / 生产 489 交易日、各约 540 MB、零缺日；⚠️ 历史覆盖率 95%，缺口全是北交所——Tushare 的 BJ 资金流实质自 2026-08 起，见 v0.21）；**转正前置「回测喂上 money_flow」2026-09-23 已交付**（§6.7）。**C5 已启动（2026-09-23）**：沙箱执行器 + `PluginStrategy` 适配器 + 执行开关（生产默认关）已交付，§7.6 前三条 DoD 已勾；**余 §7.4 两表 + §7.5 五端点 + 冒烟 API-115~119 + security-review**。scope 锁定 C0-C5 六子批、零推迟
 >
 > ⚠️ **本行必须随每次交付/部署同步**（v0.15 订正）：v0.9~v0.14 六次修订都改了正文却没回写这一行，
 > 它长期停在「C1 未部署 / 面板待起跑」，而同文档 §3.3、`CLAUDE.md §6`、`docs/ops/deploy_log.md`
@@ -47,6 +47,7 @@
 | **v0.19** | 2026-09-23 | **C4 转正前置入档：回测喂不起 `money_flow`**（§6.7 首段 + §6.6 新增一条 DoD）。`BacktestDataBundle` 无该字段、引擎构造当日快照时不填 `MarketSnapshot` 的同名键（生产侧 `_build_market_snapshot` 填了）→ `MoneyFlowStrategy` 逐日两因子全 NaN、被 `Scorer.aggregate` 以一行 INFO 跳过。影子期权重 0 故结果不受影响，但权重一旦 > 0，回测会**静默按「少一个策略」的口径算**——属 CLAUDE.md §4.11 那一族。判据落 `tests/unit/test_backtest_feeds_weighted_strategies.py`：默认权重矩阵里凡「回测喂不起」的策略权重必须为 0（改 0.05 即红，已变异验证），并用 `money_flow ∈ _UNFED ⟺ 回测喂不起它` 把登记与现实双向绑定（第二个方向是冷启动评审补齐的——首版只独立断言「现实还没接」，清空 `_UNFED` 会让它恒过）。同批登记 roadmap V1.5-L（v5.4）与 CLAUDE.md §6。⚠️ 本行是评审指出「版本号又没随正文前进」后补的（v0.15/v0.16 记过同一失败模式）；**本行连着两次都插错了行序**（都落在 v0.18 之前——两次都拿 v0.17 行末那句「C2/C3 均未部署」当锚点），第二次由同一批冷启动评审再次抓出，2026-09-23 第三次才排对；教训与 v0.15/v0.16 那条同族：**改表先看行号，别靠行末字符串猜边界** |
 | **v0.20** | 2026-09-23 | **C4 转正前置已交付（同日）**：回测喂上 `money_flow`。`BacktestDataBundle.money_flow` 存 long 表；Service 复用**生产那条** `get_money_flow_window`（含 INNER JOIN `daily_quote` 取 `amount`）把窗口拉宽成 `[start − lookback, end]`；引擎 `_money_flow_at` 逐日切 `[td − lookback, td]`（两端闭）并保持 (ts_code, trade_date) 升序，`lookback` 由 `resolve_money_flow_lookback_days` 从策略配置读（与生产同源）。5434 两日实测与生产取数路径逐股逐因子**完全相同**（max&#124;Δ&#124; = 0，5d 有值 5502/5515、20d 5188）；6 日回测 `skipped_all_nan: strategy=money_flow` 每日一条 → **0 条**，`max_drawdown` 0.013136 不变（影子权重 0 的数学保证在回测侧的实证）。§6.6 那条 DoD 已勾，`_UNFED` 清空，新增 `tests/unit/test_backtest_money_flow.py`（含「不设下界就会拿到值」反证 + 三处调用点 AST 钉）|
 | **v0.21** | 2026-09-23 | 🔴 **订正三处「未部署 / 未回填」的过期声称 + C4 回填审计入档**（冷启动评审抓出，三份文档同批）。①**C4 早已上生产**：`57bc966`（2026-09-16）是当前生产 `eb8ea63` 的祖先，`docs/ops/deploy_log.md` 有完整记录（alembic 至 0031、17:30 管线 `money_flow_score` 55/55）；②**2y 回填两边都已完成**：5434 2024-08-26~2026-08-25 / 484 交易日 / 2,496,170 行 / 541 MB，生产 2024-09-18~2026-09-22 / 489 交易日 / 2,530,854 行 / 540 MB（与 §6.4 的 0.57 GB 外推吻合），**逐日对交易日历零缺日**；③**C2 生产 7 列已回填**（`e86daac`，2026-09-17，联合覆盖 89.3%）→ F-Score 不再全「不可判」。⚠️ 审计还照出一条**此前没人量过的数据边界**：历史日 `money_flow` 对当日有行情股的覆盖率约 **95%**，缺口**全部是北交所**（2026-03-31 缺 302 只，当日 BJ 共 303 只）；按月看 BJ 在 2026-07 及以前**每天只有 1 只**、2026-08 起才全量（约 336/日）——即 Tushare 的 BJ 资金流历史实质从 2026-08 起。而 BJ 有 310/345 只过 F-7 流动性阈值、09-22 候选池 68 只里占 10 只 → **C4 的历史 IC 与回测在 BJ 子集上是无观测的**，转正评估时不得当成全市场结论。§6.4/§6.6 已回写 |
+| **v0.22** | 2026-09-23 | **C5 启动：沙箱执行器 + 策略适配器 + 执行开关交付**（§7.6 前三条 DoD 已勾）。`engine/sandbox/plugin_runner.py`（spawn 子进程 / 硬超时两段 kill / deny-by-default 导入白名单 + AST 预检 / socket 桩 / builtins 白名单 / 输出形状与 inf 校验 / `RLIMIT_AS` 增量预算）+ `plugin_strategy.py`（`PluginStrategy` 适配器：插件只实现 `compute_raw_factors`，其余继承 → 天然进五步管线；失败返回**全 NaN 而非 0**；`last_run` 供审计）+ `plugin_execution_enabled` 等四项配置（默认全 False，仓库 compose 与 `.env.prod.example` 双写，红线②）。**新增 §7.2.1 记三条实施期修正**（内存限额改「基线+预算」/ 无 `resource` 平台 fail-closed / `sandbox_bootstrap_failed` 与插件崩溃分开报）——第三条是对抗性探针踩出来的：首轮探针「全部被拦住」其实是探针自己没跑起来（`spawn` 要求 `__main__` 可导入），又一次印证「判据在机制没运行时也给同样结果 = 不是判据」。测试三个文件（沙箱 / 适配器 / 开关）全绿，**不钉条数**（钉了必漂——同一文件在两个平台上 pass 数不同：内存限额那条按平台二选一，且冷启动评审当场抓出我把「本机 pass 数」当成了「文件条数」）。**余下**：§7.4 两表 + §7.5 五个端点 + 冒烟 API-115~119 |
 
 ---
 
@@ -880,12 +881,41 @@ NaN（窗口内行数不足）而回测拿到窗口外老行反而有值。`look
 ### 7.2 隔离机制
 
 - 载体：`multiprocessing.get_context("spawn")` 子进程（非 fork——避免继承父进程的 DB 连接/事件循环/已导入模块）。
-- 资源限制（子进程启动后、加载插件前施加）：`RLIMIT_AS = 100MB`（SDD §15.2）、`RLIMIT_NOFILE` 收紧、`RLIMIT_NPROC` 禁止再派生。
+- 资源限制（子进程启动后、加载插件前施加）：`RLIMIT_AS = 100MB`（SDD §15.2）、`RLIMIT_NOFILE` 收紧、`RLIMIT_NPROC` 禁止再派生。⚠️ **`100MB` 这个字面绝对值已被 §7.2.1 修正为「基线 VmSize + 100MB 预算」**——直译会连正常插件一起打死（子进程一导入 pandas/numpy 就远超 100MB），且该限额在无 POSIX `resource` 的平台上不可用（fail-closed）。实现以 §7.2.1 为准。
 - 时限：父进程 `join(timeout)`；单股 100ms 换算为全市场预算 `min(5min, n_stocks × 100ms)`，超时 `terminate()` → `kill()` 两段。
 - 导入控制：子进程内安装受限 `__import__`，白名单 `{math, statistics, pandas, numpy}`；显式黑名单 `{os, sys, subprocess, socket, ctypes, importlib, builtins, pathlib, shutil}`。
 - 网络：子进程内把 `socket.socket` 替换为抛异常的桩。
 - 数据接口：插件只接收**已构造好的 pandas 结构**（universe + 该策略允许的因子输入切片），不传 session / repo / adapter——SDD「只能通过系统提供的标准数据接口获取数据」的落地方式。
 - 输出校验：返回值必须是 `index=ts_code`、数值列的 DataFrame，形状/索引/类型全校验；越界值（inf/超长列名/非法列数）拒收。
+
+#### 7.2.1 实施期修正（2026-09-23，实测后定）
+
+设计 §7.2 写完之后，实现时撞到三件文档没算到的事，处置如下（代码里同样写着「为什么」）：
+
+1. **`RLIMIT_AS = 100MB` 直译会连正常插件一起打死。** 子进程用 `spawn` 起，pandas + numpy
+   一进来虚拟地址空间就远超 100MB（numpy 的 arena 动辄几百 MB）。故改为「**基线 + 预算**」：
+   先量本进程已占的 VmSize（`/proc/self/statm`），再 `setrlimit(RLIMIT_AS, baseline + 100MB)`，
+   语义 = 「插件自己最多再申请 100MB」——这才是 SDD §15.2 那条限制想表达的东西。
+2. **`resource` 是 POSIX-only，而本地算力中心这台机是 Windows**（§7.1 恰恰把执行放在那）。
+   两个选择：假装沙箱完整、或诚实拒绝。按 C-4 取后者：`sandbox_capabilities()` 自报能力集
+   （`memory_limit` 随平台真实取值），`run_plugin` 在限额不可用时**默认拒绝**
+   （`sandbox_unavailable`），要在该平台上跑必须显式传 `allow_without_memory_limit=True`，
+   且结果里带能力集供审计落库。配置项 `plugin_allow_without_memory_limit` 默认 False。
+   ⚠️ 别把默认改成 True——那等于把「沙箱装了」变成一句空话。
+3. **「沙箱没起来」必须与「插件跑挂」分开报。** `spawn` 要求调用方的 `__main__` 可被子进程
+   重新导入；从 REPL / `python - <<EOF` 调用时不满足，子进程 `exitcode=1` 且什么都没回传,
+   在父侧**与插件自己崩溃长得一模一样**。故子进程起来第一件事是报到，父进程据此区分，
+   单列 `sandbox_bootstrap_failed`。这条是对抗性探针时踩到的：第一轮探针「全部被拦住」
+   其实是探针自己没跑起来——**一个判据若在「机制生效」与「机制没运行」时给出相同结果，
+   它就不是判据**（§4.11 那条元判据的又一实例）。
+
+**对抗性探针实测**（2026-09-23，从文件跑，逐条真打）：`open` / `eval` / `exec` / `compile` /
+`globals` / `locals` / `vars` / `dir` / `getattr` / `setattr` / `input` / `memoryview` 全部
+不在 builtins 白名单 → `NameError`；`importlib` / `subprocess` / `os` / `socket` / `ctypes` 等
+→ `rejected_import`；插件改自己那份 `data` **不影响父进程快照**（spawn 独立内存）。
+判据：`tests/unit/test_plugin_sandbox.py`（**13 条参数化用例覆盖上述 12 个 builtins**——
+`open` 占两条：写文件与读 `/proc`——外加反向一条「正常插件要用的 builtins 必须还在」，
+防白名单收得过紧）。
 
 ### 7.3 插件契约
 
@@ -916,8 +946,19 @@ DI 全部放 `api/deps.py`（CLAUDE.md §4.2）。ownership 校验复用 V1.5-G 
 
 ### 7.6 C5 DoD
 
-- [ ] RED：沙箱逃逸用例先失败——`import os` 被拒 / socket 被拒 / 内存超限被杀 / 死循环超时被杀 / 返回值形状非法被拒（每条独立单测）
-- [ ] 单测：`PluginStrategy` 适配器产出的因子矩阵能被 `Scorer` 正常消费
+- [x] RED：沙箱逃逸用例先失败——`import os` 被拒 / socket 被拒 / 内存超限被杀 / 死循环超时被杀 /
+      返回值形状非法被拒（每条独立单测）→ **2026-09-23 交付**，`tests/unit/test_plugin_sandbox.py`
+      （含 builtins 白名单 13 条参数化覆盖 12 个入口 + 父进程隔离 + bootstrap 失败单列 +
+      从 stdin 起进程的端到端一条）。**此处不钉条数**——本文档 §6.6 与 CLAUDE.md §4.12 都
+      记过「钉了必漂」；判据是那个文件跑绿，不是它有几条。
+      ⚠️ 内存那条按平台二选一：有 `resource` 的平台跑「超限被杀」、无的跑「fail-closed 拒绝执行」，
+      两边都不会静默跳过（见 §7.2.1 修正 2）
+- [x] 单测：`PluginStrategy` 适配器产出的因子矩阵能被 `Scorer` 正常消费 → **2026-09-23 交付**，
+      `tests/unit/test_plugin_strategy.py` 10 条（含「插件跑挂 → 全 NaN 而非 0、`Scorer` 跳过」
+      与「插件里同名的 `apply_constraints`/`score` 不被接入」）
+- [x] 配置开关 `plugin_execution_enabled` 默认 False + 仓库 compose / `.env.prod.example` 双写
+      （运维红线②）→ `tests/unit/test_plugin_execution_switch.py` 钉死默认值方向与双写
+- [ ] 表 + 模型 + alembic（`strategy_plugin` / `strategy_plugin_audit`，§7.4）
 - [ ] 端点 5 个冒烟测试（API-115~119）覆盖 401/200/404/422 + 生产 503 分支
 - [ ] alembic 两表迁移升/降级测试
 - [ ] **专项 security-review**（本模块单独评审，含 §7.1 边界声明的准确性复核）——通过前不合并

@@ -89,6 +89,25 @@ class Settings(BaseSettings):
     # 6~30 日回测 1.0~1.2 GB，各自都有余量，叠加就没有）。
     backtest_blackout_windows: str = ""
 
+    # ── C5 策略插件（SDD §15.2 / 设计 §7.1）─────────────────────────────────
+    # **插件执行在生产禁用**，沿用 `backtest_enabled` 的同一套先例：编写/上传/管理/审计
+    # 在生产可用，**执行**只在本地算力中心。原因不是内存而是隔离强度——后端容器非 root、
+    # 无 `CAP_SYS_ADMIN`，容器内用不了 seccomp / unshare / 嵌套容器，故沙箱**挡不住蓄意
+    # 逃逸**（`ctypes` / C 扩展 / `/proc`）。这是设计 §7.1 诚实声明过的边界，不是遗漏。
+    # ⚠️ 默认值取**失效方向**（False）：漏配时保持关闭（运维红线②）。
+    plugin_execution_enabled: bool = False
+
+    # 插件执行预算。单股 100ms 换算成全市场 = `min(plugin_timeout_s, n × 0.1s)`（SDD §15.2）。
+    plugin_timeout_s: float = 300.0
+    # 插件可**额外**申请的内存（MB）。⚠️ 不是进程总量：子进程 spawn 起来先导入
+    # pandas/numpy，虚拟地址空间本身就远超 100MB，直译 SDD 的「≤100MB」会连正常插件一起
+    # 打死。实现按「基线 VmSize + 本预算」设 `RLIMIT_AS`，见 `plugin_runner` 文件头。
+    plugin_memory_mb: int = 100
+    # 无 POSIX `resource` 的平台（Windows）上，内存限额加不上 → 默认**拒绝执行**
+    # （fail-closed，C-4）。本地算力中心若确实是 Windows，需显式打开这一项并知道
+    # 失去的是内存限额那一层；生产永远不该开（生产根本不执行插件）。
+    plugin_allow_without_memory_limit: bool = False
+
     # 日志（Phase 10 §8.4 / SDD §15.5）
     log_dir: str = "logs"
     log_level: str = "INFO"

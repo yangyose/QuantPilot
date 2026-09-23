@@ -100,6 +100,10 @@ services:
       # 回测禁提交时段（2026-09-16，用户拍板有条件放开回测）：避开 17:30 管线与 19:30 IC Job。
       # 默认值就是生产时段本身——漏配时应**保持限制**（失效方向），不是变成不限制。
       BACKTEST_BLACKOUT_WINDOWS: ${BACKTEST_BLACKOUT_WINDOWS:-17:15-18:30,19:15-20:15}
+      # C5 策略插件执行（SDD §15.2 / 设计 §7.1）：**生产永远关**——沙箱挡不住蓄意逃逸
+      # （容器非 root、无 CAP_SYS_ADMIN → 用不了 seccomp/unshare/嵌套容器），故编写/上传/
+      # 管理/审计在生产可用、**执行**只在本地算力中心。默认 false = 失效方向（红线②）。
+      PLUGIN_EXECUTION_ENABLED: ${PLUGIN_EXECUTION_ENABLED:-false}
       DEBUG: "false"
       LOG_DIR: /app/logs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
