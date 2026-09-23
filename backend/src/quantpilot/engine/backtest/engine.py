@@ -80,6 +80,12 @@ class BacktestDataBundle:
     # 用紧凑数组算（`backtest_service.pe_pb_percentile_in_memory`），逐码与 SQL 相同。
     pe_percentile_by_date: dict[date, pd.Series] = field(default_factory=dict)
     pb_percentile_by_date: dict[date, pd.Series] = field(default_factory=dict)
+    # V1.5-C C4（2026-09-23，L-FID 第三项）：资金流向 long 表，列与生产
+    # `get_money_flow_window` 逐字相同（ts_code / trade_date / net_mf_amount /
+    # buy_elg_amount / sell_elg_amount / buy_lg_amount / sell_lg_amount / amount），
+    # 覆盖 [start - lookback, end]；引擎按 `_money_flow_at` 逐日 PIT 切片进快照。
+    # 空表 → `MoneyFlowStrategy` 全 NaN 被跳过（影子期的旧行为）。
+    money_flow: pd.DataFrame = field(default_factory=pd.DataFrame)
     # B3-3：HS300 后复权累计价（Momentum.rs_6m 真实计算；index=trade_date）
     index_adj_prices: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     # Phase 14 §14-3：5y 月末 rebalance active_weights 时序，键 (state_str, effective_date)。
@@ -284,6 +290,43 @@ def _financials_history_at(financials: pd.DataFrame, trade_date: date, n: int = 
     return df.set_index(["ts_code", "report_period"])
 
 
+_MONEY_FLOW_DEFAULT_LOOKBACK_DAYS = 40  # = MoneyFlowStrategyConfig.lookback_calendar_days
+
+
+def resolve_money_flow_lookback_days(strategies: object) -> int:
+    """从策略实例读 `lookback_calendar_days`，与生产同源（取不到回落 40）。
+
+    生产 `_build_market_snapshot` 用 `DEFAULT_MONEY_FLOW_STRATEGY.lookback_calendar_days`
+    界定窗口下界；回测必须用**同一个数**，否则长期停牌股在两边一个有值一个 NaN
+    （生产窗口外 → 行数不足 → NaN；回测若不设下界会取到更老的行 → 反而有值）。
+    """
+    for s in (strategies or []):
+        cfg = getattr(s, "_cfg", None)
+        v = getattr(cfg, "lookback_calendar_days", None)
+        if isinstance(v, int) and v > 0:
+            return v
+    return _MONEY_FLOW_DEFAULT_LOOKBACK_DAYS
+
+
+def _money_flow_at(
+    flow: pd.DataFrame, trade_date: date, lookback_days: int,
+) -> pd.DataFrame:
+    """复现生产 `repository.get_money_flow_window(ts_codes, trade_date, lookback_days)` 的窗口。
+
+    语义：`trade_date ∈ [td - lookback_days 日历天, td]`（两端闭，与 SQL 的
+    `>= start` / `<= end` 相同），按 (ts_code, trade_date) 升序——`MoneyFlowStrategy`
+    靠 `groupby.tail(window)` 取最近 N 行，所以**顺序与上界都不能错**：
+    混进 `> td` 的行就是前视，丢掉下界则长期停牌股会拿到窗口外的老数据。
+    universe 过滤交给策略自己（它 `isin(universe)`），与生产一致。
+    """
+    if flow is None or flow.empty or "trade_date" not in flow.columns:
+        return pd.DataFrame()
+    td = pd.Timestamp(trade_date)
+    ts = pd.to_datetime(flow["trade_date"])
+    mask = (ts <= td) & (ts >= td - pd.Timedelta(days=lookback_days))
+    return flow[mask.to_numpy()]
+
+
 def _avg_amount_before(amount_wide: pd.DataFrame, trade_date: date, window: int = 20) -> pd.Series:
     """复现生产 `repository.get_avg_amount(window)`：`trade_date` **之前**（不含当日）最近
     `window` 个交易日的 `AVG(amount)`（SQL AVG 忽略 NULL；一行都没有 → NaN）。
@@ -389,6 +432,13 @@ class BacktestEngine:
         total = len(trade_dates)
         # 财务表一次整理、排序，逐日只做掩码 + 去重（两个 PIT 函数共用同一份）
         fin_flat = _prepare_financials(data.financials)
+        # C4：资金流向一次排序（策略按 tail(N) 取最近 N 行，顺序必须对），逐日只做掩码
+        mf_lookback = resolve_money_flow_lookback_days(self._strategies)
+        mf_sorted = (
+            data.money_flow.sort_values(["ts_code", "trade_date"], kind="mergesort")
+            if data.money_flow is not None and not data.money_flow.empty
+            else pd.DataFrame()
+        )
 
         for i, trade_date in enumerate(trade_dates):
             # ---------- 0. T+1 撮合（B3-2）：先执行 T-1 日 pending_signals ----------
@@ -554,6 +604,10 @@ class BacktestEngine:
                     "pe_percentile": data.pe_percentile_by_date.get(trade_date),
                     "pb_percentile": data.pb_percentile_by_date.get(trade_date),
                     "index_adj_prices": idx_adj_t,
+                    # V1.5-C C4：与生产 `_build_market_snapshot` 同名键。⚠️ 取了必须放进来，
+                    # 否则 MoneyFlowStrategy 逐日全 NaN 被跳过（2026-09-23 前就是这个状态，
+                    # 影子权重 0 所以没人发现）——`test_backtest_money_flow.py` 钉调用点。
+                    "money_flow": _money_flow_at(mf_sorted, trade_date, mf_lookback),
                     "industry": industry_map,
                     "market_cap": market_cap_series,
                     "beta": None,  # V1.0 永远 None，与 ScoringService._build_market_snapshot 一致

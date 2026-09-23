@@ -20,6 +20,7 @@ from quantpilot.engine.backtest.engine import (
     BacktestDataBundle,
     BacktestEngine,
     _prepare_financials,
+    resolve_money_flow_lookback_days,
 )
 from quantpilot.models.system import BacktestResult, BacktestTask
 
@@ -678,6 +679,7 @@ class BacktestService:
         #     SQL 版每日两列约 4 s，是 6 日回测第一大耗时项，且合并两列 / 覆盖索引都实测无效
         #     （见 repo 方法 docstring）；每日管线一天只算一次，**仍走 SQL**。
         # 交易日 = 窗口内 daily_quote 实际存在的日期（无行情的日子引擎本就不评分）。
+        from quantpilot.data.repository import MarketDataRepository
         from quantpilot.services.strategy_service import resolve_pe_pb_history_years
 
         # 与生产同源：窗口年数读 ValueStrategyConfig（engine 为 None 的纯加载场景回落 5）
@@ -803,7 +805,28 @@ class BacktestService:
                 slot["weights"], key=lambda s: slot["weights"][s], reverse=True,
             )
 
+        # ── 3f. 资金流向（V1.5-C C4，2026-09-23）──────────────────────────────
+        # 复用生产那条 SQL（`get_money_flow_window`，含 INNER JOIN daily_quote 取 amount），
+        # 只把窗口从「单日回看 40 天」拉宽成「[start - 40天, end]」——列、类型、排序都与
+        # 生产逐字相同，引擎再按日切 `_money_flow_at`（同一个 40 天下界）。
+        # 2y 回填未做时该表只有样本区间的数据 → 窗口外的日子行数不足 → 因子 NaN（设计内）。
+        _mf_lookback = resolve_money_flow_lookback_days(
+            getattr(self._engine, "_strategies", None) if self._engine is not None else None
+        )
+        _mf_repo = MarketDataRepository(self._session)
+        _mf_codes = list(stock_info.index) if not stock_info.empty else []
+        money_flow = (
+            await _mf_repo.get_money_flow_window(
+                _mf_codes,
+                config.end_date,
+                (config.end_date - config.start_date).days + _mf_lookback,
+            )
+            if _mf_codes
+            else pd.DataFrame()
+        )
+
         return BacktestDataBundle(
+            money_flow=money_flow,
             adj_prices=adj_prices,
             stock_info=stock_info,
             financials=financials,
@@ -963,7 +986,8 @@ def build_engine_from_snapshot(snap: dict, calendar) -> BacktestEngine:
             ValueStrategy(value_cfg),
             # V1.5-C C3：影子模式（权重 0）。四处组装点必须同步。
             LowVolatilityStrategy(),
-            # V1.5-C C4：影子模式（权重 0）。回测快照无 money_flow → 全 NaN → 被跳过。
+            # V1.5-C C4：影子模式（权重 0）。回测自 2026-09-23 起也喂 money_flow
+            # （bundle + 逐日 PIT 切片），故因子有值、进 composite 但权重 0。
             MoneyFlowStrategy(),
         ],
         market_state_engine=MarketStateEngine(ms_cfg),

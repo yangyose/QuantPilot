@@ -26,9 +26,10 @@ from quantpilot.core.config_defaults import DEFAULT_STRATEGY_WEIGHTS
 from quantpilot.core.strategy_registry import STRATEGY_NAMES
 
 # 回测快照喂不起的策略（bundle 里没有对应数据源）。补上数据后从这里删掉。
-_UNFED: dict[str, str] = {
-    "money_flow": "BacktestDataBundle 无 money_flow；需加载 money_flow 表并按日切片进快照",
-}
+# 2026-09-23：`money_flow` 已补（bundle 字段 + 引擎逐日 PIT 切片，见
+# `test_backtest_money_flow.py`），故本表清空——`test_unfed_list_matches_reality`
+# 会据此**要求** money_flow 真的喂得上，谁把 bundle 改回去就红。
+_UNFED: dict[str, str] = {}
 
 
 def _states() -> dict[str, dict[str, float]]:
