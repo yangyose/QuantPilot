@@ -1,11 +1,11 @@
 # V1.5-C：策略扩展（风险调整动量 + Piotroski 过滤 + 低波动 + 资金动向 + 插件沙箱）
 
-> 版本：v0.22（C5 启动：沙箱 + 适配器 + 执行开关交付，2026-09-23）
+> 版本：v0.24（C5：沙箱 + 适配器 + 开关 + §7.4 两表 + 迁移升降级自动化，2026-09-23）
 > 状态：**C0 全量上线**（2026-08-19 六步生产收尾逐步实证，alembic 至 0025，`daily_ic_producer` 19:30 Job 已激活并完成首跑）；**C1 全部已上生产**（2026-08-31，与 P0 退出修复同批，生产 = `2bab523`）——C1-1 约束落点统一 `ac069e5` / C1-2 风险调整动量 `85df015` / C1-3 价格窗口按交易日推导 `be6d6d6`；**C1 面板对比已完成**（2026-08-28，off 5h10m / on 4h57m，497 交易日 × 4 策略，结论见 §3.3——**上线理由是 C1-1 + C1-3 两个缺陷修复，不是 C1-2 验证有效**）；**C2 代码六块全部完成 + 5y 回填已在本地算力中心（5434）激活**（7 列覆盖 94.7~99.9%，9/9 项可判，Altman 备选已裁定放弃，见 §4.4/§4.5）；**C3 低波动策略代码已交付**（`engine/volatility.py` + `strategies/low_volatility.py` + `core/strategy_registry.py` 单一事实来源 + alembic 0029，51 条单测，影子模式 0 权重，`e133d41`）。✅ **C2/C3 已于 2026-09-09 上生产**（alembic 至 **0029**；核验见 `docs/ops/deploy_log.md`——
 **此处不再写死 sha**，钉了必然滞后：v0.16 刚立下「本行必须随每次交付/部署同步」的规矩，
 下一轮就又失守一次——上线当天的那个 commit 自己改了本文档正文，却没回头改这一行）。
 ⚠️ 该批**选股行为应为零变化**（影子权重 0 + 门控不剔除）；观察期看到跳变才是异常。
-~~**生产侧 7 列尚未回填**（仍全 NULL → F-Score 全判「不可判」）~~ → **已回填**（`e86daac`，2026-09-17，联合覆盖 **89.3%**；生产 17:30 管线实测 `piotroski_f_score: judged=3111 unjudgeable=98`）。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。**C4 资金动向 ✅ 已上生产（2026-09-16 `57bc966`，alembic 至 0031）**：`money_flow` 表 + 两表 `money_flow_score` + adapter/repo/`ingest_daily` 第 5 段 + `strategies/money_flow.py`（影子权重 0）+ 回填脚本；**2y 回填两边均已完成并于 2026-09-23 审计**（5434 484 交易日 / 生产 489 交易日、各约 540 MB、零缺日；⚠️ 历史覆盖率 95%，缺口全是北交所——Tushare 的 BJ 资金流实质自 2026-08 起，见 v0.21）；**转正前置「回测喂上 money_flow」2026-09-23 已交付**（§6.7）。**C5 已启动（2026-09-23）**：沙箱执行器 + `PluginStrategy` 适配器 + 执行开关（生产默认关）已交付，§7.6 前三条 DoD 已勾；**余 §7.4 两表 + §7.5 五端点 + 冒烟 API-115~119 + security-review**。scope 锁定 C0-C5 六子批、零推迟
+~~**生产侧 7 列尚未回填**（仍全 NULL → F-Score 全判「不可判」）~~ → **已回填**（`e86daac`，2026-09-17，联合覆盖 **89.3%**；生产 17:30 管线实测 `piotroski_f_score: judged=3111 unjudgeable=98`）。**门控经开发集实测无显著收益 → 定为影子模式上线**（算 + 记日志、不剔除，`piotroski_gate_enabled=False`），holdout + 生产影子期独立复现同向改善后再议激活。**C4 资金动向 ✅ 已上生产（2026-09-16 `57bc966`，alembic 至 0031）**：`money_flow` 表 + 两表 `money_flow_score` + adapter/repo/`ingest_daily` 第 5 段 + `strategies/money_flow.py`（影子权重 0）+ 回填脚本；**2y 回填两边均已完成并于 2026-09-23 审计**（5434 484 交易日 / 生产 489 交易日、各约 540 MB、零缺日；⚠️ 历史覆盖率 95%，缺口全是北交所——Tushare 的 BJ 资金流实质自 2026-08 起，见 v0.21）；**转正前置「回测喂上 money_flow」2026-09-23 已交付**（§6.7）。**C5 已启动（2026-09-23）**：沙箱执行器 + `PluginStrategy` 适配器 + 执行开关（生产默认关）已交付，§7.6 前三条 DoD 已勾；§7.4 两表 + alembic 0032（含升降级自动化回归）同日交付；**余 §7.5 五端点 + 冒烟 API-115~119 + 专项 security-review + 收尾三项（生产实证 / SDD §15.2 回写 / `deployment.md` 红线）**。scope 锁定 C0-C5 六子批、零推迟
 >
 > ⚠️ **本行必须随每次交付/部署同步**（v0.15 订正）：v0.9~v0.14 六次修订都改了正文却没回写这一行，
 > 它长期停在「C1 未部署 / 面板待起跑」，而同文档 §3.3、`CLAUDE.md §6`、`docs/ops/deploy_log.md`
@@ -48,6 +48,8 @@
 | **v0.20** | 2026-09-23 | **C4 转正前置已交付（同日）**：回测喂上 `money_flow`。`BacktestDataBundle.money_flow` 存 long 表；Service 复用**生产那条** `get_money_flow_window`（含 INNER JOIN `daily_quote` 取 `amount`）把窗口拉宽成 `[start − lookback, end]`；引擎 `_money_flow_at` 逐日切 `[td − lookback, td]`（两端闭）并保持 (ts_code, trade_date) 升序，`lookback` 由 `resolve_money_flow_lookback_days` 从策略配置读（与生产同源）。5434 两日实测与生产取数路径逐股逐因子**完全相同**（max&#124;Δ&#124; = 0，5d 有值 5502/5515、20d 5188）；6 日回测 `skipped_all_nan: strategy=money_flow` 每日一条 → **0 条**，`max_drawdown` 0.013136 不变（影子权重 0 的数学保证在回测侧的实证）。§6.6 那条 DoD 已勾，`_UNFED` 清空，新增 `tests/unit/test_backtest_money_flow.py`（含「不设下界就会拿到值」反证 + 三处调用点 AST 钉）|
 | **v0.21** | 2026-09-23 | 🔴 **订正三处「未部署 / 未回填」的过期声称 + C4 回填审计入档**（冷启动评审抓出，三份文档同批）。①**C4 早已上生产**：`57bc966`（2026-09-16）是当前生产 `eb8ea63` 的祖先，`docs/ops/deploy_log.md` 有完整记录（alembic 至 0031、17:30 管线 `money_flow_score` 55/55）；②**2y 回填两边都已完成**：5434 2024-08-26~2026-08-25 / 484 交易日 / 2,496,170 行 / 541 MB，生产 2024-09-18~2026-09-22 / 489 交易日 / 2,530,854 行 / 540 MB（与 §6.4 的 0.57 GB 外推吻合），**逐日对交易日历零缺日**；③**C2 生产 7 列已回填**（`e86daac`，2026-09-17，联合覆盖 89.3%）→ F-Score 不再全「不可判」。⚠️ 审计还照出一条**此前没人量过的数据边界**：历史日 `money_flow` 对当日有行情股的覆盖率约 **95%**，缺口**全部是北交所**（2026-03-31 缺 302 只，当日 BJ 共 303 只）；按月看 BJ 在 2026-07 及以前**每天只有 1 只**、2026-08 起才全量（约 336/日）——即 Tushare 的 BJ 资金流历史实质从 2026-08 起。而 BJ 有 310/345 只过 F-7 流动性阈值、09-22 候选池 68 只里占 10 只 → **C4 的历史 IC 与回测在 BJ 子集上是无观测的**，转正评估时不得当成全市场结论。§6.4/§6.6 已回写 |
 | **v0.22** | 2026-09-23 | **C5 启动：沙箱执行器 + 策略适配器 + 执行开关交付**（§7.6 前三条 DoD 已勾）。`engine/sandbox/plugin_runner.py`（spawn 子进程 / 硬超时两段 kill / deny-by-default 导入白名单 + AST 预检 / socket 桩 / builtins 白名单 / 输出形状与 inf 校验 / `RLIMIT_AS` 增量预算）+ `plugin_strategy.py`（`PluginStrategy` 适配器：插件只实现 `compute_raw_factors`，其余继承 → 天然进五步管线；失败返回**全 NaN 而非 0**；`last_run` 供审计）+ `plugin_execution_enabled` 等四项配置（默认全 False，仓库 compose 与 `.env.prod.example` 双写，红线②）。**新增 §7.2.1 记三条实施期修正**（内存限额改「基线+预算」/ 无 `resource` 平台 fail-closed / `sandbox_bootstrap_failed` 与插件崩溃分开报）——第三条是对抗性探针踩出来的：首轮探针「全部被拦住」其实是探针自己没跑起来（`spawn` 要求 `__main__` 可导入），又一次印证「判据在机制没运行时也给同样结果 = 不是判据」。测试三个文件（沙箱 / 适配器 / 开关）全绿，**不钉条数**（钉了必漂——同一文件在两个平台上 pass 数不同：内存限额那条按平台二选一，且冷启动评审当场抓出我把「本机 pass 数」当成了「文件条数」）。**余下**：§7.4 两表 + §7.5 五个端点 + 冒烟 API-115~119 |
+| **v0.23** | 2026-09-23 | **C5 §7.4 两表交付**：`models/plugin.py`（`StrategyPlugin` / `StrategyPluginAudit`）+ **alembic 0032**。四件落地时定死的事写进 §7.4：状态与动作值域进 DB CHECK（应用层校验挡不住脚本/手工 SQL）、DELETE 走**软删** + 审计 FK 取 **RESTRICT**（硬删插件会带走审计，而审计的意义就是留痕）、执行类指标列全可空（C-4：不用 0 冒充「没有这个观测」）、降序索引按 §4.8 用 `sa.text` 且判据取 `pg_indexes.indexdef` 而非 ORM 定义（两处各写一遍，只核对后者就是自证）。验证：升 → 降 → 再升在 5433 双向实证；`test_plugin_models.py` 元数据层 + `test_int_plugin_tables.py` 真库层逐条打 `IntegrityError`。**余下**：§7.5 五端点 + DI + 冒烟 API-115~119 + security-review |
+| **v0.24** | 2026-09-23 | **迁移升降级改自动化 + 三处评审订正**。①「alembic 两表迁移升/降级测试」此前只有我**手工**跑过一轮，冷启动评审当场指出「手工验证过不算判据」（§5.3）→ 补 `tests/integration/test_int_plugin_migration.py`：会话内串行 `downgrade 0031` → 断言两表与降序索引消失 → `upgrade head` → 断言表 / `pg_indexes.indexdef` 含 DESC / 三条 UNIQUE+CHECK 逐项复原；降级目标写**显式 0031** 而非 `-1`（加了 0033 后 `-1` 会去降新迁移，名字还写着 0032 却在测别的东西），`skipif` 只认 5433 且另有反向用例钉死「该判据真按连接串判，不是写死 True」。②§7.4 schema 示意补上 `INDEX(user_id, status)`（ORM/迁移里一直有，示意块漏画）。③头部与本表的「余下」清单补齐被漏记的三项（生产 `printenv` 实证 / SDD §15.2 回写 / `deployment.md` 红线）——评审指出「§7.6 有 5 条未勾，而两处摘要只写了 2~3 条」。⚠️ 同批踩到一次教训并已沉淀进 CLAUDE.md §4.11：**验迁移时我在后台集成会话跑着的同时手工对同一个 5433 跑 alembic**，那次 36 failed / 434 passed，报错像代码回归、实则是我把表从它脚下抽走——「并发会话」不限于 pytest，任何对同库的 DDL 都算 |
 
 ---
 
@@ -926,11 +928,28 @@ NaN（窗口内行数不足）而回测拿到窗口外老行反而有值。`look
 ```
 strategy_plugin(id, user_id FK, name, version, source_code TEXT, status,
                 created_at, updated_at)            UNIQUE(user_id, name, version)
+                                                   INDEX(user_id, status)   # 列表端点按人取
 strategy_plugin_audit(id, plugin_id FK, user_id FK, action, trade_date,
                       duration_ms, peak_memory_kb, exit_status, error_excerpt,
                       created_at)                  INDEX(plugin_id, created_at DESC)
 ```
 `action ∈ {upload, update, delete, load, execute}`，覆盖 SDD「加载、执行、输出均记录审计日志」。`error_excerpt` 落库前必须过 `SecretFilter`（Phase 13）。
+
+**✅ 2026-09-23 交付**（`models/plugin.py` + alembic **0032**，两表建好、升降级双向实证）。
+落地时定死的四件事（都在 ORM 与迁移里逐字一致，`test_plugin_models.py` 元数据层 +
+`test_int_plugin_tables.py` 真库层两边核对）：
+
+1. **状态值域进 DB CHECK**：`status ∈ {active, disabled, deleted}`、`action` 同上五个值。
+   只在应用层校验挡不住脚本 / 手工 SQL 写脏（真库测试逐条打 `IntegrityError`）。
+2. **DELETE 是软删**（`status='deleted'`），审计行的 `plugin_id` FK 取 **RESTRICT** 而非
+   CASCADE——硬删插件会带走它的审计，而审计的全部意义就是留痕。真库测试同时钉「有审计时
+   硬删被拒」与「软删后审计仍在」。
+3. **执行类指标列全可空**：`trade_date` / `duration_ms` / `peak_memory_kb` / `exit_status` /
+   `error_excerpt` 在 `upload`、`delete` 这类动作上保持 NULL。C-4 禁止用 0 / "" 冒充「没有
+   这个观测」——那会让「执行了但零耗时」与「压根没执行」在数据里无法区分。
+4. **降序索引按 §4.8 用 `sa.text("created_at DESC")`**，且判据取 `pg_indexes.indexdef`
+   （库内真实 DDL）而非 ORM 定义——alembic 与 ORM 各写一遍，只核对后者等于自证。
+   实测库内为 `btree (plugin_id, created_at DESC)`。
 
 ### 7.5 端点（全部 L3 + ownership 校验）
 
@@ -958,9 +977,20 @@ DI 全部放 `api/deps.py`（CLAUDE.md §4.2）。ownership 校验复用 V1.5-G 
       与「插件里同名的 `apply_constraints`/`score` 不被接入」）
 - [x] 配置开关 `plugin_execution_enabled` 默认 False + 仓库 compose / `.env.prod.example` 双写
       （运维红线②）→ `tests/unit/test_plugin_execution_switch.py` 钉死默认值方向与双写
-- [ ] 表 + 模型 + alembic（`strategy_plugin` / `strategy_plugin_audit`，§7.4）
+- [x] 表 + 模型 + alembic（`strategy_plugin` / `strategy_plugin_audit`，§7.4）→ **2026-09-23 交付**，
+      alembic **0032**（升 → 降 → 再升在 5433 双向实证，表消失/回来、库内索引确为
+      `created_at DESC`）；约束语义两层核对：`test_plugin_models.py`（ORM 元数据）+
+      `test_int_plugin_tables.py`（真库逐条打 `IntegrityError`：UNIQUE 撞车 / 两条 CHECK /
+      RESTRICT 拒硬删 / 软删保留审计 / `pg_indexes.indexdef` 含 DESC）
 - [ ] 端点 5 个冒烟测试（API-115~119）覆盖 401/200/404/422 + 生产 503 分支
-- [ ] alembic 两表迁移升/降级测试
+- [x] alembic 两表迁移升/降级测试 → **2026-09-23 交付**，`tests/integration/test_int_plugin_migration.py`：
+      会话内串行跑 `downgrade 0031` → 断言两表与降序索引消失 → `upgrade head` → 断言表、
+      索引（`pg_indexes.indexdef` 含 DESC）、三条 UNIQUE/CHECK **逐项复原**。
+      ⚠️ 此前这条只有我手工跑过一轮，冷启动评审当场指出「手工验证过不算判据」（§5.3），
+      故补成自动化。两处刻意设计：降级目标写**显式 0031** 而非 `-1`（将来加了 0033，
+      `-1` 会去降那个新迁移，测试名字还写着 0032 却在测别的东西）；`skipif` 只在
+      `DATABASE_URL` 指向 5433 时运行，且另有一条反向用例钉死「那个判据真按连接串判，
+      不是写死 True」——写死 True 就会在 5434 / 生产上 DROP 表（C-1，没有回头路）
 - [ ] **专项 security-review**（本模块单独评审，含 §7.1 边界声明的准确性复核）——通过前不合并
 - [ ] 生产环境 `plugin_execution_enabled=false` 实证（`docker exec printenv` 确认容器拿到值 + 端点真返 503）
 - [ ] SDD §15.2 回写（实现方式 + 生产禁用决策 + 能力边界）

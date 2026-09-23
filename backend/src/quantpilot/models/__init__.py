@@ -18,6 +18,7 @@ from quantpilot.models.market import (
     StockInfo,
     TradeCalendar,
 )
+from quantpilot.models.plugin import StrategyPlugin, StrategyPluginAudit
 from quantpilot.models.system import PipelineRun, SystemConfig, UserConfig, UserConfigHistory
 from quantpilot.models.user import User
 
@@ -51,4 +52,7 @@ __all__ = [
     "SystemConfig",
     "UserConfig",
     "UserConfigHistory",
+    # plugin（C5）
+    "StrategyPlugin",
+    "StrategyPluginAudit",
 ]
